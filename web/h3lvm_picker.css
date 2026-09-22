@@ -1,0 +1,279 @@
+/* H3 Long Video Manager — Segment Picker UI (Phase B2)
+   CSS prefix: .h3lvm-* (no conflict with clipstream .minimax-clip-*) */
+
+.h3lvm-container {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    background: #1e1e1e;
+    border: 1px solid #3a3a3a;
+    border-radius: 8px;
+    padding: 8px 10px;
+    box-sizing: border-box;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: #e2e8f0;
+    user-select: none;
+    margin: 4px 0;
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+/* Header */
+.h3lvm-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #333;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+}
+
+.h3lvm-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #93c5fd;
+}
+
+.h3lvm-project-tag {
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #38bdf8;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 11px;
+    margin-left: 8px;
+}
+
+.h3lvm-refresh-btn {
+    background: #1e293b;
+    border: 1px solid #475569;
+    color: #cbd5e1;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.h3lvm-refresh-btn:hover {
+    background: #334155;
+    color: #fff;
+    border-color: #60a5fa;
+}
+
+/* Card deck */
+.h3lvm-deck {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 8px;
+    overflow-y: auto;
+    max-height: 280px;
+    padding: 4px 2px 8px 2px;
+    scroll-behavior: smooth;
+}
+
+.h3lvm-deck::-webkit-scrollbar {
+    width: 5px;
+}
+.h3lvm-deck::-webkit-scrollbar-track {
+    background: #0f172a;
+    border-radius: 3px;
+}
+.h3lvm-deck::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 3px;
+}
+.h3lvm-deck::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+}
+
+/* Individual card */
+.h3lvm-card {
+    position: relative;
+    width: 120px;
+    background: #262626;
+    border: 2px solid #3a3a3a;
+    border-radius: 6px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.h3lvm-card:hover {
+    border-color: #60a5fa;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.h3lvm-card.active {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+/* Thumbnail */
+.h3lvm-thumb-wrap {
+    position: relative;
+    width: 100%;
+    height: 72px;
+    overflow: hidden;
+    background: #111;
+}
+
+.h3lvm-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.h3lvm-thumb-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    color: #475569;
+}
+
+/* Active badge */
+.h3lvm-active-badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    background: rgba(59, 130, 246, 0.9);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 2px 5px;
+    border-radius: 3px;
+    line-height: 1;
+}
+
+/* Play button (mp4 preview) */
+.h3lvm-play-btn {
+    position: absolute;
+    bottom: 4px;
+    right: 4px;
+    background: rgba(0, 0, 0, 0.7);
+    border: none;
+    color: #fff;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.h3lvm-play-btn:hover {
+    background: rgba(59, 130, 246, 0.9);
+    transform: scale(1.1);
+}
+
+/* Meta info */
+.h3lvm-meta {
+    padding: 5px 7px;
+}
+
+.h3lvm-seg-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #f1f5f9;
+}
+
+.h3lvm-seg-info {
+    font-size: 10px;
+    color: #94a3b8;
+    margin-top: 2px;
+}
+
+/* Footer */
+.h3lvm-footer {
+    border-top: 1px solid #333;
+    padding-top: 6px;
+    margin-top: 4px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.h3lvm-selected {
+    font-size: 11px;
+    color: #93c5fd;
+    font-weight: 500;
+}
+
+/* Empty state */
+.h3lvm-empty {
+    width: 100%;
+    text-align: center;
+    padding: 24px 12px;
+    color: #94a3b8;
+    font-size: 12px;
+}
+
+.h3lvm-empty-hint {
+    font-size: 10px;
+    color: #64748b;
+    margin-top: 6px;
+}
+
+/* Modal overlay (mp4 preview) */
+.h3lvm-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    backdrop-filter: blur(4px);
+}
+
+.h3lvm-modal {
+    background: #1e1e1e;
+    border: 1px solid #3a3a3a;
+    border-radius: 10px;
+    padding: 16px;
+    max-width: 80vw;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.h3lvm-preview-video {
+    width: 100%;
+    max-height: 60vh;
+    border-radius: 6px;
+    background: #000;
+}
+
+.h3lvm-preview-info {
+    font-size: 12px;
+    color: #94a3b8;
+    text-align: center;
+}
+
+.h3lvm-modal-close {
+    align-self: center;
+    background: #1e293b;
+    border: 1px solid #475569;
+    color: #cbd5e1;
+    padding: 6px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s;
+}
+
+.h3lvm-modal-close:hover {
+    background: #334155;
+    color: #fff;
+}
