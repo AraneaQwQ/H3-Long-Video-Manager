@@ -120,7 +120,8 @@ function setupPickerUI(node) {
         projectTag.textContent = project;
 
         try {
-            const res = await api.fetchApi(`/h3_lvm/segments?project=${encodeURIComponent(project)}`);
+            const cacheBust = Date.now();
+            const res = await api.fetchApi(`/h3_lvm/segments?project=${encodeURIComponent(project)}&_t=${cacheBust}`);
             if (!res.ok) {
                 deck.innerHTML = `<div class="h3lvm-empty">API 错误: ${res.status}</div>`;
                 return;
