@@ -153,7 +153,9 @@ function setupPickerUI(node) {
                 if (seg.thumbnail_url) {
                     const img = document.createElement("img");
                     img.className = "h3lvm-thumb";
-                    img.src = seg.thumbnail_url;
+                    // Add cache-buster so new content shows after re-save
+                    const sep = seg.thumbnail_url.includes("?") ? "&" : "?";
+                    img.src = seg.thumbnail_url + sep + "_t=" + Date.now();
                     img.loading = "lazy";
                     thumbWrap.appendChild(img);
                 } else {
