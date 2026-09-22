@@ -43,11 +43,38 @@ H3 Segment Picker
   └── Feeds directly into MiniMaxH3ReferenceToVideo (ref_videos + ref_audio)
 ```
 
+### Use Cases
+
+| Scenario | How |
+|----------|-----|
+| **Long video → H3 generation** | 60s reference video → cut into 6×10s segments → generate stylized versions per segment with H3 ref2va → stitch |
+| **Motion Context chaining** | Picker outputs segment N → use as ref_video + MC context for segment N+1 → coherent long-video generation |
+| **Rapid iteration** | Same segment, different prompts/params → no re-loading, just Picker → H3 |
+| **Parallel generation** | Cut once into 6 segments → run 6 H3 workflows in parallel → merge |
+| **Asset library** | Different projects use different `project_name` — isolated, searchable, persistent |
+
+**Where it fits in your H3 workflow:**
+
+```
+[Before]  Load Video → manual cut → H3 ref2va → output
+[After]   First:  Load Video → [Manager] → saves all + outputs
+          Later:  [Picker] → H3 ref2va → output
+                            ↑ no Load Video, no manual cut, frames already 17n+5
+```
+
+### Not for
+
+- Real-time streaming (this is an offline cut + store tool)
+- Non-H3 models (frame grid rule differs)
+- GPU inference (pure CPU: slice + file I/O only)
+
+---
+
 ### Installation
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/YourUsername/H3-Long-Video-Manager.git
+git clone https://github.com/AraneaQwQ/H3-Long-Video-Manager.git
 ```
 
 Restart ComfyUI, hard-refresh browser (`Ctrl+F5`).
@@ -171,11 +198,38 @@ H3 Segment Picker
   └── 直接接入 MiniMaxH3ReferenceToVideo (ref_videos + ref_audio)
 ```
 
+### 使用场景
+
+| 场景 | 怎么用 |
+|------|--------|
+| **长视频分镜生成** | 60s 参考视频 → 切成 6×10s 段 → 逐段用 H3 ref2va 生成风格化版本 → 拼接 |
+| **Motion Context 接续** | Picker 输出段 N → 作为段 N+1 的 ref_video + MC 上下文 → 连贯长视频生成 |
+| **反复实验同一段** | 同一段素材试不同 prompt/参数 → 不用重新 Load，直接 Picker 取 |
+| **多段并行生成** | 一次裁好 6 段 → 开 6 个 H3 工作流分别生成 → 最后拼接 |
+| **素材库管理** | 不同项目用不同 `project_name` 分开存，互不干扰 |
+
+**在 H3 工作流中的位置：**
+
+```
+[之前]  Load Video → 手动裁 → H3 ref2va → 输出
+[现在]  第一次: Load Video → [Manager] → 存库 + 输出
+        之后:  [Picker] → H3 ref2va → 输出
+                          ↑ 无需 Load Video，无需手动裁，帧数已对齐 17n+5
+```
+
+### 不适用
+
+- 实时流处理（这是离线裁切+存储工具）
+- 非 H3 模型（帧数规则不同）
+- 需要 GPU 推理的场景（本节点纯 CPU：切片+文件读写）
+
+---
+
 ### 安装
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/YourUsername/H3-Long-Video-Manager.git
+git clone https://github.com/AraneaQwQ/H3-Long-Video-Manager.git
 ```
 
 重启 ComfyUI，强刷浏览器（`Ctrl+F5`）。
