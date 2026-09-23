@@ -80,7 +80,6 @@ def nearest_valid_range(desired: int) -> tuple[int, int]:
 def generate_aligned_segments(
     total_frames: int,
     target_frames_per_segment: int,
-    final_align: str = "down",
 ) -> list[tuple[int, int]]:
     """Generate seamless H3-aligned segments using carry-forward.
 
@@ -139,13 +138,11 @@ def generate_aligned_segments(
 
         # Check if this is (or will be) the final segment
         if remaining <= target_frames_per_segment + carry:
-            # Final segment: align according to final_align mode
-            if final_align == "up":
-                aligned = align_up_to_h3_grid(remaining)
-            else:
-                aligned = align_down_to_h3_grid(remaining)
-                if aligned > remaining:
-                    aligned = remaining
+            # Final segment: take all remaining, align down
+            aligned = align_down_to_h3_grid(remaining)
+            if aligned > remaining:
+                # Can't align up — use remaining as-is (extreme edge)
+                aligned = remaining
             if aligned < 5:
                 # Merge into previous segment (extreme edge case)
                 if segments:

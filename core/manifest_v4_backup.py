@@ -27,7 +27,6 @@ def build_manifest(
     segment_duration_seconds: float,
     motion_context: MotionContextConfig | None = None,
     align_to_h3: bool = True,
-    final_align: str = "down",
 ) -> SegmentManifest:
     """Build the complete SegmentManifest from inputs.
 
@@ -62,7 +61,7 @@ def build_manifest(
 
     if align_to_h3:
         # Use seamless carry-forward segmentation (main segments are 17n+5)
-        main_segments = generate_aligned_segments(total_frames, seg_frames, final_align=final_align)
+        main_segments = generate_aligned_segments(total_frames, seg_frames)
     else:
         # Fallback: plain equal splits (old behavior, no H3 alignment)
         main_segments = []

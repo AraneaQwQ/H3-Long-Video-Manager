@@ -27,7 +27,7 @@ try:
         WorkingVideoConfig,
     )
     from core.manifest import build_manifest
-    from core.h3_grid import is_valid_h3_frame_count, align_down_to_h3_grid, align_up_to_h3_grid
+    from core.h3_grid import is_valid_h3_frame_count, align_down_to_h3_grid
     CORE_AVAILABLE = True
     print("[H3 Long Video Manager] Core imported successfully")
 except ImportError as e:
@@ -54,12 +54,6 @@ except ImportError as e:
         if n <= 5:
             return 5
         k = (n - 5) // 17
-        return 17 * k + 5
-
-    def align_up_to_h3_grid(n):
-        if n <= 5:
-            return 5
-        k = (n - 5 + 16) // 17
         return 17 * k + 5
 
 # --- Segment store import (Phase A + B) ---
@@ -170,52 +164,6 @@ def _make_silent_audio(duration_sec: float) -> dict:
     return {"waveform": torch.zeros(1, 1, samples), "sample_rate": 44100}
 
 
-def _pad_black_frames(video: torch.Tensor, target_frames: int) -> torch.Tensor:
-    """Pad video tensor with black frames to reach target_frames.
-    
-    Args:
-        video: [F, H, W, C] tensor
-        target_frames: desired total frame count
-    
-    Returns:
-        [target_frames, H, W, C] tensor with black padding appended
-    """
-    current = video.shape[0]
-    if current >= target_frames:
-        return video
-    pad_count = target_frames - current
-    h, w, c = video.shape[1], video.shape[2], video.shape[3]
-    black = torch.zeros(pad_count, h, w, c, dtype=video.dtype, device=video.device)
-    return torch.cat([video, black], dim=0)
-
-
-def _pad_silent_audio(audio: dict, target_samples: int) -> dict:
-    """Pad audio waveform with silence to reach target_samples."""
-    wf = audio["waveform"]
-    current = wf.shape[-1]
-    if current >= target_samples:
-        return audio
-    pad_count = target_samples - current
-    silence = torch.zeros(1, wf.shape[1], pad_count, dtype=wf.dtype, device=wf.device)
-    padded_wf = torch.cat([wf, silence], dim=-1)
-    return {"waveform": padded_wf, "sample_rate": audio["sample_rate"]}
-
-
-def _resample_frames(video: torch.Tensor, target_frames: int) -> torch.Tensor:
-    """Uniformly sample target_frames from video [F,H,W,C].
-    
-    Uses evenly-spaced index selection (no interpolation).
-    Works for both downsample (60→24) and upsample (rare).
-    """
-    src_f = video.shape[0]
-    if target_frames == src_f:
-        return video
-    if target_frames <= 1 or src_f <= 1:
-        return video[:target_frames] if target_frames < src_f else video
-    indices = torch.linspace(0, src_f - 1, target_frames).long()
-    return video[indices].contiguous()
-
-
 class H3LongVideoManager:
     """H3 Long Video Manager — extract H3-compatible segments from video + audio.
 
@@ -230,9 +178,9 @@ class H3LongVideoManager:
         return {
             "required": {
                 "video": ("IMAGE",),
-                "fps": ("INT", {"default": 24, "min": 1, "max": 240, "placeholder": "源视频帧率，用于时长和音频计算"}),
+                "video_fps": ("INT", {"default": 24, "min": 1, "max": 240}),
                 "segment_duration": ("FLOAT", {"default": 6.0, "min": 0.5, "max": 120.0, "step": 0.001}),
-                "motion_context_frames": (["0", "5", "22", "39", "56"], {"default": "22"}),
+                "motion_context_frames": (["5", "22", "39", "56"], {"default": "22"}),
                 "segment_id": ("INT", {"default": 1, "min": 1, "max": 999}),
             },
             "optional": {
@@ -242,7 +190,6 @@ class H3LongVideoManager:
                 "project_name": ("STRING", {"default": DEFAULT_PROJECT, "placeholder": "留空 → 默认库：H3_LVM"}),
                 "save_enabled": ("BOOLEAN", {"default": True}),
                 "save_preview_mp4": ("BOOLEAN", {"default": False}),
-                "final_align": (["down", "up"], {"default": "down"}),
             },
         }
 
@@ -251,35 +198,30 @@ class H3LongVideoManager:
     FUNCTION = "process"
     CATEGORY = "H3/Video"
 
-    def process(self, video, fps, segment_duration, motion_context_frames, segment_id,
+    def process(self, video, video_fps, segment_duration, motion_context_frames, segment_id,
                 audio=None, scale_percent=100.0, align_to_h3_grid=True,
-                project_name=DEFAULT_PROJECT, save_enabled=True, save_preview_mp4=False,
-                final_align="down"):
+                project_name=DEFAULT_PROJECT, save_enabled=True, save_preview_mp4=False):
         if not isinstance(video, torch.Tensor):
             raise TypeError(f"Expected IMAGE tensor [F,H,W,C], got {type(video).__name__}")
 
-        fps = int(fps)
         total_frames = video.shape[0]
         src_h, src_w = video.shape[1], video.shape[2]
-        duration_sec = total_frames / fps
-        print(f"[H3 LVM] input video: {total_frames} frames, {src_w}x{src_h}, fps={fps}, duration={duration_sec:.2f}s")
+        print(f"[H3 LVM] input video: {total_frames} frames, {src_w}x{src_h}, fps={video_fps}")
         if audio is not None:
             wf = audio.get("waveform") if isinstance(audio, dict) else None
             sr = audio.get("sample_rate", 44100) if isinstance(audio, dict) else 44100
             if wf is not None:
                 print(f"[H3 LVM] input audio: waveform shape={list(wf.shape)}, sample_rate={sr}")
 
-        work_video = video
-
         # --- Build manifest ---
         source_info = SourceVideoInfo(
             file_path="input", width=src_w, height=src_h,
-            fps=fps, frame_count=total_frames,
-            duration_seconds=duration_sec,
+            fps=video_fps, frame_count=total_frames,
+            duration_seconds=total_frames / video_fps,
         )
 
         working_config = WorkingVideoConfig(
-            target_fps=fps,
+            target_fps=24,
             scale_percent=scale_percent if scale_percent < 100.0 else None,
         )
 
@@ -290,7 +232,6 @@ class H3LongVideoManager:
             segment_duration_seconds=segment_duration,
             motion_context=mc_config,
             align_to_h3=align_to_h3_grid,
-            final_align=final_align,
         )
 
         total_segments = len(manifest.segments)
@@ -313,9 +254,9 @@ class H3LongVideoManager:
                 f"{total_segments} segments of ~{manifest.segment_duration_frames} frames"
             )
 
-        # --- Timeline (1:1, no conversion) ---
+        # --- Working timeline → source timeline mapping ---
         working_fps = manifest.working_info.fps
-        src_fps = float(fps)
+        src_fps = float(video_fps)
 
         # Target resolution (after scale)
         target_w = manifest.working_info.width
@@ -329,17 +270,14 @@ class H3LongVideoManager:
             for idx, seg in enumerate(manifest.segments):
                 seg_id_1based = idx + 1
                 src_start = min(int(round(seg.extraction_start_frame * src_fps / working_fps)), total_frames)
-                src_end = int(round(seg.extraction_end_frame * src_fps / working_fps))
+                src_end = min(int(round(seg.extraction_end_frame * src_fps / working_fps)), total_frames)
                 src_start = max(0, src_start)
                 src_end = max(src_start + 1, src_end)
 
-                # Align to H3 grid (direction follows final_align)
+                # Align to H3 grid
                 actual_frames = src_end - src_start
                 if align_to_h3_grid and not is_valid_h3_frame_count(actual_frames):
-                    if final_align == "up":
-                        aligned = align_up_to_h3_grid(actual_frames)
-                    else:
-                        aligned = align_down_to_h3_grid(actual_frames)
+                    aligned = align_down_to_h3_grid(actual_frames)
                     if aligned < 5:
                         aligned = 5
                     src_end = src_start + aligned
@@ -347,22 +285,12 @@ class H3LongVideoManager:
 
                 try:
                     # Slice video
-                    seg_video = _slice_and_scale(work_video, src_start, src_end,
+                    seg_video = _slice_and_scale(video, src_start, src_end,
                                                  target_w if need_scale else None,
                                                  target_h if need_scale else None)
-                    # Pad black frames if video is shorter than expected (final_align=up)
-                    expected_f = src_end - src_start
-                    if seg_video.shape[0] < expected_f:
-                        seg_video = _pad_black_frames(seg_video, expected_f)
 
                     # Slice audio
                     seg_audio, seg_waveform, seg_sr = _slice_audio(audio, src_start, src_end, src_fps)
-                    # Pad audio with silence if needed
-                    if seg_audio is not None and seg_waveform is not None:
-                        expected_samples = int(expected_f / src_fps * seg_sr)
-                        if seg_waveform.shape[-1] < expected_samples:
-                            seg_audio = _pad_silent_audio(seg_audio, expected_samples)
-                            seg_waveform = seg_audio["waveform"]
                     if seg_audio is None:
                         dur_sec = (src_end - src_start) / src_fps
                         seg_audio = _make_silent_audio(dur_sec)
@@ -405,42 +333,30 @@ class H3LongVideoManager:
         print(f"  extract:  [{seg.extraction_start_frame}, {seg.extraction_end_frame}) = {seg.extraction_frame_count} frames")
 
         src_start = min(int(round(seg.extraction_start_frame * src_fps / working_fps)), total_frames)
-        src_end = int(round(seg.extraction_end_frame * src_fps / working_fps))
+        src_end = min(int(round(seg.extraction_end_frame * src_fps / working_fps)), total_frames)
         src_start = max(0, src_start)
         src_end = max(src_start + 1, src_end)
 
-        # Enforce H3 grid alignment on the actual output (safety net, direction follows final_align)
+        # Enforce H3 grid alignment on the actual output (safety net)
         actual_frames = src_end - src_start
         if align_to_h3_grid and not is_valid_h3_frame_count(actual_frames):
-            if final_align == "up":
-                aligned = align_up_to_h3_grid(actual_frames)
-            else:
-                aligned = align_down_to_h3_grid(actual_frames)
+            aligned = align_down_to_h3_grid(actual_frames)
             if aligned < 5:
                 aligned = 5
             src_end = src_start + aligned
             actual_frames = aligned
-            print(f"  [aligned output to {aligned} frames (17n+5, {final_align})]")
+            print(f"  [aligned output to {aligned} frames (17n+5)]")
 
         # Slice video
-        result_video = _slice_and_scale(work_video, src_start, src_end,
+        result_video = _slice_and_scale(video, src_start, src_end,
                                         target_w if need_scale else None,
                                         target_h if need_scale else None)
-        # Pad black frames if video is shorter than expected (final_align=up)
-        expected_f = src_end - src_start
-        if result_video.shape[0] < expected_f:
-            result_video = _pad_black_frames(result_video, expected_f)
 
         final_frame_count = result_video.shape[0]
         print(f"[H3 LVM] output video: {final_frame_count} frames, {result_video.shape[2]}x{result_video.shape[1]}")
 
         # Slice audio
         result_audio, _, _ = _slice_audio(audio, src_start, src_end, src_fps)
-        # Pad audio with silence if needed
-        if result_audio is not None and result_audio.get("waveform") is not None:
-            expected_samples = int(expected_f / src_fps * result_audio["sample_rate"])
-            if result_audio["waveform"].shape[-1] < expected_samples:
-                result_audio = _pad_silent_audio(result_audio, expected_samples)
         if result_audio is None:
             duration_sec = (src_end - src_start) / src_fps
             result_audio = _make_silent_audio(duration_sec)
