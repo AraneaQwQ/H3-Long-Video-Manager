@@ -16,7 +16,7 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 #: Allowed Motion Context frame counts (user-facing options).
-MOTION_CONTEXT_OPTIONS = (5, 22, 39, 56)
+MOTION_CONTEXT_OPTIONS = (0, 5, 22, 39, 56)
 
 
 @dataclass(frozen=True)

@@ -180,7 +180,7 @@ class H3LongVideoManager:
                 "video": ("IMAGE",),
                 "video_fps": ("INT", {"default": 24, "min": 1, "max": 240}),
                 "segment_duration": ("FLOAT", {"default": 6.0, "min": 0.5, "max": 120.0, "step": 0.001}),
-                "motion_context_frames": (["5", "22", "39", "56"], {"default": "22"}),
+                "motion_context_frames": (["0", "5", "22", "39", "56"], {"default": "22"}),
                 "segment_id": ("INT", {"default": 1, "min": 1, "max": 999}),
             },
             "optional": {
