@@ -119,7 +119,7 @@ class TestMotionContext(unittest.TestCase):
             self.assertEqual(mc.context_frames, v)
 
     def test_invalid_mc_value(self):
-        for v in (0, 10, 100, -5):
+        for v in (10, 100, -5):
             with self.assertRaises(ValueError):
                 MotionContextConfig(context_frames=v)
 

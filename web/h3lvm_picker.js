@@ -40,9 +40,16 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData, appInstance) {
         if (nodeData.name !== "H3 Segment Picker") return;
 
+        // Prevent node from shrinking below one card's display size
+        nodeType.prototype.min_size = [280, 200];
+
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
+            // Force minimum size so cards are always visible
+            if (this.size[0] < 280 || this.size[1] < 200) {
+                this.setSize([Math.max(this.size[0], 280), Math.max(this.size[1], 200)]);
+            }
             try {
                 setupPickerUI(this);
             } catch (e) {
@@ -83,13 +90,54 @@ function setupPickerUI(node) {
 
     const refreshBtn = document.createElement("button");
     refreshBtn.className = "h3lvm-refresh-btn";
-    refreshBtn.textContent = "🔄";
+    refreshBtn.textContent = "🔄 刷新";
     refreshBtn.title = "刷新列表";
+
+    // Zoom controls
+    const zoomLabel = document.createElement("span");
+    zoomLabel.className = "h3lvm-zoom-label";
+    zoomLabel.textContent = "100%";
+    const btnZoomIn = document.createElement("button");
+    btnZoomIn.className = "h3lvm-refresh-btn";
+    btnZoomIn.textContent = "+";
+    btnZoomIn.title = "放大卡片";
+    const btnZoomOut = document.createElement("button");
+    btnZoomOut.className = "h3lvm-refresh-btn";
+    btnZoomOut.textContent = "−";
+    btnZoomOut.title = "缩小卡片";
 
     header.appendChild(titleSpan);
     header.appendChild(projectTag);
     header.appendChild(refreshBtn);
+    header.appendChild(btnZoomOut);
+    header.appendChild(zoomLabel);
+    header.appendChild(btnZoomIn);
     container.appendChild(header);
+
+    // --- Card Zoom State ---
+    const ZOOM_STEPS = [1, 1.5, 2, 3, 4]; // 100%, 150%, 200%, 300%, 400%
+    let zoomIdx = 0;
+    const BASE_CARD_MIN = 120; // px
+    const BASE_THUMB_H = 72;   // px
+
+    function applyCardZoom() {
+        const z = ZOOM_STEPS[zoomIdx];
+        const cardMin = Math.round(BASE_CARD_MIN * z);
+        const thumbH = Math.round(BASE_THUMB_H * z);
+        container.style.setProperty("--card-min", cardMin + "px");
+        container.style.setProperty("--thumb-h", thumbH + "px");
+        zoomLabel.textContent = Math.round(z * 100) + "%";
+        requestAnimationFrame(fitToContent);
+    }
+
+    btnZoomIn.onclick = (e) => {
+        e.stopPropagation();
+        if (zoomIdx < ZOOM_STEPS.length - 1) { zoomIdx++; applyCardZoom(); }
+    };
+    btnZoomOut.onclick = (e) => {
+        e.stopPropagation();
+        if (zoomIdx > 0) { zoomIdx--; applyCardZoom(); }
+    };
 
     // Card deck
     const deck = document.createElement("div");
@@ -225,16 +273,22 @@ function setupPickerUI(node) {
         }
     }
 
-    // --- Fit node to content ---
+    // --- Fit node to content (shrink only, flush bottom) ---
     function fitToContent() {
         requestAnimationFrame(() => {
-            const deckH = Math.min(deck.scrollHeight || 0, 280);
-            if (deckH === 0) return;
-            const stdW = (node.widgets || []).filter(w => w.type !== "custom");
-            const stdH = stdW.length * 28;
-            const CHROME = 130;
-            const target = Math.max(stdH + deckH + CHROME, 160);
-            if (Math.abs(node.size[1] - target) > 5) {
+            const containerH = container.offsetHeight || 0;
+            if (containerH === 0) return;
+
+            const stdWidgetsH = (node.widgets || []).filter(w => w.type !== "custom").length * 28;
+            const inputsH = (node.inputs || []).length * 20;
+            const outputsH = (node.outputs || []).length * 20;
+            const TITLE = 28;
+            const BOTTOM_PAD = 6;
+
+            const target = Math.max(TITLE + inputsH + outputsH + stdWidgetsH + containerH + BOTTOM_PAD, 160);
+
+            // Only shrink (never grow)
+            if (node.size[1] > target + 4) {
                 node.setSize([node.size[0], target]);
             }
         });

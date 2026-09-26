@@ -28,6 +28,7 @@ try:
     )
     from core.manifest import build_manifest
     from core.h3_grid import is_valid_h3_frame_count, align_down_to_h3_grid, align_up_to_h3_grid
+    from core.person_crop import crop_video_to_person
     CORE_AVAILABLE = True
     print("[H3 Long Video Manager] Core imported successfully")
 except ImportError as e:
@@ -61,6 +62,10 @@ except ImportError as e:
             return 5
         k = (n - 5 + 16) // 17
         return 17 * k + 5
+
+    def crop_video_to_person(video, expand_percent=0.0, sample_count=16):
+        print("[H3 LVM] person_crop unavailable (core import failed), skip")
+        return video, None
 
 # --- Segment store import (Phase A + B) ---
 try:
@@ -243,6 +248,8 @@ class H3LongVideoManager:
                 "save_enabled": ("BOOLEAN", {"default": True}),
                 "save_preview_mp4": ("BOOLEAN", {"default": False}),
                 "final_align": (["down", "up"], {"default": "down"}),
+                "person_crop": ("BOOLEAN", {"default": False, "tooltip": "开启后检测人物并裁掉边缘，让人物占画面更大"}),
+                "person_crop_expand_percent": ("INT", {"default": 0, "min": 0, "max": 100, "step": 1, "tooltip": "人物框外扩百分比，0 为紧贴检测框（仍保持原画面比例）"}),
             },
         }
 
@@ -254,7 +261,7 @@ class H3LongVideoManager:
     def process(self, video, fps, segment_duration, motion_context_frames, segment_id,
                 audio=None, scale_percent=100.0, align_to_h3_grid=True,
                 project_name=DEFAULT_PROJECT, save_enabled=True, save_preview_mp4=False,
-                final_align="down"):
+                final_align="down", person_crop=False, person_crop_expand_percent=0):
         if not isinstance(video, torch.Tensor):
             raise TypeError(f"Expected IMAGE tensor [F,H,W,C], got {type(video).__name__}")
 
@@ -270,6 +277,17 @@ class H3LongVideoManager:
                 print(f"[H3 LVM] input audio: waveform shape={list(wf.shape)}, sample_rate={sr}")
 
         work_video = video
+
+        # --- Person crop (optional) ---
+        if person_crop:
+            expand_percent = max(0, min(100, int(person_crop_expand_percent)))
+            work_video, _crop_rect = crop_video_to_person(
+                work_video, expand_percent=expand_percent
+            )
+            if work_video is not video:
+                total_frames = work_video.shape[0]
+                src_h, src_w = work_video.shape[1], work_video.shape[2]
+                print(f"[H3 LVM] person_crop applied: new size {src_w}x{src_h}, {total_frames} frames")
 
         # --- Build manifest ---
         source_info = SourceVideoInfo(

@@ -20,6 +20,24 @@ try:
 except Exception as exc:
     logging.getLogger(__name__).warning("h3lvm: routes not registered: %s", exc)
 
+# --- Register Visual Cutter nodes (Phase D) ---
+try:
+    from .comfyui.nodes_cutter import (
+        CUTTER_NODE_CLASS_MAPPINGS,
+        CUTTER_NODE_DISPLAY_NAME_MAPPINGS,
+    )
+    NODE_CLASS_MAPPINGS.update(CUTTER_NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(CUTTER_NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as exc:
+    logging.getLogger(__name__).warning("h3lvm: cutter nodes not registered: %s", exc)
+
+# --- Register Visual Cutter API routes (Phase D) ---
+try:
+    from .comfyui.server_api_cutter import register_h3lvm_cutter_routes
+    register_h3lvm_cutter_routes()
+except Exception as exc:
+    logging.getLogger(__name__).warning("h3lvm: cutter routes not registered: %s", exc)
+
 # --- Web frontend (Phase B2) ---
 WEB_DIRECTORY = "./web"
 

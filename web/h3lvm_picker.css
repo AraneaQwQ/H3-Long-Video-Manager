@@ -55,22 +55,36 @@
     transition: all 0.2s ease;
 }
 
+/* Push button group to the right */
+.h3lvm-header .h3lvm-refresh-btn:first-of-type {
+    margin-left: auto;
+}
+
 .h3lvm-refresh-btn:hover {
     background: #334155;
     color: #fff;
     border-color: #60a5fa;
 }
 
-/* Card deck */
+.h3lvm-zoom-label {
+    font-size: 10px;
+    color: #94a3b8;
+    font-family: monospace;
+    min-width: 32px;
+    text-align: center;
+    margin-left: 4px;
+}
+
+/* Card deck — grid layout, natural height */
 .h3lvm-deck {
-    display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--card-min, 120px), 1fr));
+    grid-auto-rows: min-content;
     gap: 8px;
     overflow-y: auto;
-    max-height: 280px;
     padding: 4px 2px 8px 2px;
     scroll-behavior: smooth;
+    align-content: start;
 }
 
 .h3lvm-deck::-webkit-scrollbar {
@@ -91,13 +105,13 @@
 /* Individual card */
 .h3lvm-card {
     position: relative;
-    width: 120px;
     background: #262626;
     border: 2px solid #3a3a3a;
     border-radius: 6px;
     overflow: hidden;
     cursor: pointer;
     transition: all 0.2s ease;
+    min-width: 0;
 }
 
 .h3lvm-card:hover {
@@ -115,7 +129,7 @@
 .h3lvm-thumb-wrap {
     position: relative;
     width: 100%;
-    height: 72px;
+    height: var(--thumb-h, 72px);
     overflow: hidden;
     background: #111;
 }
