@@ -247,7 +247,7 @@ class H3LongVideoManager(io.ComfyNode):
         if segment_id < 1 or segment_id > total_segments:
             raise ValueError(
                 f"segment_id={segment_id} out of range [1, {total_segments}]. "
-                f"Source: {total_frames} frames @ {video_fps}fps → "
+                f"Source: {total_frames} frames @ {fps}fps → "
                 f"{manifest.working_info.total_frames} frames @ 24fps → "
                 f"{total_segments} segments of ~{manifest.segment_duration_frames} frames"
             )
