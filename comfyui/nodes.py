@@ -247,7 +247,7 @@ class H3LongVideoManager(io.ComfyNode):
         if segment_id < 1 or segment_id > total_segments:
             raise ValueError(
                 f"segment_id={segment_id} out of range [1, {total_segments}]. "
-                f"Source: {total_frames} frames @ {fps}fps → "
+                f"Source: {total_frames} frames @ {video_fps}fps → "
                 f"{manifest.working_info.total_frames} frames @ 24fps → "
                 f"{total_segments} segments of ~{manifest.segment_duration_frames} frames"
             )
@@ -421,6 +421,7 @@ class H3SegmentPicker(io.ComfyNode):
                 io.Image.Output(display_name='IMAGE'),
                 io.Audio.Output(display_name='AUDIO'),
                 io.Int.Output(display_name='frame_count'),
+                io.Int.Output(display_name='segment_id'),
             ],
         )
 
@@ -471,7 +472,7 @@ class H3SegmentPicker(io.ComfyNode):
             audio = {"waveform": torch.zeros(1, 1, max(1, int(duration_sec * 44100))), "sample_rate": 44100}
             print(f"[H3 LVM Picker] no audio saved, generating silent: {duration_sec:.2f}s")
 
-        return io.NodeOutput(video, audio, frame_count)
+        return io.NodeOutput(video, audio, frame_count, segment_id)
 
 
 NODE_LIST = [H3LongVideoManager, H3SegmentPicker]
