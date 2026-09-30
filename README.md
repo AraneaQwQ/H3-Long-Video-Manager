@@ -8,7 +8,6 @@
 
 具体原理为：
 
-
     segment_id判断调用的视频是否为首段，若为首段则直接进行对比，
     
     若非首段，则使用comfyui-various的Extract Image Sequence From Batch节点进行**视频裁切**，裁切的帧数等于H3 Long Video Manager节点设置的Motion Context需要的帧数，再进行视频合并，**以跳过视频多增加的帧数**
