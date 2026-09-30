@@ -1,6 +1,6 @@
 # H3 Long Video Manager
 
-本节点为#https://github.com/AraneaQwQ/H3-Long-Video-Manager#的分支，增加了H3 Segment Picker节点的segment_id输出
+本节点为https://github.com/AraneaQwQ/H3-Long-Video-Manager  的分支，增加了H3 Segment Picker节点的segment_id输出
 
 更新了H3-Long-Video-Manager\comfyui\nodes.py
 
