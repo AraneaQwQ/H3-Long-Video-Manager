@@ -1,10 +1,12 @@
 # H3 Long Video Manager
 
 本节点为https://github.com/AraneaQwQ/H3-Long-Video-Manager的分支，增加了H3 Segment Picker节点的segment_id输出
+
 更新了H3-Long-Video-Manager\comfyui\nodes.py
 
 
 新增加的输出口用于协助生成原视频与二采视频的对比
+
 
 具体原理为
 
