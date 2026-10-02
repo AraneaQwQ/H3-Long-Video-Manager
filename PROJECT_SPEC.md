@@ -36,7 +36,13 @@ Provides video preparation, segmentation, selection, and direct VIDEO/IMAGE outp
 The core H3 `MiniMaxH3ReferenceToVideo` node declares `ref_videos` as `io.Image.Input` (autogrow, 0-3).
 It expects a plain tensor of shape `[F, H, W, C]` with values in [0, 1] range.
 
-## Architecture
+## Architecture (original Phase 0 plan — historical)
+
+The tree below is the plan written at Phase 0 and is kept for reference only.
+Actual layout (verified against `git ls-files`) is in [README.md](README.md) → "Project structure".
+Naming differences: `metadata.py`/`conform.py` were not created as separate modules — metadata probing lives in
+`core/extraction.py` (`get_video_metadata()`) and scaling lives in `core/models.py` (`WorkingVideoConfig`) plus
+`comfyui/nodes.py` (`_slice_and_scale()`). There is no `docs/` folder; the notes are top-level `.md` files.
 
 ```
 H3-Long-Video-Manager/
@@ -59,23 +65,31 @@ H3-Long-Video-Manager/
 ```
 
 ## Development Status
+
+Updated 2026-10-02 against the shipped code (`a9b7a46`). Version history: [VERSION.md](VERSION.md);
+change record: [RAFOLIE_DEVELOPMENT.md](RAFOLIE_DEVELOPMENT.md).
+
 - [x] Phase 0: Environment Investigation
-- [ ] Phase 1: Core Data Models
-- [ ] Phase 2: Metadata Detection
-- [ ] Phase 3: H3 Working Video (FPS conform, resolution)
-- [ ] Phase 4: Segmentation
-- [ ] Phase 5: Motion Context Range Calculation
-- [ ] Phase 6: Segment Manifest
-- [ ] Phase 7: Extraction Service
-- [ ] Phase 8: Core Regression Tests
-- [ ] Phase 9: ComfyUI VIDEO Output
-- [ ] Phase 10: Segment Selection Backend
-- [ ] Phase 11: Frontend Foundation
-- [ ] Phase 12: Segment Cards
-- [ ] Phase 13: Timeline
-- [ ] Phase 14: Manual Segment Editing
-- [ ] Phase 15: Export
-- [ ] Phase 16: Polish
+- [x] Phase 1: Core Data Models — `core/models.py`
+- [x] Phase 2: Metadata Detection — `core/extraction.py` → `get_video_metadata()` (no separate `metadata.py`)
+- [~] Phase 3: H3 Working Video — resolution scaling via `WorkingVideoConfig` + `scale_percent`; FPS is supplied by the `video_fps` input, no automatic FPS conform
+- [x] Phase 4: Segmentation — `core/h3_grid.py`, `core/segmentation.py`
+- [x] Phase 5: Motion Context Range Calculation — `motion_context_frames` (5/22/39/56) + extraction ranges
+- [x] Phase 6: Segment Manifest — `core/manifest.py`
+- [x] Phase 7: Extraction Service — `core/extraction.py`
+- [x] Phase 8: Core Regression Tests — `tests/` (77 tests)
+- [~] Phase 9: ComfyUI Output — ships `IMAGE` + `AUDIO` (+ `frame_count`, `total_segments` / `segment_id`); the planned `VIDEO` (VideoInput) output was not implemented
+- [x] Phase 10: Segment Selection Backend — `comfyui/segment_store.py`, `comfyui/server_api.py`
+- [x] Phase 11: Frontend Foundation — `web/`
+- [x] Phase 12: Segment Cards — `web/h3lvm_picker.js` (+ delete button)
+- [ ] Phase 13: Timeline — not implemented
+- [ ] Phase 14: Manual Segment Editing — not implemented
+- [~] Phase 15: Export — only optional MP4 preview (`save_preview_mp4`); no general export
+- [~] Phase 16: Polish — ComfyUI V3 API + Nodes 2.0 migration done (see [V3_MIGRATION.md](V3_MIGRATION.md))
+
+Extra beyond this spec (not part of the original phase list): local segment bin with lossless
+safetensors storage and thumbnails, person-detect crop (`core/person_crop.py`), segment deletion,
+and the `segment_id` echo output for original-vs-regen alignment ([SEGMENT_ID_OUTPUT.md](SEGMENT_ID_OUTPUT.md)).
 
 ## Key Design Principles
 1. Half-open intervals `[start, end)` throughout

@@ -6,3 +6,6 @@ __pycache__/
 dist/
 build/
 .eggs/
+
+# 版本铁规的本地快照目录（不进入 git，也不进入 ComfyUI 运行副本）
+archive/

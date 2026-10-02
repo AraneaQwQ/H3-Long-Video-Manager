@@ -1,6 +1,6 @@
 # H3 Long Video Manager
 
-> **署名与来源**：本仓库即 [AraneaQwQ/H3-Long-Video-Manager](https://github.com/AraneaQwQ/H3-Long-Video-Manager) 主仓库。ComfyUI V3 迁移、片段删除、Picker 缩放等改动由 [RAFOLIE](https://github.com/RAFOLIE) 开发，已在提交 `0944899`（full RAFOLIE merge）完整合并进本仓库；原项目 MIT 许可证与双方署名均保留，合并记录见 [AFOLIE_DEVELOPMENT.md](AFOLIE_DEVELOPMENT.md)。
+> **署名与来源**：本仓库即 [AraneaQwQ/H3-Long-Video-Manager](https://github.com/AraneaQwQ/H3-Long-Video-Manager) 主仓库。ComfyUI V3 迁移、片段删除、Picker 缩放等改动由 [RAFOLIE](https://github.com/RAFOLIE) 开发，已在提交 `0944899`（full RAFOLIE merge）完整合并进本仓库；原项目 MIT 许可证与双方署名均保留，合并记录见 [RAFOLIE_DEVELOPMENT.md](RAFOLIE_DEVELOPMENT.md)。
 
 
 **安装地址（主仓库）：** https://github.com/AraneaQwQ/H3-Long-Video-Manager
@@ -22,8 +22,8 @@ Cut any long video into H3-compatible segments (each satisfying the `17n + 5` fr
 
 | Node | Role |
 |------|------|
-| **H3 Long Video Manager** | Input: video + audio → Output: all segments saved to bin + selected segment live |
-| **H3 Segment Picker** | Input: project name + segment ID → Output: IMAGE + AUDIO (feeds H3 directly) |
+| **H3 Long Video Manager** | Input: video + audio → all segments saved to bin + selected segment live → `IMAGE`, `AUDIO`, `frame_count`, `total_segments` |
+| **H3 Segment Picker** | Input: project name + segment ID → `IMAGE`, `AUDIO`, `frame_count`, `segment_id` (feeds H3 directly) |
 
 ### Key features
 
@@ -138,32 +138,50 @@ ComfyUI/output/h3-lvm/<project_name>/
 
 ```
 H3-Long-Video-Manager/
-├── __init__.py              # Entry: nodes + routes + web
-├── README.md
+├── archive/                       # Pre-change snapshots (date + commit short hash)
+├── README.md                      # This file (EN + zh)
+├── PROJECT_SPEC.md                # Original spec + current phase status
+├── VERSION.md                     # Version notes + archive/ index
+├── RAFOLIE_DEVELOPMENT.md         # Attribution & change record
+├── CACHE_AND_DELETION.md          # Deletion scope, storage, cache behaviour
+├── V3_MIGRATION.md                # ComfyUI V3 / Nodes 2.0 migration notes
+├── SEGMENT_ID_OUTPUT.md           # segment_id: original vs re-gen alignment
+├── __init__.py                    # Entry: ComfyExtension + routes + web
 ├── comfyui/
-│   ├── __init__.py
-│   ├── nodes.py             # Manager (v3) + Picker nodes
-│   ├── nodes_v2.py          # backup (pre-save-bin)
-│   ├── nodes_v1.py          # backup (pre-audio)
-│   ├── segment_store.py     # Storage layer (save/load/list/delete)
-│   └── server_api.py        # HTTP API routes
+│   ├── __init__.py                    # Plugin package (nodes loaded by root extension)
+│   ├── nodes.py                       # Manager (V3) + Picker nodes
+│   ├── nodes_v1.py                    # backup (pre-audio)
+│   ├── nodes_v2.py                    # backup (pre-save-bin)
+│   ├── nodes_v3_backup.py             # backup (pre-V3-API)
+│   ├── nodes_v4_backup.py             # backup (pre-V3-API, v4 attempt)
+│   ├── asset_paths.py                 # Asset path checks + versioned preview URLs
+│   ├── segment_store.py               # Storage layer (save/load/list/delete)
+│   └── server_api.py                  # HTTP API routes
 ├── core/
-│   ├── __init__.py
-│   ├── models.py            # Dataclasses (Segment, Manifest, etc.)
-│   ├── h3_grid.py           # 17n+5 alignment + carry-forward segmentation
-│   ├── manifest.py          # build_manifest()
-│   ├── segmentation.py      # Duration → frames computation
-│   └── extraction.py        # (reserved)
+│   ├── __init__.py                    # Layer A public API (dataclasses)
+│   ├── models.py                      # Dataclasses (Segment, Manifest, etc.)
+│   ├── models_v3_backup.py            # backup
+│   ├── h3_grid.py                     # 17n+5 alignment + carry-forward segmentation
+│   ├── h3_grid_v4_backup.py           # backup
+│   ├── manifest.py                    # build_manifest()
+│   ├── manifest_v4_backup.py          # backup
+│   ├── segmentation.py                # Duration → frames computation
+│   ├── person_crop.py                 # Person detection + edge crop
+│   └── extraction.py                  # Frame range extraction (PyAV)
 ├── web/
-│   ├── h3lvm_picker.js      # Phase B2: card gallery frontend
-│   ├── h3lvm_picker.css     # Styling
-│   └── extension.js         # (placeholder, intentionally empty)
+│   ├── h3lvm_picker.js                # Card gallery frontend
+│   ├── h3lvm_picker.css               # Styling
+│   ├── delete_button.js               # Segment card delete button
+│   ├── dom_panel.js                   # DOM widget sizing (Canvas + Nodes 2.0)
+│   └── extension.js                   # (placeholder, intentionally empty)
 └── tests/
     ├── __init__.py
-    ├── test_segment_store.py
-    ├── test_h3_grid.py
-    ├── test_core.py
-    └── test_frame_integrity.py
+    ├── test_core.py                   # Core regression tests
+    ├── test_frame_integrity.py        # No-frame-loss tests
+    ├── test_h3_grid.py                # 17n+5 grid tests
+    ├── test_node_schema.py            # Node output order lock
+    ├── test_person_crop.py            # Person crop tests
+    └── test_segment_store.py          # Storage round-trip tests
 ```
 
 ---
@@ -179,8 +197,8 @@ H3-Long-Video-Manager/
 
 | 节点 | 作用 |
 |------|------|
-| **H3 Long Video Manager** | 接入视频 → 分段 → 全部存库 → 实时输出选中段 |
-| **H3 Segment Picker** | 从库中读取 → 输出 IMAGE + AUDIO（直接喂 H3） |
+| **H3 Long Video Manager** | 接入视频 → 分段 → 全部存库 → 实时输出选中段 → 输出 `IMAGE`、`AUDIO`、`frame_count`、`total_segments` |
+| **H3 Segment Picker** | 从库中读取 → 输出 `IMAGE`、`AUDIO`、`frame_count`、`segment_id`（前两项直接喂 H3） |
 
 ### 核心特性
 

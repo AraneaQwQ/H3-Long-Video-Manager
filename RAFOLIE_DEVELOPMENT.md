@@ -24,3 +24,8 @@
 - 2026-09-28：整理 V3 与 Nodes 2.0 开发版，安装地址改为 RAFOLIE/H3-Long-Video-Manager；保留原作者来源、许可证及 Git 历史。
 - 2026-10-02：README 与来源说明改为主仓库口径，安装地址指回 AraneaQwQ/H3-Long-Video-Manager；RAFOLIE 的署名、贡献记录与 Git 历史保留。
 - 2026-10-02：采纳 PR #1 的 `segment_id` 输出（贡献者 flyingsnow1），仅取 `comfyui/nodes.py` 改动，README 保持主仓库版本，说明另存 [SEGMENT_ID_OUTPUT.md](SEGMENT_ID_OUTPUT.md)；新增 `tests/test_node_schema.py` 锁定两个节点的输出顺序。
+
+- 2026-10-02：本文件由 `AFOLIE_DEVELOPMENT.md` 改名为 `RAFOLIE_DEVELOPMENT.md`（补回缺失的 R），README 中的链接同步更新；改名前仓库内只有 README 一处引用。
+- 2026-10-02：按版本铁规建立 `archive/` + `VERSION.md`：`archive/2026-10-02-a9b7a46/` 是本次改动前的完整快照（40 文件 / 261 KB），`VERSION.md` 记录基线内容、测试命令与结论。
+- 2026-10-02：文档与代码对齐——README 的「Project structure」按 `git ls-files` 重建（补 `core/person_crop.py`、`comfyui/asset_paths.py`、`web/delete_button.js`、`web/dom_panel.js`、`tests/test_person_crop.py`、`tests/test_node_schema.py`，`core/extraction.py` 已实现不再是 reserved）；两个节点的输出顺序写进 README 节点表；`PROJECT_SPEC.md` 的 Phase 勾选更新为实际实现状态，Phase 0 计划保留为历史。
+- 2026-10-02：同步脚本 `C:\Users\az\Documents\Codex\projects\sync-h3lvm-to-comfyui.ps1` 增加 `archive` 排除项，归档快照不再进入 ComfyUI 运行副本。
