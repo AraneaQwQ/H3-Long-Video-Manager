@@ -1,11 +1,10 @@
-# 来源与后续开发说明
+# 贡献来源与修改记录
 
-本开发副本基于 [AraneaQwQ/H3-Long-Video-Manager](https://github.com/AraneaQwQ/H3-Long-Video-Manager)，后续由 [RAFOLIE](https://github.com/RAFOLIE) 维护自己的修改。
+本仓库 [AraneaQwQ/H3-Long-Video-Manager](https://github.com/AraneaQwQ/H3-Long-Video-Manager) 是项目主仓库。ComfyUI V3 迁移、片段删除与缓存修复等改动由 [RAFOLIE](https://github.com/RAFOLIE) 在其分叉上开发，已于提交 `0944899`（full RAFOLIE merge）完整合并进本仓库。
 
-- 原项目维护者：AraneaQwQ；完整贡献历史保留在 Git 中。
-- 初始基线：`5863ddd83a63091de7b1387730d4df2e481a06c7`。
-- 保留原项目 [MIT LICENSE](LICENSE) 及版权声明。
-- 本副本的修改不代表原作者发布或背书；原作者应获得原始工作的署名。
+- 项目维护者：AraneaQwQ；完整贡献历史保留在 Git 中。
+- RAFOLIE 开发分支的基线：`5863ddd83a63091de7b1387730d4df2e481a06c7`。
+- 保留原项目 [MIT LICENSE](LICENSE) 及版权声明；RAFOLIE 的改动同样以 MIT 许可发布。
 
 ## 修改记录
 
@@ -23,3 +22,4 @@
 - 2026-09-28：增大新建节点默认尺寸（H3 Segment Picker：620 × 460），仅在创建时应用；加载工作流保留已保存尺寸，用户仍可手动缩放。
 
 - 2026-09-28：整理 V3 与 Nodes 2.0 开发版，安装地址改为 RAFOLIE/H3-Long-Video-Manager；保留原作者来源、许可证及 Git 历史。
+- 2026-10-02：README 与来源说明改为主仓库口径，安装地址指回 AraneaQwQ/H3-Long-Video-Manager；RAFOLIE 的署名、贡献记录与 Git 历史保留。

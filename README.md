@@ -1,9 +1,9 @@
 # H3 Long Video Manager
 
-> **后续开发说明（RAFOLIE）**：本开发副本来源于 [AraneaQwQ/H3-Long-Video-Manager](https://github.com/AraneaQwQ/H3-Long-Video-Manager)，保留原作者署名与 MIT 许可证。开发基线和修改记录见 [AFOLIE_DEVELOPMENT.md](AFOLIE_DEVELOPMENT.md)。
+> **署名与来源**：本仓库即 [AraneaQwQ/H3-Long-Video-Manager](https://github.com/AraneaQwQ/H3-Long-Video-Manager) 主仓库。ComfyUI V3 迁移、片段删除、Picker 缩放等改动由 [RAFOLIE](https://github.com/RAFOLIE) 开发，已在提交 `0944899`（full RAFOLIE merge）完整合并进本仓库；原项目 MIT 许可证与双方署名均保留，合并记录见 [AFOLIE_DEVELOPMENT.md](AFOLIE_DEVELOPMENT.md)。
 
 
-**RAFOLIE 开发版安装地址：** https://github.com/RAFOLIE/H3-Long-Video-Manager
+**安装地址（主仓库）：** https://github.com/AraneaQwQ/H3-Long-Video-Manager
 
 **当前开发版：ComfyUI V3 API + Nodes 2.0。** 迁移范围、运行要求与验证结果见 [V3_MIGRATION.md](V3_MIGRATION.md)。
 片段卡片支持垃圾桶删除；删除范围、磁盘存储和缓存行为见 [删除与缓存说明](CACHE_AND_DELETION.md)。
@@ -81,7 +81,7 @@ H3 Segment Picker
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/RAFOLIE/H3-Long-Video-Manager.git
+git clone https://github.com/AraneaQwQ/H3-Long-Video-Manager.git
 ```
 
 Restart ComfyUI, hard-refresh browser (`Ctrl+F5`).
@@ -238,7 +238,7 @@ H3 Segment Picker
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/RAFOLIE/H3-Long-Video-Manager.git
+git clone https://github.com/AraneaQwQ/H3-Long-Video-Manager.git
 ```
 
 重启 ComfyUI，强刷浏览器（`Ctrl+F5`）。
