@@ -106,33 +106,51 @@ ComfyUI/output/h3-lvm/<project_name>/
 
 #### H3 Long Video Manager
 
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| `video_fps` | 24 | Source video frame rate |
-| `segment_duration` | 6.0s | Target duration per segment |
-| `motion_context_frames` | 22 | MC context (5/22/39/56) |
-| `segment_id` | 1 | Which segment to output live |
-| `scale_percent` | 100 | Downscale (e.g. 50 = half resolution) |
-| `align_to_h3_grid` | true | Enforce 17n+5 |
-| `project_name` | H3_LVM | Bin folder name |
-| `save_enabled` | true | Save to bin (disable for pure-live mode) |
-| `save_preview_mp4` | false | Also encode MP4 preview |
-| `person_crop` | false | Detect person and crop edges so the subject fills more of the frame |
-| `person_crop_expand_percent` | 0 | Extra padding around the person box, 0–100. 0 = tight (still keeps source aspect) |
+| Parameter | Default | Shown on the node | Notes |
+|-----------|---------|-----------------|-------|
+| `project_name` | H3_LVM | 📦 项目素材库 | Bin folder name. On the node this is a dropdown listing every bin with its segment count; `＋ 新建项目…` and `🗑 删除当前项目…` live in that same menu |
+| `fps` | 24 | 源视频帧率 | Source video frame rate |
+| `segment_duration` | 6.0s | 每段时长（秒） | Target duration per segment |
+| `motion_context_frames` | 22 | Motion Context 帧数 | MC context (0/5/22/39/56); the menu shows `22 帧（默认）` and friends |
+| `segment_id` | 1 | 输出片段编号 | Which segment to output live |
+| `scale_percent` | 100 | 画面缩放 % | Downscale (e.g. 50 = half resolution) |
+| `align_to_h3_grid` | true | 对齐 H3 网格 | Enforce 17n+5 |
+| `save_enabled` | true | 保存到素材库 | Save to bin (disable for pure-live mode) |
+| `save_preview_mp4` | false | 生成 MP4 预览 | Also encode MP4 preview |
+| `final_align` | down | 段尾对齐 | Round the last short segment down or up (`向下取整` / `向上取整`) |
+| `person_crop` | false | 人物裁切 | Detect person and crop edges so the subject fills more of the frame |
+| `person_crop_expand_percent` | 0 | 人物框外扩 % | Extra padding around the person box, 0–100. 0 = tight (still keeps source aspect) |
+
+**Node labels** — the parameters appear on the node in the order the server declares
+them, which is the order of the table above. Labels, tooltips, and the
+`motion_context_frames` / `final_align` option text are Chinese. All of it is
+display-only: field names, stored values, and saved workflows stay English.
+`project_name` is re-declared as a combo in the node definition before the node type
+registers, which is what makes the widget a real dropdown; the workflow still stores
+the bin name as a plain string, and graphs saved before this file load unchanged.
 
 #### H3 Segment Picker
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
-| `project_name` | H3_LVM | Which bin to read from |
+| `project_name` | H3_LVM | Which bin to read from. The panel shows a menu instead: every bin on disk is listed with its segment count, `＋ 新建项目…` creates an empty one, and `🗑 删除当前项目…` removes the whole bin after a confirm that repeats its name |
 | `segment_id` | 1 | Which segment to load |
+
+**Panel layout** — three rows, top to bottom: ① a labelled project menu with the live
+segment count of the selected bin (`＋ 新建项目…` and `🗑 删除当前项目…` live inside that menu),
+② a tool row (refresh, card size, current selection), ③ the card deck, then a one-line
+legend. Card titles and status text are Chinese; the node parameter labels are shown in
+Chinese too (`label` is display-only — saved workflows keep `project_name` / `segment_id`).
 
 ### API endpoints
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /h3_lvm/projects` | `{"projects": [...], "default": "H3_LVM"}` |
+| `GET /h3_lvm/projects` | `{"projects": [{"name": ..., "segments": N}, ...], "default": "H3_LVM"}` — every bin with its segment count |
+| `POST /h3_lvm/project` | body `{"project": <typed name>}` → `{"name": <sanitized>, "created": true/false, "segments": N}` |
+| `POST /h3_lvm/project/delete` | body `{"project": <name>, "confirm": <same name>}` → `{"name": ..., "deleted": true, "segments": N}` |
 | `GET /h3_lvm/segments?project=<name>` | Full segment list with thumbnail URLs |
+| `POST /h3_lvm/delete` | body `{"project": <name>, "segment_id": N}` → `{"deleted": N}` |
 
 ### Project structure
 
@@ -171,6 +189,7 @@ H3-Long-Video-Manager/
 ├── web/
 │   ├── h3lvm_picker.js                # Card gallery frontend
 │   ├── h3lvm_picker.css               # Styling
+│   ├── h3lvm_manager.js               # Chinese labels + project dropdown
 │   ├── delete_button.js               # Segment card delete button
 │   ├── dom_panel.js                   # DOM widget sizing (Canvas + Nodes 2.0)
 │   └── extension.js                   # (placeholder, intentionally empty)
@@ -181,6 +200,7 @@ H3-Long-Video-Manager/
     ├── test_h3_grid.py                # 17n+5 grid tests
     ├── test_node_schema.py            # Node output order lock
     ├── test_person_crop.py            # Person crop tests
+    ├── test_project_menu.py           # Project menu (list/create/delete) tests
     └── test_segment_store.py          # Storage round-trip tests
 ```
 
@@ -281,33 +301,44 @@ ComfyUI/output/h3-lvm/<项目名>/
 
 #### H3 Long Video Manager
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `video_fps` | 24 | 源视频帧率 |
-| `segment_duration` | 6.0s | 每段目标时长 |
-| `motion_context_frames` | 22 | MC 上下文（5/22/39/56） |
-| `segment_id` | 1 | 实时输出哪一段 |
-| `scale_percent` | 100 | 缩放比例（50 = 一半分辨率） |
-| `align_to_h3_grid` | true | 是否对齐 17n+5 |
-| `project_name` | H3_LVM | 库文件夹名 |
-| `save_enabled` | true | 是否存库（关 = 纯实时模式） |
-| `save_preview_mp4` | false | 是否生成 MP4 预览 |
-| `person_crop` | false | 开启后检测人物并裁掉边缘，让主体占画面更大 |
-| `person_crop_expand_percent` | 0 | 人物框外扩百分比（0–100）。0 = 紧贴检测框，仍保持原画面比例 |
+| 参数 | 默认值 | 节点上显示为 | 说明 |
+|------|--------|--------------|------|
+| `project_name` | H3_LVM | 📦 项目素材库 | 库文件夹名。节点上是一个下拉菜单：列出磁盘上所有库并带片段数量，`＋ 新建项目…` 建空库，`🗑 删除当前项目…` 确认后删除整个库 |
+| `fps` | 24 | 源视频帧率 | 源视频帧率（H3 生成的视频一般是 24） |
+| `segment_duration` | 6.0s | 每段时长（秒） | 每段目标时长 |
+| `motion_context_frames` | 22 | Motion Context 帧数 | MC 上下文（0/5/22/39/56），菜单里显示为 `22 帧（默认）` 等 |
+| `segment_id` | 1 | 输出片段编号 | 实时输出哪一段 |
+| `scale_percent` | 100 | 画面缩放 % | 缩放比例（50 = 一半分辨率） |
+| `align_to_h3_grid` | true | 对齐 H3 网格 | 是否对齐 17n+5 |
+| `save_enabled` | true | 保存到素材库 | 是否存库（关 = 纯实时模式） |
+| `save_preview_mp4` | false | 生成 MP4 预览 | 是否生成 MP4 预览 |
+| `final_align` | down | 段尾对齐 | 最后一段不足时长时向下 / 向上取整 |
+| `person_crop` | false | 人物裁切 | 开启后检测人物并裁掉边缘，让主体占画面更大 |
+| `person_crop_expand_percent` | 0 | 人物框外扩 % | 人物框外扩百分比（0–100）。0 = 紧贴检测框，仍保持原画面比例 |
+
+**节点上的显示** — 参数在节点上的顺序与服务端声明一致，也就是上表的顺序。参数名、悬停说明和
+`motion_context_frames` / `final_align` 的选项文字全部中文。这些都只影响显示：字段名、保存的值
+和工作流文件仍然是英文。`project_name` 在节点类型注册之前被重新声明为 combo，这才是节点上真正的
+下拉菜单；工作流里存的仍然是库名字符串，改动前保存的工作流打开后参数不会错位。
 
 #### H3 Segment Picker
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `project_name` | H3_LVM | 从哪个库读取 |
+| `project_name` | H3_LVM | 从哪个库读取。面板上是一个下拉菜单：列出磁盘上所有库并带片段数量，`＋ 新建项目…` 建一个空库，`🗑 删除当前项目…` 在确认行里重复库名后删除整个库 |
 | `segment_id` | 1 | 读取第几段 |
+
+**面板布局** — 自上而下三行：① 带标签的项目菜单，右侧实时显示当前库的片段数量（`＋ 新建项目…` 与 `🗑 删除当前项目…` 都在这个菜单里）；② 工具行（刷新、卡片大小、当前选中）；③ 卡片网格，最下方一行操作图例。卡片标题与状态文字全部中文，节点参数名也显示为中文（`label` 只影响显示，保存的工作流仍然是 `project_name` / `segment_id`）。
 
 ### API 接口
 
 | 接口 | 返回 |
 |------|------|
-| `GET /h3_lvm/projects` | `{"projects": [...], "default": "H3_LVM"}` |
+| `GET /h3_lvm/projects` | `{"projects": [{"name": ..., "segments": N}, ...], "default": "H3_LVM"}` — 所有库 + 片段数量 |
+| `POST /h3_lvm/project` | 请求 `{"project": <用户输入的名字>}` → `{"name": <清洗后的名字>, "created": true/false, "segments": N}` |
+| `POST /h3_lvm/project/delete` | 请求 `{"project": <库名>, "confirm": <同一个库名>}` → `{"name": ..., "deleted": true, "segments": N}` |
 | `GET /h3_lvm/segments?project=<名称>` | 完整片段列表 + 缩略图 URL |
+| `POST /h3_lvm/delete` | 请求 `{"project": <库名>, "segment_id": N}` → `{"deleted": N}` |
 
 ---
 
