@@ -17,37 +17,150 @@
     box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
-/* Header */
-.h3lvm-header {
+/* Row 1 - which bin is being read. Picking the wrong bin is the easiest mistake in
+   this workflow, so this row is the widest and brightest thing in the panel. */
+.h3lvm-project-row {
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 6px 8px;
+    background: #16202e;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    margin-bottom: 8px;
+}
+
+.h3lvm-project-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #93c5fd;
+    white-space: nowrap;
+}
+
+.h3lvm-project {
+    flex: 1 1 220px;
+    min-width: 180px;
+    background: #0f172a;
+    border: 1px solid #475569;
+    color: #f1f5f9;
+    border-radius: 5px;
+    font-size: 13px;
+    padding: 5px 8px;
+    cursor: pointer;
+}
+
+.h3lvm-project:focus {
+    outline: none;
+    border-color: #60a5fa;
+}
+
+/* How much the selected bin holds, so an empty bin is obvious before clicking. */
+.h3lvm-count {
+    font-size: 11px;
+    color: #94a3b8;
+    white-space: nowrap;
+}
+
+/* Name entry for a new bin; only visible while the menu is on "＋ 新建项目…". */
+.h3lvm-new {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.h3lvm-new[hidden] {
+    display: none;
+}
+
+.h3lvm-new-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    background: #0f172a;
+    border: 1px solid #475569;
+    color: #e2e8f0;
+    border-radius: 4px;
+    font-size: 11px;
+    padding: 3px 6px;
+}
+
+.h3lvm-new-input:focus {
+    outline: none;
+    border-color: #60a5fa;
+}
+
+.h3lvm-new-error {
+    font-size: 10px;
+    color: #fca5a5;
+    white-space: nowrap;
+}
+
+/* Confirm step for deleting a whole bin; the sentence names what is at stake. */
+.h3lvm-danger {
+    flex-wrap: wrap;
+    row-gap: 4px;
+}
+
+.h3lvm-danger-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 10px;
+    color: #fca5a5;
+}
+
+.h3lvm-danger-btn {
+    background: #7f1d1d;
+    border: 1px solid #b91c1c;
+    color: #fee2e2;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.h3lvm-danger-btn:hover {
+    background: #b91c1c;
+    border-color: #ef4444;
+    color: #ffffff;
+}
+
+.h3lvm-danger-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* Row 2 - tools and the current selection, deliberately quieter than row 1. */
+.h3lvm-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
     border-bottom: 1px solid #333;
     padding-bottom: 6px;
     margin-bottom: 8px;
 }
 
-.h3lvm-title {
-    font-size: 12px;
-    font-weight: 600;
-    color: #93c5fd;
+.h3lvm-tool-sep {
+    width: 1px;
+    height: 16px;
+    background: #3a3a3a;
 }
 
-.h3lvm-project-tag {
-    background: #1e293b;
-    border: 1px solid #334155;
-    color: #38bdf8;
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-family: monospace;
+.h3lvm-tool-label {
+    font-size: 10px;
+    color: #64748b;
+}
+
+.h3lvm-spacer {
+    flex: 1 1 auto;
+}
+
+.h3lvm-status {
     font-size: 11px;
-    margin-left: 8px;
-}
-
-.h3lvm-actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    font-weight: 500;
+    color: #93c5fd;
 }
 
 .h3lvm-refresh-btn {
@@ -228,11 +341,6 @@
     align-items: center;
 }
 
-.h3lvm-selected {
-    font-size: 11px;
-    color: #93c5fd;
-    font-weight: 500;
-}
 
 .h3lvm-hint {
     font-size: 10px;
@@ -311,7 +419,7 @@
 
 /* RAFOLIE 2026-09-28: responsive DOM layout, scoped to this plugin. */
 .h3lvm-container { margin: 0; min-width: 0; min-height: 0; }
-.h3lvm-header { flex-wrap: wrap; gap: 6px; flex: 0 0 auto; }
+.h3lvm-project-row, .h3lvm-toolbar { flex: 0 0 auto; }
 .h3lvm-deck { flex: 1 1 0; min-height: 0; min-width: 0;
     grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--card-min, 150px)), 1fr)); }
 .h3lvm-footer { flex: 0 0 auto; flex-wrap: wrap; overflow-wrap: anywhere; }
