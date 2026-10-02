@@ -7,6 +7,7 @@
 
 **当前开发版：ComfyUI V3 API + Nodes 2.0。** 迁移范围、运行要求与验证结果见 [V3_MIGRATION.md](V3_MIGRATION.md)。
 片段卡片支持垃圾桶删除；删除范围、磁盘存储和缓存行为见 [删除与缓存说明](CACHE_AND_DELETION.md)。
+Picker 新增 `segment_id` 输出，用于原片与二采片段对齐比较，见 [SEGMENT_ID_OUTPUT.md](SEGMENT_ID_OUTPUT.md)。
 **[English](#english)** | **[简体中文](#简体中文)**
 
 ---

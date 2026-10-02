@@ -421,6 +421,7 @@ class H3SegmentPicker(io.ComfyNode):
                 io.Image.Output(display_name='IMAGE'),
                 io.Audio.Output(display_name='AUDIO'),
                 io.Int.Output(display_name='frame_count'),
+                io.Int.Output(display_name='segment_id'),
             ],
         )
 
@@ -471,7 +472,7 @@ class H3SegmentPicker(io.ComfyNode):
             audio = {"waveform": torch.zeros(1, 1, max(1, int(duration_sec * 44100))), "sample_rate": 44100}
             print(f"[H3 LVM Picker] no audio saved, generating silent: {duration_sec:.2f}s")
 
-        return io.NodeOutput(video, audio, frame_count)
+        return io.NodeOutput(video, audio, frame_count, segment_id)
 
 
 NODE_LIST = [H3LongVideoManager, H3SegmentPicker]

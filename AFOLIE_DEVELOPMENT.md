@@ -23,3 +23,4 @@
 
 - 2026-09-28：整理 V3 与 Nodes 2.0 开发版，安装地址改为 RAFOLIE/H3-Long-Video-Manager；保留原作者来源、许可证及 Git 历史。
 - 2026-10-02：README 与来源说明改为主仓库口径，安装地址指回 AraneaQwQ/H3-Long-Video-Manager；RAFOLIE 的署名、贡献记录与 Git 历史保留。
+- 2026-10-02：采纳 PR #1 的 `segment_id` 输出（贡献者 flyingsnow1），仅取 `comfyui/nodes.py` 改动，README 保持主仓库版本，说明另存 [SEGMENT_ID_OUTPUT.md](SEGMENT_ID_OUTPUT.md)；新增 `tests/test_node_schema.py` 锁定两个节点的输出顺序。
