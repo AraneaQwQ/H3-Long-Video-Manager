@@ -131,7 +131,7 @@ class TestMotionContext(unittest.TestCase):
 
 
 class TestManifestSeamless(unittest.TestCase):
-    """Phase 6: Manifest with seamless H3-aligned segmentation."""
+    """Manifest with fixed-length H3-aligned segmentation."""
 
     def _build_manifest(self, total_frames_24fps: int, mc: int = 22, seg_dur: float = 6.0):
         source = make_source_exact_frames(total_frames_24fps)
@@ -146,25 +146,41 @@ class TestManifestSeamless(unittest.TestCase):
         return manifest
 
     def test_main_segments_contiguous(self):
-        """CRITICAL: Main segments must be contiguous (no gaps)."""
+        """CRITICAL: content is contiguous - no gap, no repeat, nothing lost."""
         manifest = self._build_manifest(total_frames_24fps=1440, mc=22, seg_dur=6.0)
         segs = manifest.segments
+        total = manifest.working_info.total_frames
 
+        self.assertEqual(segs[0].main_start_frame, 0)
         for i in range(len(segs) - 1):
             self.assertEqual(
-                segs[i].main_end_frame, segs[i + 1].main_start_frame,
-                f"Gap between segment {i} and {i+1}: "
-                f"{segs[i].main_end_frame} ≠ {segs[i+1].main_start_frame}"
+                segs[i + 1].main_start_frame, segs[i].main_end_frame,
+                f"Gap or repeated content between segment {i} and {i+1}"
             )
+        self.assertEqual(segs[-1].main_end_frame, total)
+        self.assertEqual(sum(s.main_frame_count for s in segs), total)
 
-    def test_main_segments_valid_h3(self):
-        """CRITICAL: Every main segment must be valid 17n+5."""
+    def test_segments_fixed_length(self):
+        """CRITICAL: the full-length segments are identical and <= the request.
+
+        The tail takes whatever is left and is deliberately NOT rounded to
+        17n+5 - that odd length is handed to H3 as-is.
+        """
         manifest = self._build_manifest(total_frames_24fps=1440, mc=22, seg_dur=6.0)
-        
-        for i, seg in enumerate(manifest.segments):
-            frames = seg.main_frame_count
-            self.assertTrue(is_valid_h3_frame_count(frames),
-                            f"Segment {i}: main_frame_count={frames} not valid 17n+5")
+        requested = compute_segment_duration_frames(6.0, 24)  # 144
+        segs = manifest.segments
+        for seg in segs[:-1]:
+            self.assertEqual(seg.extraction_frame_count, 141)  # 144 -> 17n+5
+            self.assertTrue(is_valid_h3_frame_count(seg.extraction_frame_count))
+        for seg in segs:
+            self.assertLessEqual(seg.extraction_frame_count, requested)
+
+        tail = segs[-1]
+        self.assertEqual(tail.context_length, 22)
+        self.assertEqual(tail.main_frame_count, 109)
+        self.assertEqual(tail.extraction_frame_count, 131)
+        self.assertLess(tail.extraction_frame_count, 141)
+        self.assertFalse(is_valid_h3_frame_count(tail.extraction_frame_count))
 
     def test_no_frames_beyond_source(self):
         """No segment should exceed total frames."""
@@ -217,48 +233,48 @@ class TestManifestSeamless(unittest.TestCase):
         self.assertLessEqual(count, 12)
 
     def test_all_mc_values(self):
-        """Verify all MC values work correctly."""
-        for mc_value in (5, 22, 39, 56):
+        """Every MC option keeps the same fixed physical length."""
+        for mc_value in (0, 5, 22, 39, 56):
             manifest = self._build_manifest(total_frames_24fps=1440, mc=mc_value)
-            
-            # Main segments should be identical regardless of MC
-            # (MC only affects context/extraction, not main)
-            for seg in manifest.segments:
-                self.assertTrue(is_valid_h3_frame_count(seg.main_frame_count),
-                                f"MC={mc_value}, seg {seg.segment_id}: main not 17n+5")
-            
-            # Contiguity
             segs = manifest.segments
+            for seg in segs[:-1]:
+                self.assertEqual(seg.extraction_frame_count, 141,
+                                 f"MC={mc_value}, seg {seg.segment_id}: length differs")
+            for seg in segs:
+                self.assertLessEqual(seg.context_length, mc_value)
+            # Content is contiguous and complete whatever MC is used.
+            total = manifest.working_info.total_frames
             for i in range(len(segs) - 1):
-                self.assertEqual(segs[i].main_end_frame, segs[i + 1].main_start_frame)
+                self.assertEqual(
+                    segs[i + 1].main_start_frame, segs[i].main_end_frame,
+                    f"MC={mc_value}: gap or overlap at segment {i}")
+            self.assertEqual(segs[-1].main_end_frame, total, f"MC={mc_value}: frames lost")
+            self.assertEqual(sum(s.main_frame_count for s in segs), total,
+                             f"MC={mc_value}: frames lost or duplicated")
 
-    def test_main_segments_identical_across_mc_values(self):
-        """Main segments should NOT change when MC changes.
+    def test_slice_frames_identical_across_mc_values(self):
+        """The physical length never depends on MC; MC is taken out of it.
         
-        MC only adds context (backward extension), doesn't affect main layout.
+        A bigger MC means less new content per segment, not a longer file —
+        that is what keeps every clip at the duration the user asked for.
         """
-        m5 = self._build_manifest(total_frames_24fps=1440, mc=5)
-        m22 = self._build_manifest(total_frames_24fps=1440, mc=22)
-        m56 = self._build_manifest(total_frames_24fps=1440, mc=56)
-        
-        mains_5 = [(s.main_start_frame, s.main_end_frame) for s in m5.segments]
-        mains_22 = [(s.main_start_frame, s.main_end_frame) for s in m22.segments]
-        mains_56 = [(s.main_start_frame, s.main_end_frame) for s in m56.segments]
-        
-        self.assertEqual(mains_5, mains_22, "MC=5 vs MC=22: main segments differ!")
-        self.assertEqual(mains_22, mains_56, "MC=22 vs MC=56: main segments differ!")
+        for mc in (0, 5, 22, 39, 56):
+            manifest = self._build_manifest(total_frames_24fps=1440, mc=mc)
+            self.assertEqual(manifest.slice_frames, 141, f"MC={mc}: slice changed")
+            lengths = [s.extraction_frame_count for s in manifest.segments[:-1]]
+            self.assertEqual(set(lengths), {141}, f"MC={mc}: a segment differs")
 
     def test_short_video(self):
-        """Video shorter than one segment → single segment."""
+        """Video shorter than one clip → one segment holding every frame."""
         manifest = self._build_manifest(total_frames_24fps=100, mc=22)
         self.assertEqual(len(manifest.segments), 1)
         seg = manifest.segments[0]
         self.assertEqual(seg.main_start_frame, 0)
-        self.assertTrue(is_valid_h3_frame_count(seg.main_frame_count))
-        self.assertLessEqual(seg.main_end_frame, 100)
+        self.assertEqual(seg.main_end_frame, 100)
+        self.assertEqual(seg.extraction_frame_count, 100)
 
     def test_align_to_h3_false(self):
-        """When align_to_h3=False, uses plain equal splits (old behavior)."""
+        """align_to_h3=False keeps the exact duration, but still equal length."""
         source = make_source_exact_frames(1440)
         config = WorkingVideoConfig(target_fps=24)
         manifest = build_manifest(
@@ -268,12 +284,14 @@ class TestManifestSeamless(unittest.TestCase):
             motion_context=MotionContextConfig(context_frames=22),
             align_to_h3=False,
         )
-        # Should be 10 equal segments of 144 frames
-        self.assertEqual(len(manifest.segments), 10)
+        self.assertEqual(manifest.slice_frames, 144)
         for seg in manifest.segments[:-1]:
-            self.assertEqual(seg.main_frame_count, 144)
-        # Last one: 1440 - 9*144 = 144
-        self.assertEqual(manifest.segments[-1].main_frame_count, 144)
+            self.assertEqual(seg.extraction_frame_count, 144)
+        # No grid rounding means nothing is left over: the tail is exact.
+        self.assertEqual(manifest.segments[-1].main_end_frame, 1440)
+        for i in range(len(manifest.segments) - 1):
+            self.assertEqual(manifest.segments[i + 1].main_start_frame,
+                             manifest.segments[i].main_end_frame)
 
     def test_working_fps_is_24(self):
         manifest = self._build_manifest(total_frames_24fps=1440)

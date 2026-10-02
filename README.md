@@ -27,10 +27,12 @@ Cut any long video into H3-compatible segments (each satisfying the `17n + 5` fr
 
 ### Key features
 
-- **17n+5 grid alignment** — every segment is a valid H3 frame count (no auto-snap surprises)
-- **Carry-forward seamless segmentation** — no frames lost between segments, only the final segment may be short
+- **Fixed-length segments** — every full-length segment is exactly the same length: 每段时长 snapped down to a valid H3 count, so 6.0s @ 24fps gives 141 frames = 5.875s for every clip, never 6.6s here and 7.3s there
+- **17n+5 grid alignment** — every full-length segment is a valid H3 frame count (no auto-snap surprises)
+- **Nothing is lost at the end** — the last segment takes whatever frames are left, Motion Context included, with no rounding at all: no frame is duplicated, no black frame is invented, nothing is dropped. 1962 frames @ 6s/MC22 → 16 clips of 141 frames + one of 58 frames = 1962, exactly
+- **The odd tail is H3's problem, not yours** — a tail that is not on the 17n+5 grid is passed to MiniMax H3 as-is; the model decides how to handle it, so no frames of your video silently disappear
 - **Motion Context aware** — extraction range includes MC context frames for continuity
-- **Local segment bin** — lossless safetensors storage, thumbnail covers, optional MP4 preview
+- **Local segment bin** — safetensors storage (int8 by default, fp16 on request), thumbnail covers, optional MP4 preview
 - **Visual card picker** — click a thumbnail to select a segment, no re-loading video
 - **Zero dependency** beyond `torch` + `safetensors` (both already in ComfyUI)
 
@@ -41,7 +43,7 @@ Long video (e.g. 430 frames @ 24fps)
   │
   ▼
 H3 Long Video Manager
-  ├── Segments: [0,158) [158,333) [333,423)   ← all 17n+5, contiguous
+  ├── Segments: [0,141) [119,260) [238,379) … [1309,1440)  ← full segments are 141 frames; MC repeats the previous tail; the last one takes the remainder
   ├── Saves all → output/h3-lvm/<project>/seg01/, seg02/, seg03/
   └── Outputs selected segment live (IMAGE + AUDIO)
   │
@@ -95,12 +97,16 @@ Restart ComfyUI, hard-refresh browser (`Ctrl+F5`).
 ComfyUI/output/h3-lvm/<project_name>/
 ├── h3lvm_index.json          # project manifest
 ├── seg01/
-│   ├── seg01.safetensors     # lossless: video f16 + audio f32 + metadata
+│   ├── seg01.safetensors     # video tensor (int8 or fp16) + audio f32 + metadata
 │   ├── seg01_first.png       # thumbnail (card cover)
 │   └── seg01.mp4             # optional preview (only if save_preview_mp4=True)
 ├── seg02/
 │   └── ...
 ```
+
+Disk use is frames × width × height × 3 × bytes-per-value: at 1280×720 that is
+5.5 MB per frame in fp16 and 2.8 MB in int8. Motion Context frames are stored
+again inside every segment, so a run writes more frames than the source has.
 
 ### Node parameters
 
@@ -108,26 +114,41 @@ ComfyUI/output/h3-lvm/<project_name>/
 
 | Parameter | Default | Shown on the node | Notes |
 |-----------|---------|-----------------|-------|
-| `project_name` | H3_LVM | 📦 项目素材库 | Bin folder name. On the node this is a dropdown listing every bin with its segment count; `＋ 新建项目…` and `🗑 删除当前项目…` live in that same menu |
+| `project_name` | H3_LVM | 📦 项目素材库 | Bin folder name. The canvas dropdown is hidden — the panel below the parameters owns the same menu (switch / `＋ 新建项目…` / `🗑 删除当前项目…`) and writes through this field |
 | `fps` | 24 | 源视频帧率 | Source video frame rate |
-| `segment_duration` | 6.0s | 每段时长（秒） | Target duration per segment |
+| `segment_duration` | 6.0s | 每段时长（秒） | Fixed length of every full segment, Motion Context included; snapped down to 17n+5, so 6.0s @ 24fps → 141 frames = 5.875s. The last segment takes whatever frames are left and is not snapped |
 | `motion_context_frames` | 22 | Motion Context 帧数 | MC context (0/5/22/39/56); the menu shows `22 帧（默认）` and friends |
 | `segment_id` | 1 | 输出片段编号 | Which segment to output live |
 | `scale_percent` | 100 | 画面缩放 % | Downscale (e.g. 50 = half resolution) |
-| `align_to_h3_grid` | true | 对齐 H3 网格 | Enforce 17n+5 |
+| `align_to_h3_grid` | true | 对齐 H3 网格 | Enforce 17n+5 for the full-length segments; the last segment is never rounded |
 | `save_enabled` | true | 保存到素材库 | Save to bin (disable for pure-live mode) |
 | `save_preview_mp4` | false | 生成 MP4 预览 | Also encode MP4 preview |
-| `final_align` | down | 段尾对齐 | Round the last short segment down or up (`向下取整` / `向上取整`) |
+| `final_align` | down | — (hidden) | Deprecated and ignored. The tail is decided automatically now; the field stays in the schema only so graphs saved before this keep their widget positions |
 | `person_crop` | false | 人物裁切 | Detect person and crop edges so the subject fills more of the frame |
 | `person_crop_expand_percent` | 0 | 人物框外扩 % | Extra padding around the person box, 0–100. 0 = tight (still keeps source aspect) |
+| `save_dtype` | int8 | 素材存盘精度 | `int8` = half the bytes; `fp16` = the original format. The decoder already hands us 8-bit frames, so int8 stores those values exactly and the loaded picture is identical. Segments in one bin may mix formats — the loader reads whatever dtype the file declares |
 
 **Node labels** — the parameters appear on the node in the order the server declares
 them, which is the order of the table above. Labels, tooltips, and the
-`motion_context_frames` / `final_align` option text are Chinese. All of it is
+`motion_context_frames` option text are Chinese. All of it is
 display-only: field names, stored values, and saved workflows stay English.
-`project_name` is re-declared as a combo in the node definition before the node type
-registers, which is what makes the widget a real dropdown; the workflow still stores
-the bin name as a plain string, and graphs saved before this file load unchanged.
+`project_name` is still re-declared as a combo in the node definition, which keeps the stored bin
+name a valid option, but the widget itself is hidden (`options.hidden`) because the panel above it
+draws the same menu — one control per setting. Hidden widgets are still serialised by position, so
+graphs saved before this change load unchanged.
+
+**Manager panel** — under the parameters the node has a panel in the same visual language as the
+Segment Picker: the 项目素材库 menu on top (switch / create / delete a bin, with the live segment
+count), then a tool row (`🔄 刷新`, `🎬 素材库` status, `▾ 展开素材库`), then the card deck. The deck reads
+the selected bin and shows every segment in it, ordered by 片段编号 — thumbnail, 片段编号, frame count
+and duration, a ▶ button for the MP4 preview, and clicking a card sets 输出片段编号. Segments that this
+node's last run produced carry a small `本次` badge, and the status line names them
+(`库内 17 段 · 本次生成 6 段（片段 1–6）`). Deleting a card in the Segment Picker removes it here too.
+Nothing is saved: the ids come from the `h3_lvm/changed` event the node already sends after saving,
+so a page reload simply shows the bin without the badge.
+
+Expanding and collapsing adds or removes exactly the height of one card row, so a node the user
+resized keeps its own width and extra space; the node no longer snaps back to its minimum size.
 
 #### H3 Segment Picker
 
@@ -151,6 +172,11 @@ Chinese too (`label` is display-only — saved workflows keep `project_name` / `
 | `POST /h3_lvm/project/delete` | body `{"project": <name>, "confirm": <same name>}` → `{"name": ..., "deleted": true, "segments": N}` |
 | `GET /h3_lvm/segments?project=<name>` | Full segment list with thumbnail URLs |
 | `POST /h3_lvm/delete` | body `{"project": <name>, "segment_id": N}` → `{"deleted": N}` |
+
+**WebSocket event** — `h3_lvm/changed` is broadcast after a run saves segments
+(`{"project": <name>, "segments": [1, 2, ...]}`) and after a delete
+(`{"project": <name>, "deleted_id": N}`). The `segments` list is what lets a Manager node show
+exactly the cards from its own run instead of guessing from the bin contents.
 
 ### Project structure
 
@@ -179,7 +205,7 @@ H3-Long-Video-Manager/
 │   ├── __init__.py                    # Layer A public API (dataclasses)
 │   ├── models.py                      # Dataclasses (Segment, Manifest, etc.)
 │   ├── models_v3_backup.py            # backup
-│   ├── h3_grid.py                     # 17n+5 alignment + carry-forward segmentation
+│   ├── h3_grid.py                     # 17n+5 alignment + fixed-length segmentation
 │   ├── h3_grid_v4_backup.py           # backup
 │   ├── manifest.py                    # build_manifest()
 │   ├── manifest_v4_backup.py          # backup
@@ -189,7 +215,10 @@ H3-Long-Video-Manager/
 ├── web/
 │   ├── h3lvm_picker.js                # Card gallery frontend
 │   ├── h3lvm_picker.css               # Styling
-│   ├── h3lvm_manager.js               # Chinese labels + project dropdown
+│   ├── h3lvm_manager.js               # Chinese labels, hides the canvas project combo
+│   ├── h3lvm_manager_panel.js           # Manager panel (project menu + this run's cards)
+│   ├── project_menu.js                  # Project switch/create/delete row (both panels)
+│   ├── preview_overlay.js               # MP4 preview modal (Picker + Manager)
 │   ├── delete_button.js               # Segment card delete button
 │   ├── dom_panel.js                   # DOM widget sizing (Canvas + Nodes 2.0)
 │   └── extension.js                   # (placeholder, intentionally empty)
@@ -200,6 +229,7 @@ H3-Long-Video-Manager/
     ├── test_h3_grid.py                # 17n+5 grid tests
     ├── test_node_schema.py            # Node output order lock
     ├── test_person_crop.py            # Person crop tests
+    ├── test_fixed_segments.py           # Fixed-length segmentation tests
     ├── test_project_menu.py           # Project menu (list/create/delete) tests
     └── test_segment_store.py          # Storage round-trip tests
 ```
@@ -222,10 +252,12 @@ H3-Long-Video-Manager/
 
 ### 核心特性
 
-- **17n+5 网格对齐** — 每段都是合法 H3 帧数，不会自动 snap 导致时长偏移
-- **Carry-forward 无缝分段** — 中间段零帧丢失，仅最后一段可能偏短
+- **定长分段** — 每个整段长度完全一致：每段时长向下吸附到合法 H3 帧数，6.0s @ 24fps 就是每段 141 帧 = 5.875s，不会再出现一段 6.6s、一段 7.3s
+- **17n+5 网格对齐** — 每个整段都是合法 H3 帧数，不会自动 snap 导致时长偏移
+- **结尾一帧都不丢** — 最后一段直接吃掉剩下的全部帧（含 Motion Context 重叠帧），完全不做对齐：不重复任何帧、不补黑帧、也不丢任何帧。1962 帧 @ 6s/MC22 → 16 段 141 帧 + 1 段 58 帧 = 1962，正好
+- **末尾的零头交给 H3 判断** — 最后一段的帧数不在 17n+5 上，也原样交给 MiniMax H3，由模型自己处理，你的视频不会悄悄少几帧
 - **Motion Context 感知** — 提取范围包含 MC 上下文帧，保证接续连贯
-- **本地片段库** — 无损 safetensors 存储 + 首帧缩略图 + 可选 MP4 预览
+- **本地片段库** — safetensors 存储（默认 int8，可切 fp16）+ 首帧缩略图 + 可选 MP4 预览
 - **视觉卡片选择** — 点击缩略图选段，无需重新加载视频
 - **零额外依赖** — 仅需 `torch` + `safetensors`（ComfyUI 自带）
 
@@ -236,7 +268,7 @@ H3-Long-Video-Manager/
   │
   ▼
 H3 Long Video Manager
-  ├── 分段: [0,158) [158,333) [333,423)   ← 全部 17n+5，连续无间隙
+  ├── 分段: [0,141) [119,260) [238,379) …  ← 每个完整段都是 141 帧；正文不重复，MC 与上一段尾部重叠
   ├── 保存全部 → output/h3-lvm/<项目名>/seg01/, seg02/, seg03/
   └── 实时输出选中段 (IMAGE + AUDIO)
   │
@@ -290,12 +322,15 @@ git clone https://github.com/AraneaQwQ/H3-Long-Video-Manager.git
 ComfyUI/output/h3-lvm/<项目名>/
 ├── h3lvm_index.json          # 项目索引
 ├── seg01/
-│   ├── seg01.safetensors     # 无损: 视频f16 + 音频f32 + 元数据
+│   ├── seg01.safetensors     # 视频张量（int8 或 fp16）+ 音频f32 + 元数据
 │   ├── seg01_first.png       # 缩略图（卡片封面）
 │   └── seg01.mp4             # 可选预览（需开启 save_preview_mp4）
 ├── seg02/
 │   └── ...
 ```
+
+占用空间 = 帧数 × 宽 × 高 × 3 × 每个值的字节数：1280×720 下 fp16 每帧约 5.5 MB，int8 约 2.8 MB。
+Motion Context 的重叠帧会在每一段里再存一份，所以一次运行写出的帧数会比源视频多。
 
 ### 节点参数
 
@@ -303,23 +338,29 @@ ComfyUI/output/h3-lvm/<项目名>/
 
 | 参数 | 默认值 | 节点上显示为 | 说明 |
 |------|--------|--------------|------|
-| `project_name` | H3_LVM | 📦 项目素材库 | 库文件夹名。节点上是一个下拉菜单：列出磁盘上所有库并带片段数量，`＋ 新建项目…` 建空库，`🗑 删除当前项目…` 确认后删除整个库 |
+| `project_name` | H3_LVM | 📦 项目素材库 | 库文件夹名。节点上的下拉框已隐藏——参数下面的面板里有同一个菜单（切换 / `＋ 新建项目…` / `🗑 删除当前项目…`），直接写这个字段 |
 | `fps` | 24 | 源视频帧率 | 源视频帧率（H3 生成的视频一般是 24） |
-| `segment_duration` | 6.0s | 每段时长（秒） | 每段目标时长 |
+| `segment_duration` | 6.0s | 每段时长（秒） | 每个整段的固定长度，已包含 Motion Context 重叠帧；向下吸附到 17n+5，因此 6.0s @ 24fps → 141 帧 = 5.875s。最后一段取剩余全部帧，不做吸附 |
 | `motion_context_frames` | 22 | Motion Context 帧数 | MC 上下文（0/5/22/39/56），菜单里显示为 `22 帧（默认）` 等 |
 | `segment_id` | 1 | 输出片段编号 | 实时输出哪一段 |
 | `scale_percent` | 100 | 画面缩放 % | 缩放比例（50 = 一半分辨率） |
-| `align_to_h3_grid` | true | 对齐 H3 网格 | 是否对齐 17n+5 |
+| `align_to_h3_grid` | true | 对齐 H3 网格 | 是否对整段对齐 17n+5；最后一段永远不做对齐 |
 | `save_enabled` | true | 保存到素材库 | 是否存库（关 = 纯实时模式） |
 | `save_preview_mp4` | false | 生成 MP4 预览 | 是否生成 MP4 预览 |
-| `final_align` | down | 段尾对齐 | 最后一段不足时长时向下 / 向上取整 |
+| `final_align` | down | —（已隐藏） | 已废弃，值被忽略。末段现在自动处理；这个字段留在 schema 里只是为了让改动前保存的工作流参数不错位 |
 | `person_crop` | false | 人物裁切 | 开启后检测人物并裁掉边缘，让主体占画面更大 |
 | `person_crop_expand_percent` | 0 | 人物框外扩 % | 人物框外扩百分比（0–100）。0 = 紧贴检测框，仍保持原画面比例 |
+| `save_dtype` | int8 | 素材存盘精度 | `int8` = 体积只有原来的一半；`fp16` = 原来的格式。解码器交给我们本来就是 8-bit 帧，所以 int8 存的是同一批数值，读回来的画面完全一致。同一个库里可以混用两种精度，读取时按文件自己的类型还原 |
 
 **节点上的显示** — 参数在节点上的顺序与服务端声明一致，也就是上表的顺序。参数名、悬停说明和
-`motion_context_frames` / `final_align` 的选项文字全部中文。这些都只影响显示：字段名、保存的值
-和工作流文件仍然是英文。`project_name` 在节点类型注册之前被重新声明为 combo，这才是节点上真正的
-下拉菜单；工作流里存的仍然是库名字符串，改动前保存的工作流打开后参数不会错位。
+`motion_context_frames` 的选项文字全部中文。这些都只影响显示：字段名、保存的值
+和工作流文件仍然是英文。`project_name` 仍然在节点类型注册前被声明为 combo（保证工作流里存的库名始终是合法选项），
+但 widget 本身被隐藏（`options.hidden`），因为面板顶部已经有同一个菜单——一个设置只留一个控件。隐藏的 widget
+仍按位置序列化，所以改动前保存的工作流打开后参数不会错位。
+
+**Manager 面板** — 参数下面是与 H3 Segment Picker 同一套视觉的面板：顶部是项目素材库菜单（切换 / 新建 / 删除项目，右侧实时显示片段数），接着是工具行（`🔄 刷新`、`🎬 素材库` 状态、`▾ 展开素材库`），再下面是卡片网格。卡片区读的是当前选中的素材库，按片段编号顺序显示库内**全部**片段：缩略图、片段编号、帧数和时长，带 ▶ 按钮播放 MP4 预览，点卡片就是把该段设为「输出片段编号」。本节点上一次运行产出的片段带一个 `本次` 小标记，状态行会写清楚（`库内 17 段 · 本次生成 6 段（片段 1–6）`）。在 Segment Picker 里删除片段，这里同步消失。这里不保存任何状态：本次编号来自节点保存后本来就会发的 `h3_lvm/changed` 事件，刷新页面后只剩素材库本身、没有标记。
+
+展开 / 收起只增减一行卡片的高度，用户自己拉过的宽高会保留，节点不会再缩回最小尺寸。
 
 #### H3 Segment Picker
 
@@ -339,6 +380,8 @@ ComfyUI/output/h3-lvm/<项目名>/
 | `POST /h3_lvm/project/delete` | 请求 `{"project": <库名>, "confirm": <同一个库名>}` → `{"name": ..., "deleted": true, "segments": N}` |
 | `GET /h3_lvm/segments?project=<名称>` | 完整片段列表 + 缩略图 URL |
 | `POST /h3_lvm/delete` | 请求 `{"project": <库名>, "segment_id": N}` → `{"deleted": N}` |
+
+**WebSocket 事件** — 一次运行保存完片段后（`{"project": <库名>, "segments": [1, 2, ...]}`）和删除片段后（`{"project": <库名>, "deleted_id": N}`）都会广播 `h3_lvm/changed`。`segments` 这个列表就是让 Manager 节点能准确显示自己这次运行的卡片，而不是从整库内容去猜。
 
 ---
 

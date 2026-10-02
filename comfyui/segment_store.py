@@ -10,7 +10,7 @@ Layout (under the ComfyUI output directory):
       <project>/
         h3lvm_index.json        # project manifest (list of saved segments)
         seg01/
-          seg01.safetensors     # {video [F,H,W,C] f16, audio [1,C,S] f32, sample_rate, fps}
+          seg01.safetensors     # {video [F,H,W,C] i8|f16, audio [1,C,S] f32, sample_rate, fps}
           seg01_first.png       # first-frame cover (card thumbnail)
           seg01.mp4             # optional playable preview (only if requested)
         seg02/
@@ -242,6 +242,44 @@ def _encode_mp4(images: torch.Tensor, audio: Optional[Dict[str, Any]], fps: int,
 
 
 # ---------------------------------------------------------------------------
+# Video tensor encoding
+# ---------------------------------------------------------------------------
+
+# int8 stores round(x * 255) - 128, which maps the 256 levels of an 8-bit frame
+# exactly onto the signed range. The pipeline decodes 8-bit video (core/extraction
+# divides decoded uint8 by 255), so int8 carries the same information as fp16 at
+# half the bytes.
+INT8_OFFSET = 128
+VIDEO_DTYPES = ("int8", "fp16")
+
+
+def normalize_save_dtype(value):
+    """Map any user value onto the two supported encodings (default int8)."""
+    s = "" if value is None else str(value).strip().lower()
+    if s in ("fp16", "f16", "float16", "half"):
+        return "fp16"
+    return "int8"
+
+
+def _encode_video(video: torch.Tensor, save_dtype: str) -> torch.Tensor:
+    """Pack a float [0,1] video tensor for disk."""
+    src = video.detach().cpu()
+    if normalize_save_dtype(save_dtype) == "fp16":
+        return src.to(torch.float16).contiguous()
+    if src.dtype in (torch.float32, torch.float64):
+        src = src.clamp(0.0, 1.0).mul(255.0).round().sub(INT8_OFFSET)
+    return src.to(torch.int8).contiguous()
+
+
+def _decode_video(tensor: torch.Tensor) -> torch.Tensor:
+    """Reverse _encode_video; stored float tensors are passed through."""
+    if tensor.dtype == torch.int8:
+        return tensor.to(torch.float32).add(INT8_OFFSET).div(255.0).contiguous()
+    if tensor.dtype == torch.uint8:
+        return tensor.to(torch.float32).div(255.0).contiguous()
+    return tensor
+
+# ---------------------------------------------------------------------------
 # Save / list / load
 # ---------------------------------------------------------------------------
 
@@ -254,10 +292,13 @@ def save_segment(
     fps: int,
     save_mp4: bool = False,
     meta: Optional[Dict[str, Any]] = None,
+    save_dtype: str = "int8",
 ) -> Dict[str, Any]:
     """Save one segment to the project folder and upsert it into the index.
 
     ``seg_index_1based``: 1-based segment id (seg01, seg02, ...).
+    "save_dtype": "int8" (half the bytes, lossless for 8-bit sources) or "fp16"
+    (the original format). Either way the loader hands back float [0,1].
     Returns the meta dict for this segment.
     """
     project = sanitize_project_name(project)
@@ -268,12 +309,8 @@ def save_segment(
         shutil.rmtree(sdir)
     os.makedirs(sdir, exist_ok=True)
 
-    # --- tensors (lossless, feed H3 directly) ---
-    video_cpu = (
-        video.detach().to(torch.float16).cpu().contiguous()
-        if video.dtype in (torch.float32, torch.float64)
-        else video.detach().cpu().contiguous()
-    )
+    # --- tensors (feed H3 directly; _encode_video decides the packing) ---
+    video_cpu = _encode_video(video, save_dtype)
     audio_wav = None
     audio_sr = 44100
     if audio is not None:
@@ -320,6 +357,7 @@ def save_segment(
         "height": int(video.shape[1]),
         "fps": int(fps),
         "duration_sec": round(n_frames / float(fps), 4) if fps else None,
+        "video_dtype": normalize_save_dtype(save_dtype),
         "has_audio": audio_wav is not None,
         "sample_rate": audio_sr,
         "has_mp4": bool(mp4),
@@ -335,10 +373,10 @@ def save_segment(
     with _project_lock(project):
         _upsert_index(project, seg_meta)
 
-    logger.info("[H3 LVM] saved segment %s to %s (%d frames, %dx%d, %s)",
+    logger.info("[H3 LVM] saved segment %s to %s (%d frames, %dx%d, video=%s, %s)",
                 tag, get_project_dir(project, create=False), n_frames,
                 int(video.shape[2]), int(video.shape[1]),
-                "with mp4" if mp4 else "tensor+png")
+                seg_meta["video_dtype"], "with mp4" if mp4 else "tensor+png")
     return seg_meta
 
 
@@ -360,7 +398,7 @@ def load_segment(project: Any, seg_index_1based: int) -> Tuple[torch.Tensor, Opt
     if tensors is None:
         raise FileNotFoundError(f"segment {seg_index_1based} tensors not found in {sdir}")
 
-    video = tensors["video"]
+    video = _decode_video(tensors["video"])
     audio = None
     if "audio" in tensors:
         if "sample_rate" in tensors:

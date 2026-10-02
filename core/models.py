@@ -256,6 +256,9 @@ class SegmentManifest:
     working_info: WorkingVideoInfo
     motion_context: MotionContextConfig
     segment_duration_frames: int
+    # Fixed physical length of every segment (Motion Context included).
+    # 0 means "same as segment_duration_frames" (older manifests).
+    slice_frames: int = 0
     segments: list[Segment] = field(default_factory=list)
     selected_segment_id: Optional[int] = None
 

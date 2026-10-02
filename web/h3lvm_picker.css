@@ -202,6 +202,11 @@
     align-content: start;
 }
 
+/* the Manager panel collapses its grid; display:grid would beat [hidden] */
+.h3lvm-deck[hidden] {
+    display: none;
+}
+
 .h3lvm-deck::-webkit-scrollbar {
     width: 6px;
 }
@@ -310,6 +315,21 @@
 .h3lvm-play-btn:hover {
     background: rgba(59, 130, 246, 0.9);
     transform: scale(1.1);
+}
+
+/* Marked on the Manager panel: this node's last run, inside the same deck. */
+.h3lvm-badge {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(16, 185, 129, 0.92);
+    color: #04140d;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.4;
+    pointer-events: none;
 }
 
 /* Meta info */

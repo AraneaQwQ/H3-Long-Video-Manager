@@ -1,4 +1,4 @@
-// RAFOLIE 2026-10-03: Chinese labels and a project dropdown for the
+// RAFOLIE 2026-10-03: Chinese labels and the visual panel for the
 // "H3 Long Video Manager" node.
 //
 // Display only. Field names and the values stored in workflow files are unchanged:
@@ -6,8 +6,9 @@
 //   - project_name is re-declared as a combo in the node definition before the node
 //     type is registered, so the widget really is a dropdown of the project bins on
 //     disk. A workflow still stores the bin name as a plain string.
-//   - The dropdown can create and delete bins, the same way the Segment Picker panel
-//     does. Those two menu actions are internal markers and are never saved.
+//   - That combo is then hidden: the panel shows the same project menu the Segment
+//     Picker uses (switch / create / delete), and it writes through this widget, so
+//     there is one control per setting instead of two.
 //
 // The widget order is left exactly as the server declares it. ComfyUI restores saved
 // values by position, so re-ordering widgets here would scramble graphs written
@@ -15,19 +16,27 @@
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { installManagerPanel } from "./h3lvm_manager_panel.js";
+
+// The panel reuses the Picker stylesheet; inject it here too so the Manager works
+// on its own if the Picker script ever fails to load.
+try {
+    const styleId = "h3lvm-styles";
+    if (!document.getElementById(styleId)) {
+        const link = document.createElement("link");
+        link.id = styleId;
+        link.rel = "stylesheet";
+        link.type = "text/css";
+        link.href = new URL("./h3lvm_picker.css", import.meta.url).href;
+        document.head.appendChild(link);
+    }
+} catch (error) {
+    console.warn("[H3 LVM] CSS injection failed:", error);
+}
 
 const NODE_NAME = "H3 Long Video Manager";
 const PROJECT_FIELD = "project_name";
 const DEFAULT_PROJECT = "H3_LVM";
-
-// Menu actions rather than project names; they never become the widget value.
-const NEW_PROJECT = "__h3lvm_new__";
-const DELETE_PROJECT = "__h3lvm_delete__";
-const MENU_ACTIONS = [NEW_PROJECT, DELETE_PROJECT];
-const MENU_LABELS = {
-    [NEW_PROJECT]: "＋ 新建项目…",
-    [DELETE_PROJECT]: "🗑 删除当前项目…",
-};
 
 // Field names stay English inside the workflow; only the label on the node changes.
 const LABELS = {
@@ -40,38 +49,42 @@ const LABELS = {
     project_name: "📦 项目素材库",
     save_enabled: "保存到素材库",
     save_preview_mp4: "生成 MP4 预览",
-    final_align: "段尾对齐",
     person_crop: "人物裁切",
     person_crop_expand_percent: "人物框外扩 %",
+    save_dtype: "素材存盘精度",
 };
 
 const TOOLTIPS = {
     fps: "上游视频的真实帧率。MiniMax H3 生成的视频一般是 24 fps。",
-    segment_duration: "每一段裁切的时长（秒）。",
+    segment_duration: "每段输出的固定时长（秒），已包含 Motion Context 重叠帧。实际帧数会向下取到 17n+5：6.0s@24fps → 141 帧 = 5.875s，每段都一样。",
     motion_context_frames: "与上一段重叠的帧数，用来接上上一段的动作。0 表示不重叠。",
     segment_id: "把第几段直接输出到下游预览；其余片段仍会保存到素材库。",
     scale_percent: "输出前整体缩放画面。",
-    align_to_h3_grid: "把每段帧数对齐到 H3 支持的帧数网格。",
-    project_name: "选择保存到哪个项目素材库。下拉里可以切换、新建或删除项目。",
+    align_to_h3_grid: "开启后每段帧数向下取到 H3 支持的 17n+5；关闭则正好是所填时长（H3 可能自行吸附）。",
+    project_name: "保存到哪个项目素材库；面板顶部的菜单可以切换、新建或删除项目。",
     save_enabled: "关闭后只在画布输出，不写入素材库。",
     save_preview_mp4: "为每个片段额外生成可播放的 MP4 预览。",
-    final_align: "最后一段不足时长时，向下或向上取整。",
     person_crop: "检测人物并裁掉画面边缘，让人物占画面更大。",
     person_crop_expand_percent: "人物框外扩百分比，0 为紧贴检测框（仍保持原画面比例）。",
+    save_dtype: "素材库里的片段张量用什么精度落盘。源视频本身只有 8-bit，所以 int8 体积减半而画面读回来一样；只有需要保留原始浮点张量时才选 fp16。同一个库里可以混用，读取时按各自存的精度还原。",
 };
 
 // Raw values are kept as-is; only the text in the dropdown is Chinese.
+// Widgets the node still declares so old graphs keep their
+// positions, but that no longer do anything and must not be shown.
+const RETIRED_FIELDS = ["final_align"];
+
 const OPTION_LABELS = {
+    save_dtype: {
+        int8: "int8（体积减半，推荐）",
+        fp16: "fp16（旧格式，体积翻倍）",
+    },
     motion_context_frames: {
         "0": "0 帧（不与上一段重叠）",
         "5": "5 帧",
         "22": "22 帧（默认）",
         "39": "39 帧",
         "56": "56 帧",
-    },
-    final_align: {
-        down: "向下取整（推荐）",
-        up: "向上取整",
     },
 };
 
@@ -96,7 +109,9 @@ app.registerExtension({
             const r = originalCreated ? originalCreated.apply(this, arguments) : undefined;
             try {
                 translateWidgets(this);
-                installProjectMenu(this);
+                hideProjectWidget(this);
+                hideRetiredWidgets(this);
+                installManagerPanel(this);
             } catch (error) {
                 console.warn("[H3 LVM] manager node UI setup failed (node still works):", error);
             }
@@ -152,10 +167,10 @@ function menuValues(names, active) {
     for (const name of [active, DEFAULT_PROJECT, ...names]) {
         if (typeof name !== "string") continue;
         const trimmed = name.trim();
-        if (!trimmed || MENU_ACTIONS.includes(trimmed) || ordered.includes(trimmed)) continue;
+        if (!trimmed || ordered.includes(trimmed)) continue;
         ordered.push(trimmed);
     }
-    return [NEW_PROJECT, ...ordered, DELETE_PROJECT];
+    return ordered;
 }
 
 async function listProjects() {
@@ -201,150 +216,26 @@ function allowSavedProject(node, info) {
     const options = widget?.options;
     if (!options) return;
     const saved = savedProjectValue(node, info);
-    if (!saved || MENU_ACTIONS.includes(saved)) return;
+    if (!saved) return;
     const values = Array.isArray(options.values) ? [...options.values] : [];
     if (values.includes(saved)) return;
-    const at = values.indexOf(DELETE_PROJECT);
-    values.splice(at < 0 ? values.length : at, 0, saved);
+    values.unshift(saved);
     options.values = values;
 }
 
-// --- Project menu on the project_name widget ---
-function installProjectMenu(node) {
+// --- Retired parameters stay in the graph but off the node ---
+function hideRetiredWidgets(node) {
+    for (const name of RETIRED_FIELDS) {
+        const widget = node.widgets?.find(item => item.name === name);
+        if (widget?.options) widget.options.hidden = true;
+    }
+}
+
+// --- The panel owns the project menu, so the canvas widget steps aside ---
+function hideProjectWidget(node) {
     const widget = node.widgets?.find(item => item.name === PROJECT_FIELD);
-    if (!widget || !widget.options) return;
-
-    const lifetime = new AbortController();
-    node._h3lvmManagerLifetime = lifetime;
-    let bins = [];
-    let activeName = typeof widget.value === "string" && widget.value.trim() ? widget.value.trim() : DEFAULT_PROJECT;
-
-    // The canvas draws this label for both the widget text and the dropdown rows.
-    widget.options.getOptionLabel = (value) => {
-        const key = String(value ?? "");
-        if (MENU_LABELS[key]) return MENU_LABELS[key];
-        const bin = bins.find(item => item.name === key);
-        if (!bin) return key;
-        return bin.segments ? key + " (" + bin.segments + " 段)" : key + "（空）";
-    };
-
-    // The two menu actions are not bins, so the value is put back before anything
-    // else sees it.
-    const originalCallback = widget.callback;
-    widget.callback = (value, ...rest) => {
-        const picked = String(value ?? "");
-        if (picked === NEW_PROJECT) {
-            widget.value = activeName;
-            node.setDirtyCanvas?.(true, true);
-            void createProject();
-            return;
-        }
-        if (picked === DELETE_PROJECT) {
-            widget.value = activeName;
-            node.setDirtyCanvas?.(true, true);
-            void deleteProject();
-            return;
-        }
-        activeName = picked;
-        return originalCallback?.(value, ...rest);
-    };
-
-    function writeOptions() {
-        // Assign rather than mutate: the array from the node definition is shared by
-        // every node of this type, so editing it in place would leak between nodes.
-        widget.options.values = menuValues(bins.map(bin => bin.name), activeName);
-    }
-
-    async function refresh() {
-        if (lifetime.signal.aborted) return;
-        const current = typeof widget.value === "string" ? widget.value.trim() : "";
-        if (current && !MENU_ACTIONS.includes(current)) activeName = current;
-        try {
-            bins = await listProjects();
-        } catch (error) {
-            console.warn("[H3 LVM] projects lookup failed:", error);
-        }
-        if (lifetime.signal.aborted) return;
-        if (!bins.some(bin => bin.name === activeName)) bins = [{ name: activeName, segments: 0 }, ...bins];
-        writeOptions();
-        if (widget.value !== activeName) widget.value = activeName;
-        node.setDirtyCanvas?.(true, true);
-    }
-
-    function setProject(name) {
-        activeName = name;
-        widget.value = name;
-        originalCallback?.(name);
-        node.setDirtyCanvas?.(true, true);
-    }
-
-    async function createProject() {
-        const typed = window.prompt("新项目素材库名称（例如：科幻短片 01）", "");
-        if (typed === null) return;
-        const name = typed.trim();
-        if (!name) {
-            window.alert("先写个名字。");
-            return;
-        }
-        try {
-            const res = await api.fetchApi("/h3_lvm/project", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ project: name }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                window.alert(data.error || "建立失败（HTTP " + res.status + "）");
-                return;
-            }
-            setProject(data.name || name);
-        } catch (error) {
-            console.warn("[H3 LVM] create project failed:", error);
-            window.alert("建立失败：连不上后台服务。");
-        }
-        await refresh();
-    }
-
-    function nextProjectAfter(name) {
-        const remaining = bins.map(bin => bin.name).filter(item => item && item !== name);
-        if (remaining.includes(DEFAULT_PROJECT)) return DEFAULT_PROJECT;
-        return remaining[0] || DEFAULT_PROJECT;
-    }
-
-    async function deleteProject() {
-        const bin = bins.find(item => item.name === activeName) || { segments: 0 };
-        const warning = "删除「" + activeName + "」会同时删掉 " + bin.segments + " 个已保存片段（含缩略图和预览），此操作不可撤销。";
-        if (!window.confirm(warning)) return;
-        try {
-            const res = await api.fetchApi("/h3_lvm/project/delete", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ project: activeName, confirm: activeName }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                window.alert(data.error || "删除失败（HTTP " + res.status + "）");
-                return;
-            }
-            setProject(nextProjectAfter(activeName));
-        } catch (error) {
-            console.warn("[H3 LVM] delete project failed:", error);
-            window.alert("删除失败：连不上后台服务。");
-        }
-        await refresh();
-    }
-
-    const onChanged = () => {
-        void refresh();
-    };
-    api.addEventListener("h3_lvm/changed", onChanged);
-    api.addEventListener("execution_success", onChanged);
-    lifetime.signal.addEventListener("abort", () => {
-        api.removeEventListener("h3_lvm/changed", onChanged);
-        api.removeEventListener("execution_success", onChanged);
-        delete node._h3lvmRefreshProjects;
-    }, { once: true });
-
-    node._h3lvmRefreshProjects = refresh;
-    void refresh();
+    if (!widget?.options) return;
+    // options.hidden is what the frontend layout itself filters on, and the value is
+    // still serialised by position, so saved graphs keep working.
+    widget.options.hidden = true;
 }

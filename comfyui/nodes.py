@@ -15,11 +15,12 @@ import torch
 
 from ..core.models import MotionContextConfig, MOTION_CONTEXT_OPTIONS, SourceVideoInfo, WorkingVideoConfig
 from ..core.manifest import build_manifest
-from ..core.h3_grid import is_valid_h3_frame_count, align_down_to_h3_grid, align_up_to_h3_grid
+from ..core.h3_grid import is_valid_h3_frame_count
 from ..core.person_crop import crop_video_to_person
 from .segment_store import (
     save_segment as _save_segment, load_segment, load_project_index,
     list_project, list_projects, sanitize_project_name, DEFAULT_PROJECT,
+    normalize_save_dtype,
 )
 
 logger = logging.getLogger(__name__)
@@ -162,18 +163,25 @@ class H3LongVideoManager(io.ComfyNode):
             inputs=[
                 io.Image.Input('video'),
                 io.Int.Input('fps', default=24, min=1, max=240, tooltip='源视频帧率，用于时长和音频计算'),
-                io.Float.Input('segment_duration', default=6.0, min=0.5, max=120.0, step=0.001),
+                io.Float.Input('segment_duration', default=6.0, min=0.5, max=120.0, step=0.001,
+                    tooltip='每段输出的固定时长（含 Motion Context 重叠帧）；实际帧数会向下取到 17n+5，例如 6.0s@24fps → 141 帧 = 5.875s'),
                 io.Combo.Input('motion_context_frames', options=['0', '5', '22', '39', '56'], default='22'),
                 io.Int.Input('segment_id', default=1, min=1, max=999),
                 io.Audio.Input('audio', optional=True),
                 io.Float.Input('scale_percent', optional=True, default=100.0, min=10.0, max=100.0, step=1.0),
-                io.Boolean.Input('align_to_h3_grid', optional=True, default=True),
+                io.Boolean.Input('align_to_h3_grid', optional=True, default=True,
+                    tooltip='关闭后不取 17n+5，每段正好等于所填时长（H3 可能会自行吸附帧数）'),
                 io.String.Input('project_name', optional=True, default=DEFAULT_PROJECT, placeholder='留空 → 默认库：H3_LVM'),
                 io.Boolean.Input('save_enabled', optional=True, default=True),
                 io.Boolean.Input('save_preview_mp4', optional=True, default=False),
-                io.Combo.Input('final_align', options=['down', 'up'], optional=True, default='down'),
+                # Kept only so old workflows still line up by position; the value
+                # is ignored. The tail is decided automatically now.
+                io.Combo.Input('final_align', options=['down', 'up'], optional=True, default='down',
+                    tooltip='已废弃：末段现在自动处理（剩余帧会让最后一段变短，不重复、不补黑帧）'),
                 io.Boolean.Input('person_crop', optional=True, default=False, tooltip='开启后检测人物并裁掉边缘，让人物占画面更大'),
                 io.Int.Input('person_crop_expand_percent', optional=True, default=0, min=0, max=100, step=1, tooltip='人物框外扩百分比，0 为紧贴检测框（仍保持原画面比例）'),
+                io.Combo.Input('save_dtype', options=['int8', 'fp16'], optional=True, default='int8',
+                    tooltip='素材存盘精度：int8 体积只有 fp16 的一半（源视频本身是 8-bit，读回后画质一致）；fp16 是旧格式，需要保留原始浮点张量时再选'),
             ],
             outputs=[
                 io.Image.Output(display_name='IMAGE'),
@@ -188,7 +196,11 @@ class H3LongVideoManager(io.ComfyNode):
     def execute(cls, video, fps, segment_duration, motion_context_frames, segment_id,
                 audio=None, scale_percent=100.0, align_to_h3_grid=True,
                 project_name=DEFAULT_PROJECT, save_enabled=True, save_preview_mp4=False,
-                final_align="down", person_crop=False, person_crop_expand_percent=0):
+                final_align="down", person_crop=False, person_crop_expand_percent=0,
+                save_dtype="int8"):
+        # final_align is accepted but ignored: it only exists so graphs saved
+        # before the automatic tail policy keep their widget positions.
+        del final_align
         if not isinstance(video, torch.Tensor):
             raise TypeError(f"Expected IMAGE tensor [F,H,W,C], got {type(video).__name__}")
 
@@ -229,31 +241,49 @@ class H3LongVideoManager(io.ComfyNode):
             segment_duration_seconds=segment_duration,
             motion_context=mc_config,
             align_to_h3=align_to_h3_grid,
-            final_align=final_align,
         )
 
         total_segments = len(manifest.segments)
 
         # Print full segment table to console
-        print(f"[H3 LVM] === SEGMENT TABLE ({total_segments} segments) ===")
+        slice_frames = manifest.slice_frames or manifest.segment_duration_frames
+        working_fps = manifest.working_info.fps
+        slice_sec = slice_frames / working_fps
+        print(f"[H3 LVM] === SEGMENT TABLE ({total_segments} segments, "
+              f"{slice_frames}f = {slice_sec:.3f}s each) ===")
         for seg in manifest.segments:
-            valid = '17n+5 ✓' if is_valid_h3_frame_count(seg.main_frame_count) else 'not 17n+5'
-            print(f"  Seg {seg.segment_id + 1}: main=[{seg.main_start_frame},{seg.main_end_frame}) "
-                  f"={seg.main_frame_count}f ({valid}), "
-                  f"extract=[{seg.extraction_start_frame},{seg.extraction_end_frame}) "
-                  f"={seg.extraction_frame_count}f")
+            is_tail = seg.segment_id == total_segments - 1
+            if is_valid_h3_frame_count(seg.extraction_frame_count):
+                valid = '17n+5 ✓'
+            elif is_tail:
+                valid = 'not 17n+5 (tail, left to H3)'
+            else:
+                valid = 'not 17n+5'
+            print(f"  Seg {seg.segment_id + 1}: extract=[{seg.extraction_start_frame},{seg.extraction_end_frame}) "
+                  f"={seg.extraction_frame_count}f ({valid}), "
+                  f"context={seg.context_length}f, main=[{seg.main_start_frame},{seg.main_end_frame}) "
+                  f"={seg.main_frame_count}f")
+        used = sum(seg.main_frame_count for seg in manifest.segments)
+        source_total = manifest.working_info.total_frames
+        tail = manifest.segments[-1] if total_segments else None
+        unused = source_total - used
+        tail_note = (
+            f", tail {tail.extraction_frame_count}f (not aligned, left to H3)"
+            if tail and tail.extraction_frame_count != slice_frames else ""
+        )
+        print(f"[H3 LVM] {used}/{source_total} source frames used"
+              f"{'' if unused == 0 else f', {unused} unused'}{tail_note}")
         print(f"[H3 LVM] ==========================================")
 
         if segment_id < 1 or segment_id > total_segments:
             raise ValueError(
                 f"segment_id={segment_id} out of range [1, {total_segments}]. "
                 f"Source: {total_frames} frames @ {fps}fps → "
-                f"{manifest.working_info.total_frames} frames @ 24fps → "
-                f"{total_segments} segments of ~{manifest.segment_duration_frames} frames"
+                f"{manifest.working_info.total_frames} frames @ {manifest.working_info.fps}fps → "
+                f"{total_segments} segments of {manifest.slice_frames or manifest.segment_duration_frames} frames each"
             )
 
         # --- Timeline (1:1, no conversion) ---
-        working_fps = manifest.working_info.fps
         src_fps = float(fps)
 
         # Target resolution (after scale)
@@ -265,31 +295,22 @@ class H3LongVideoManager(io.ComfyNode):
         if save_enabled and STORE_AVAILABLE:
             project = project_name if project_name and str(project_name).strip() else DEFAULT_PROJECT
             print(f"[H3 LVM] saving {total_segments} segments to project '{project}'")
+            saved_ids = []
             for idx, seg in enumerate(manifest.segments):
                 seg_id_1based = idx + 1
                 src_start = min(int(round(seg.extraction_start_frame * src_fps / working_fps)), total_frames)
                 src_end = int(round(seg.extraction_end_frame * src_fps / working_fps))
                 src_start = max(0, src_start)
                 src_end = max(src_start + 1, src_end)
-
-                # Align to H3 grid (direction follows final_align)
-                actual_frames = src_end - src_start
-                if align_to_h3_grid and not is_valid_h3_frame_count(actual_frames):
-                    if final_align == "up":
-                        aligned = align_up_to_h3_grid(actual_frames)
-                    else:
-                        aligned = align_down_to_h3_grid(actual_frames)
-                    if aligned < 5:
-                        aligned = 5
-                    src_end = src_start + aligned
-                    actual_frames = aligned
+                # The manifest already fixed every segment length; re-aligning
+                # here is what made segments drift between 6.6s and 7.3s.
 
                 try:
                     # Slice video
                     seg_video = _slice_and_scale(work_video, src_start, src_end,
                                                  target_w if need_scale else None,
                                                  target_h if need_scale else None)
-                    # Pad black frames if video is shorter than expected (final_align=up)
+                    # Pad black frames if the slice came up short (fps rounding)
                     expected_f = src_end - src_start
                     if seg_video.shape[0] < expected_f:
                         seg_video = _pad_black_frames(seg_video, expected_f)
@@ -316,6 +337,7 @@ class H3LongVideoManager(io.ComfyNode):
                         audio=seg_audio,
                         fps=int(working_fps),
                         save_mp4=save_preview_mp4,
+                        save_dtype=save_dtype,
                         meta={
                             "main_start": seg.main_start_frame,
                             "main_end": seg.main_end_frame,
@@ -323,18 +345,25 @@ class H3LongVideoManager(io.ComfyNode):
                             "context_frames": seg.context_length,
                         },
                     )
+                    saved_ids.append(seg_id_1based)
                 except Exception as e:
                     raise RuntimeError(
                         f"H3 LVM: 保存项目 '{project}' 的片段 #{seg_id_1based} 失败。"
                         "请检查磁盘空间、写入权限或文件占用；本次保存未完成。"
                     ) from e
 
-            print(f"[H3 LVM] save complete: {total_segments} segments → '{project}'")
+            print(f"[H3 LVM] save complete: {total_segments} segments → '{project}' "
+                  f"(素材精度 {normalize_save_dtype(save_dtype)})")
             # Refresh other Picker nodes even if a downstream node later fails.
             import server
             prompt_server = getattr(server.PromptServer, "instance", None)
             if prompt_server is not None:
-                prompt_server.send_sync("h3_lvm/changed", {"project": project})
+                # The ids let a Manager node show exactly what this run produced;
+                # a plain project name would also force it to guess.
+                prompt_server.send_sync("h3_lvm/changed", {
+                    "project": project,
+                    "segments": saved_ids,
+                })
         elif save_enabled and not STORE_AVAILABLE:
             raise RuntimeError("H3 LVM: 素材存储模块不可用，无法保存片段。")
         else:
@@ -342,36 +371,25 @@ class H3LongVideoManager(io.ComfyNode):
 
         # --- Output selected segment (backward compatible) ---
         seg = manifest.get_segment(segment_id - 1)
-        h3_valid = is_valid_h3_frame_count(seg.main_frame_count)
+        h3_valid = is_valid_h3_frame_count(seg.extraction_frame_count)
 
         print(f"[H3 LVM] selected segment {segment_id} (index {segment_id - 1}):")
-        print(f"  main:     [{seg.main_start_frame}, {seg.main_end_frame}) = {seg.main_frame_count} frames {'(17n+5 ✓)' if h3_valid else ''}")
+        print(f"  extract:  [{seg.extraction_start_frame}, {seg.extraction_end_frame}) = {seg.extraction_frame_count} frames {'(17n+5 ✓)' if h3_valid else ''}")
         print(f"  context:  [{seg.context_start_frame}, {seg.context_end_frame}) = {seg.context_length} frames")
-        print(f"  extract:  [{seg.extraction_start_frame}, {seg.extraction_end_frame}) = {seg.extraction_frame_count} frames")
+        print(f"  main:     [{seg.main_start_frame}, {seg.main_end_frame}) = {seg.main_frame_count} frames")
 
         src_start = min(int(round(seg.extraction_start_frame * src_fps / working_fps)), total_frames)
         src_end = int(round(seg.extraction_end_frame * src_fps / working_fps))
         src_start = max(0, src_start)
         src_end = max(src_start + 1, src_end)
-
-        # Enforce H3 grid alignment on the actual output (safety net, direction follows final_align)
-        actual_frames = src_end - src_start
-        if align_to_h3_grid and not is_valid_h3_frame_count(actual_frames):
-            if final_align == "up":
-                aligned = align_up_to_h3_grid(actual_frames)
-            else:
-                aligned = align_down_to_h3_grid(actual_frames)
-            if aligned < 5:
-                aligned = 5
-            src_end = src_start + aligned
-            actual_frames = aligned
-            print(f"  [aligned output to {aligned} frames (17n+5, {final_align})]")
+        # No re-alignment here either: the selected segment is already
+        # slice_frames long (or the short tail at the end of the video).
 
         # Slice video
         result_video = _slice_and_scale(work_video, src_start, src_end,
                                         target_w if need_scale else None,
                                         target_h if need_scale else None)
-        # Pad black frames if video is shorter than expected (final_align=up)
+        # Pad black frames if the slice came up short (fps rounding)
         expected_f = src_end - src_start
         if result_video.shape[0] < expected_f:
             result_video = _pad_black_frames(result_video, expected_f)

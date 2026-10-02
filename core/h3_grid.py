@@ -5,11 +5,18 @@ MiniMax H3 video VAE requires frame counts to satisfy:
 
 Valid frame counts: 5, 22, 39, 56, 73, 90, 107, 124, 141, 158, 175, 192, ...
 
-Seamless segmentation principle (user requirement):
-- Every main segment is a valid 17n+5 frame count
-- Segments are contiguous: seg[i+1].start == seg[i].end (NO GAPS)
-- Truncated frames from alignment "slide" to the next segment (carry-forward)
-- Only the final segment may lose a few frames (unavoidable end-of-video compromise)
+Fixed-length segmentation (user requirement, 2026-10-03):
+- Every full-length segment has the SAME frame count: the requested duration
+  rounded DOWN to 17n+5, and that count INCLUDES Motion Context, so no file is
+  ever longer than the user asked for.
+- Content stays contiguous: seg[i+1].main starts where seg[i].main ends.
+- The Motion Context of a segment is a leading overlap with the previous one.
+- Tail policy: the last segment takes whatever frames are left, with NO 17n+5
+  rounding. Nothing is duplicated, padded, or dropped - every source frame is
+  used and H3 decides what to do with a length that is not on the grid.
+
+generate_aligned_segments() is the legacy carry-forward algorithm, kept for
+reference and its tests only; the node no longer uses it.
 """
 
 from __future__ import annotations
@@ -72,8 +79,135 @@ def nearest_valid_range(desired: int) -> tuple[int, int]:
     return (lower, upper)
 
 
+
 # ---------------------------------------------------------------------------
-# Seamless Aligned Segmentation (Carry-Forward Algorithm)
+# Fixed-Length Segmentation (the algorithm the node uses)
+# ---------------------------------------------------------------------------
+
+
+def fixed_slice_frames(duration_frames: int, align_to_h3: bool = True) -> int:
+    """Frame count of every output segment, given the requested duration.
+
+    The physical length of a segment is the requested duration in frames
+    rounded DOWN to 17n+5, so every file is valid for the H3 VAE and never
+    longer than what the user asked for.
+
+    Examples:
+        >>> fixed_slice_frames(144)   # 6.0s @ 24fps
+        141
+        >>> fixed_slice_frames(144, align_to_h3=False)
+        144
+
+    A request below 5 frames cannot be aligned at all (5 is the smallest valid
+    H3 length), so 5 is returned in that degenerate case.
+    """
+    if duration_frames <= 0:
+        return 0
+    if not align_to_h3:
+        return duration_frames
+    return align_down_to_h3_grid(duration_frames)
+
+
+def generate_fixed_segments(
+    total_frames: int,
+    slice_frames: int,
+    context_frames: int = 0,
+    align_to_h3: bool = True,
+) -> list[dict]:
+    """Split a timeline into segments that all have the SAME length.
+
+    ``slice_frames`` is the physical length of every output file and already
+    includes the Motion Context frames, so the usable content of a segment is
+    ``main_frames = slice_frames - context_frames``.
+
+    Layout (half-open ranges):
+        seg 0    : main [0, slice)   extract [0, slice)  (nothing precedes it)
+        seg i>=1 : main [prev_end, +main)   extract [main_start-context, main_end)
+    Main ranges stay contiguous (no gaps, no invented frames) while the leading
+    ``context`` frames of a segment repeat the tail of the previous one.
+
+    Tail policy: the last segment takes whatever is left, i.e. exactly
+    ``context_frames + remaining``, with NO 17n+5 rounding. Every source frame
+    is used and no frame is duplicated or invented; a length that is not on the
+    grid is handed to H3 as-is. Only the full-length segments are aligned.
+
+    Args:
+        total_frames: frames in the working timeline
+        slice_frames: fixed physical length per segment (fixed_slice_frames)
+        context_frames: Motion Context frames taken from the previous segment
+        align_to_h3: when False the full-length segments are not rounded to
+            17n+5 either; the tail is never rounded regardless
+
+    Returns:
+        List of dicts with main/context/extraction ranges, same shape as
+        generate_aligned_segments_with_mc().
+    """
+    if total_frames <= 0:
+        return []
+    if slice_frames <= 0:
+        raise ValueError(f"slice_frames must be > 0, got {slice_frames}")
+    if context_frames < 0:
+        raise ValueError(f"context_frames must be >= 0, got {context_frames}")
+
+    main_frames = slice_frames - context_frames
+    if main_frames < 5:
+        raise ValueError(
+            f"每段 {slice_frames} 帧里 Motion Context 占 {context_frames} 帧，"
+            f"正文只剩 {main_frames} 帧（至少需要 5 帧）。"
+            "请增大每段时长，或减小 Motion Context 帧数。"
+        )
+
+    def make(seg_id: int, main_start: int, main_end: int,
+             extract_start: int, extract_end: int) -> dict:
+        return {
+            "segment_id": seg_id,
+            "main_start": main_start,
+            "main_end": main_end,
+            "main_frames": main_end - main_start,
+            "context_start": extract_start,
+            "context_end": main_start,
+            "context_frames": main_start - extract_start,
+            "extract_start": extract_start,
+            "extract_end": extract_end,
+            "extract_frames": extract_end - extract_start,
+        }
+
+    # Video shorter than one segment: that single segment is also the tail, so
+    # it keeps every frame.
+    if total_frames < slice_frames:
+        return [make(0, 0, total_frames, 0, total_frames)]
+
+    segments: list[dict] = [make(0, 0, slice_frames, 0, slice_frames)]
+    content_pos = slice_frames
+    seg_id = 1
+
+    while content_pos < total_frames:
+        remaining = total_frames - content_pos
+        if remaining >= main_frames:
+            main_start = content_pos
+            main_end = main_start + main_frames
+            segments.append(
+                make(seg_id, main_start, main_end, main_start - context_frames, main_end)
+            )
+            content_pos = main_end
+            seg_id += 1
+            continue
+
+        # Tail: whatever is left becomes the last segment. No 17n+5 rounding,
+        # no repetition, no padding, nothing dropped - H3 decides what to do
+        # with a length that is not on the grid.
+        tail_frames = context_frames + remaining
+        extract_end = total_frames
+        extract_start = extract_end - tail_frames
+        segments.append(
+            make(seg_id, extract_start + context_frames, extract_end,
+                 extract_start, extract_end)
+        )
+        break
+
+    return segments
+# ---------------------------------------------------------------------------
+# Legacy: Seamless Aligned Segmentation (Carry-Forward)
 # ---------------------------------------------------------------------------
 
 

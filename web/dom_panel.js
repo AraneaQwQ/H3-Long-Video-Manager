@@ -1,5 +1,7 @@
 // RAFOLIE 2026-09-28: DOM widget sizing shared by Canvas and Nodes 2.0.
 export function addPanel(node, name, element, minHeight = 220) {
+    // A function lets a panel shrink and grow again, e.g. a collapsed strip.
+    const minHeightOf = () => (typeof minHeight === "function" ? minHeight() : minHeight);
     const lifetime = new AbortController();
     element.style.width = "100%";
     element.style.height = "100%";
@@ -13,7 +15,7 @@ export function addPanel(node, name, element, minHeight = 220) {
         serialize: false,
         hideOnZoom: false,
         canvasOnly: false,
-        getMinHeight: () => minHeight,
+        getMinHeight: minHeightOf,
     });
     widget.serialize = false;
     const onRemove = widget.onRemove;

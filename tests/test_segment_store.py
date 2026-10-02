@@ -29,6 +29,8 @@ from comfyui.segment_store import (
     list_projects,
     delete_segment,
     get_project_dir,
+    normalize_save_dtype,
+    _load_tensors,
     BIN_DIR_NAME,
     INDEX_NAME,
     DEFAULT_PROJECT,
@@ -208,6 +210,82 @@ class TestDelete(unittest.TestCase):
     def test_delete_nonexistent(self):
         self.assertFalse(delete_segment("NoProj", 99))
 
+
+class TestSaveDtype(unittest.TestCase):
+    """The int8 / fp16 storage switch."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="h3lvm_dtype_")
+        set_base_dir_override(self._tmpdir)
+
+    def tearDown(self):
+        set_base_dir_override(None)
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _stored_dtype(self, project, seg_id=1):
+        sdir = os.path.join(get_project_dir(project, create=False), f"seg{seg_id:02d}")
+        tensors = _load_tensors(os.path.join(sdir, f"seg{seg_id:02d}.safetensors"))
+        return tensors["video"].dtype
+
+    def _tensor_file_size(self, project, seg_id=1):
+        sdir = os.path.join(get_project_dir(project, create=False), f"seg{seg_id:02d}")
+        return os.path.getsize(os.path.join(sdir, f"seg{seg_id:02d}.safetensors"))
+
+    def test_aliases(self):
+        for value in ("fp16", "FP16", " float16 ", "half", "f16"):
+            self.assertEqual(normalize_save_dtype(value), "fp16", value)
+        for value in ("int8", "", None, "int4", "fp8", "uint8"):
+            self.assertEqual(normalize_save_dtype(value), "int8", repr(value))
+
+    def test_int8_is_the_default(self):
+        video = torch.rand(6, 16, 16, 3)
+        meta = save_segment("DtypeDefault", 1, video, None, fps=24)
+        self.assertEqual(meta["video_dtype"], "int8")
+        self.assertEqual(self._stored_dtype("DtypeDefault"), torch.int8)
+
+    def test_int8_is_exact_for_8bit_sources(self):
+        # Every real frame comes out of the decoder as uint8 / 255, so int8
+        # storage must round-trip those values bit for bit.
+        quantized = torch.randint(0, 256, (8, 16, 16, 3), dtype=torch.uint8)
+        video = quantized.float() / 255.0
+        save_segment("DtypeExact", 1, video, None, fps=24, save_dtype="int8")
+        loaded, _, _ = load_segment("DtypeExact", 1)
+        self.assertEqual(loaded.dtype, torch.float32)
+        self.assertTrue(torch.equal(loaded, video))
+
+    def test_int8_halves_the_file(self):
+        video = torch.rand(40, 64, 64, 3)
+        save_segment("DtypeSmall", 1, video, None, fps=24, save_dtype="int8")
+        save_segment("DtypeLarge", 1, video, None, fps=24, save_dtype="fp16")
+        small = self._tensor_file_size("DtypeSmall")
+        large = self._tensor_file_size("DtypeLarge")
+        self.assertLess(small, large * 0.6)
+
+    def test_fp16_option_keeps_float_tensors(self):
+        video = torch.rand(6, 16, 16, 3)
+        meta = save_segment("DtypeFp16", 1, video, None, fps=24, save_dtype="fp16")
+        self.assertEqual(meta["video_dtype"], "fp16")
+        self.assertEqual(self._stored_dtype("DtypeFp16"), torch.float16)
+        loaded, _, _ = load_segment("DtypeFp16", 1)
+        self.assertEqual(loaded.dtype, torch.float16)
+        self.assertTrue(torch.equal(loaded, video.to(torch.float16)))
+
+    def test_mixed_project_loads_each_segment(self):
+        video = (torch.randint(0, 256, (6, 16, 16, 3)).float() / 255.0)
+        save_segment("DtypeMixed", 1, video, None, fps=24, save_dtype="int8")
+        save_segment("DtypeMixed", 2, video, None, fps=24, save_dtype="fp16")
+        first, _, _ = load_segment("DtypeMixed", 1)
+        second, _, _ = load_segment("DtypeMixed", 2)
+        self.assertTrue(torch.equal(first, video))
+        self.assertTrue(torch.allclose(second.float(), video, atol=2e-3))
+
+    def test_int8_output_stays_in_range(self):
+        video = torch.rand(8, 16, 16, 3) * 1.5  # values above 1 are clamped
+        save_segment("DtypeRange", 1, video, None, fps=24, save_dtype="int8")
+        loaded, _, _ = load_segment("DtypeRange", 1)
+        self.assertGreaterEqual(float(loaded.min()), 0.0)
+        self.assertLessEqual(float(loaded.max()), 1.0)
+        self.assertTrue(torch.allclose(loaded, video.clamp(0.0, 1.0), atol=1.0 / 255.0))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

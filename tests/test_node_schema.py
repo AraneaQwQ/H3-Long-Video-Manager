@@ -47,8 +47,30 @@ def _outputs(node_name):
     return [out.display_name for out in node_cls.define_schema().outputs]
 
 
+def _input_ids(node_name):
+    node_cls = next(cls for cls in NODES.NODE_LIST if cls.__name__ == node_name)
+    return [inp.id for inp in node_cls.define_schema().inputs]
+
+
+# LGraphNode.configure() restores widget values by position, so a new field may
+# only ever be appended here; final_align stays declared even though it is
+# ignored, for the same reason.
+MANAGER_INPUTS = [
+    "video", "fps", "segment_duration", "motion_context_frames", "segment_id",
+    "audio", "scale_percent", "align_to_h3_grid", "project_name", "save_enabled",
+    "save_preview_mp4", "final_align", "person_crop", "person_crop_expand_percent",
+    "save_dtype",
+]
+
+
 @unittest.skipIf(NODES is None, f"comfy_api unavailable: {LOAD_ERROR}")
 class TestNodeSchema(unittest.TestCase):
+    def test_manager_input_order(self):
+        self.assertEqual(_input_ids("H3LongVideoManager"), MANAGER_INPUTS)
+
+    def test_picker_input_order(self):
+        self.assertEqual(_input_ids("H3SegmentPicker"), ["project_name", "segment_id"])
+
     def test_picker_outputs(self):
         # segment_id is appended last so existing 3-output links stay valid.
         self.assertEqual(
