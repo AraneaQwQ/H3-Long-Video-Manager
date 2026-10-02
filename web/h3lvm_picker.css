@@ -181,6 +181,16 @@
     transform: scale(1.02);
 }
 
+/* The zoom control disables itself at 100% and 400% instead of wrapping around. */
+.h3lvm-refresh-btn:disabled {
+    opacity: .35;
+    cursor: default;
+    background: #1e293b;
+    color: #cbd5e1;
+    border-color: #475569;
+    transform: none;
+}
+
 .h3lvm-zoom-label {
     font-size: 10px;
     color: #94a3b8;
@@ -200,11 +210,6 @@
     padding: 4px 2px 10px 2px;
     scroll-behavior: smooth;
     align-content: start;
-}
-
-/* the Manager panel collapses its grid; display:grid would beat [hidden] */
-.h3lvm-deck[hidden] {
-    display: none;
 }
 
 .h3lvm-deck::-webkit-scrollbar {
@@ -261,10 +266,32 @@
 }
 
 .h3lvm-thumb {
+    position: relative;
+    z-index: 1;
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
+}
+
+/* Portrait frames (9:16) are shown whole instead of cropped to a strip. The box -
+   and therefore the card - keeps exactly the same size; only the fit changes, and
+   the empty side space gets a blurred copy of the same frame instead of black. */
+.h3lvm-thumb.is-portrait {
+    object-fit: contain;
+}
+
+.h3lvm-thumb-bg {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    filter: blur(10px) brightness(0.4) saturate(1.2);
+    transform: scale(1.25);
+    pointer-events: none;
 }
 
 .h3lvm-thumb-placeholder {
@@ -280,6 +307,7 @@
 /* Active badge */
 .h3lvm-active-badge {
     position: absolute;
+    z-index: 2;
     top: 4px;
     right: 4px;
     background: #10b981;
@@ -296,6 +324,7 @@
 /* Play button (mp4 preview) */
 .h3lvm-play-btn {
     position: absolute;
+    z-index: 2;
     bottom: 4px;
     right: 4px;
     background: rgba(0, 0, 0, 0.7);
@@ -320,6 +349,7 @@
 /* Marked on the Manager panel: this node's last run, inside the same deck. */
 .h3lvm-badge {
     position: absolute;
+    z-index: 2;
     top: 4px;
     left: 4px;
     padding: 1px 5px;

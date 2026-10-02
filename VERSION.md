@@ -3,7 +3,34 @@
 > 版本铁规：每次改动前，把旧版本完整快照存入 `archive/<日期>-<commit 短 hash>/`，并在本文件顶部追加一条说明。
 > 只有用户的明确命令才能删改 `archive/` 中的旧版本。
 
-## 2026-10-03 · `90851a8`（当前基线）
+## 2026-10-03 · `89dd70b`（当前基线）
+
+- 快照：`archive/2026-10-03-89dd70b/`（47 个文件 / 388 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。
+- 该基线包含第八轮之前的全部改动（Manager 素材库面板、参数中文化、int8/fp16 存盘精度、定长分段与末段零丢失），已 commit 为 `89dd70b`，测试 `Ran 125 tests ... OK`。
+- 本轮改动（第九轮：竖屏画面在卡片里完整显示）：
+  - 现象：16:9 等横屏画面在卡片里正常，9:16 竖屏被 `object-fit: cover` 裁成中间一条窄带，只能看到约三分之一的画面。
+  - 新增 `web/thumb_fit.js`：两个面板共用的缩略图构建器。按索引里的 `width`/`height` 判断方向（`portraitFromMeta()`），竖屏给 `.h3lvm-thumb-wrap` 和图片加 `is-portrait`，并在图片前插入一层同帧模糊副本 `.h3lvm-thumb-bg`；索引里没有宽高时退回读 `naturalWidth/naturalHeight`。
+  - `web/h3lvm_picker.css`：`.h3lvm-thumb.is-portrait { object-fit: contain; }`，模糊背景层用 `filter: blur(10px) brightness(0.4) saturate(1.2)` + `transform: scale(1.25)` 填满左右两侧，不是黑边。缩略图盒子仍是 `width:100% / height:var(--thumb-h)`，卡片尺寸完全不变。
+  - 实测反馈「完全糊掉了」→ 层叠顺序错误：绝对定位的 `.h3lvm-thumb-bg` 属于 positioned 层，会画在非定位的普通流 `<img>` 之上，DOM 顺序不起作用，于是整张卡片看到的都是那张放大模糊的副本。修法是把三层显式分层：`.h3lvm-thumb` 加 `position: relative; z-index: 1`（清晰帧），`.h3lvm-thumb-bg` 用 `z-index: 0`，`.h3lvm-active-badge` / `.h3lvm-play-btn` / `.h3lvm-badge` 提到 `z-index: 2`（否则会被清晰帧盖住）。
+  - `web/h3lvm_picker.js`、`web/h3lvm_manager_panel.js`：两处重复的缩略图代码改为调用 `appendThumbnail(thumbWrap, seg)`。
+  - 纯前端，无新增节点输入、无新增工作流字段，Python 侧未改，用例数仍为 125。前端逻辑用临时桩 DOM 验证过 5 个分支（元数据判定、竖屏加 contain + 模糊层、横屏不变、缺元数据时按图片实际尺寸回退、无缩略图保留占位）；`node --check` 三个文件通过。
+  - 本轮改动（第十轮：素材库常开，载入工作流直接出卡片）：
+  - 用户反馈：每次离开页面再回来都要「刷新 + 展开素材库」才能看到卡片，而「展开素材库这个功能好没用，一直展开不好吗」。
+  - `web/h3lvm_manager_panel.js`：删掉折叠状态与按钮（`PANEL_CLOSED_H`、`PANEL_DELTA`、`collapsed`、`setCollapsed()`、`growNode()`、工具行的 `▾ 展开素材库`），`deck` 不再有 `hidden`；面板高度改为常量 `PANEL_H = 320`（参数 + 项目菜单 + 工具行 + 一行卡片 + 图例），`addPanel(..., PANEL_H)` 的 `getMinHeight` 固定为它。工具行只剩 `🔄 刷新` + `🎬 素材库` 状态。
+  - 高度不需要自己管：`addPanel()` 的 `getMinHeight` 固定返回 `PANEL_H`，LiteGraph 的 `_arrangeWidgets()` 每帧把各 widget 的最小高度加起来，一旦超过节点 body 高度就 `setSize([width, l])`（只增不减、宽度不变），`computeSize()` 也会把它算进节点最小尺寸，所以用户拉不到那么小。旧工作流里被折叠过的小节点打开后会自动长到能显示一行卡片，上一版「点展开后节点缩到最小、要手动拉扯」的毛病一起消失。曾写过的 `ensurePanelHeight()` 属于重复实现，已删除。
+  - 载入即出卡片：`onNodeCreated` 先于 `configure`，面板初始那次 `render()` 用的是默认库名，读不到用户保存的库。面板改为导出 `node._h3lvmDeckRefresh = render`，`web/h3lvm_manager.js` 的 `nodeType.prototype.configure` 在 `this._h3lvmRefreshProjects?.()` 之后调用它；`onExecuted` 不需要（那里已经由 `h3_lvm/changed` 事件重画）。
+  - `README.md` 中英文 Manager 面板段落同步：删掉 `▾ 展开素材库` 与「展开 / 收起只增减一行卡片的高度」，改为常开、载入自动出卡片、高度只增不减；中文段落补上此前缺失的竖屏缩略图说明。
+  - 纯前端，无新增节点输入、无新增工作流字段，Python 未改，用例仍为 125；`node --check` 通过 `h3lvm_manager.js`、`h3lvm_manager_panel.js`、`dom_panel.js`。
+  - 本轮改动（第十一轮：Manager 面板补上卡片缩放 100%–400%，并抽成共用控件）：
+  - 用户指出少了一项通用功能：Picker 有「卡片大小」，常开的 Manager 面板没有。
+  - 新增 `web/card_zoom.js`：`createCardZoom({ container, node })`，档位仍是 `[1, 1.5, 2, 3, 4]`（100%/150%/200%/300%/400%），基准仍是 `BASE_CARD_MIN = 130` / `BASE_THUMB_H = 75`，写进容器的 `--card-min` / `--thumb-h`；`mount(toolbar)` 按「分隔线 + 卡片大小 + − + 百分比 + +」的顺序挂到工具行，两个面板因此长得一样、改一处即可。到两端把 `−` / `+` 置灰（`.h3lvm-refresh-btn:disabled`），不再绕回。
+  - `web/h3lvm_picker.js`：删掉内联的 `ZOOM_STEPS` / `applyCardZoom()` / 三个控件构造，改为 `createCardZoom({ container, node }).mount(toolbar)`；`fitToContent()` 保留（渲染卡片后仍调用），共用控件内部用 `node.setDirtyCanvas(true, true)` 做同样的事。
+  - `web/h3lvm_manager_panel.js`：工具行变成 `🔄 刷新` → 卡片缩放 → `🎬 素材库` 状态。卡片区在面板内滚动（`.h3lvm-deck` 是 `flex: 1 1 0` + `overflow-y: auto`），放大不会改节点尺寸。
+  - `web/h3lvm_picker.css`：新增 `.h3lvm-refresh-btn:disabled`；删掉已失效的 `.h3lvm-deck[hidden]`（面板不再折叠，没有任何代码写 `hidden`）。
+  - README 中英文：Manager 面板工具行描述加上 `卡片大小` 100%–400%，新增「卡片大小」小节说明这是两个面板共用的控件；Picker 的「面板布局」段落补上档位。
+  - 纯前端，无新增节点输入、无新增工作流字段，Python 未改，用例仍为 125；`node --check` 通过 `card_zoom.js`、`h3lvm_picker.js`、`h3lvm_manager_panel.js`；共用控件用桩 DOM 跑过 10 次步进 + 两端夹紧 + 置灰（`C:\Users\az\Documents\Codex\2026-10-02\xia\work\card_zoom.test.mjs`）。
+
+## 2026-10-03 · `90851a8`（上一基线）
 
 - 快照：`archive/2026-10-03-90851a8/`（41 个文件 / 262 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。
 - 本轮改动（H3 Segment Picker 项目选单，与 ClipStream v0.7.4 同一套交互）：
@@ -48,7 +75,7 @@
 - 运行副本（第五轮后）：`core/h3_grid.py`、`core/manifest.py`、`core/models.py`、`comfyui/nodes.py`、`web/h3lvm_manager.js`、`web/h3lvm_picker.js`、`web/h3lvm_picker.css`、`web/dom_panel.js`、`web/preview_overlay.js` 覆盖，新增 `web/project_menu.js`、`web/h3lvm_manager_panel.js`，并删除运行副本里的 `web/h3lvm_run_strip.js`、`web/h3lvm_manager.css`；逐文件 `Copy-Item` + `Get-FileHash` 核对。整仓同步脚本 `C:\Users\az\Documents\Codex\projects\sync-h3lvm-to-comfyui.ps1` 在本沙箱会卡在 robocopy，不用。
 - 运行副本（第六轮 + 第七轮 + 第八轮后）：`core/h3_grid.py`、`core/manifest.py`、`comfyui/nodes.py`、`comfyui/segment_store.py`、`web/h3lvm_manager.js`、`tests/test_core.py`、`tests/test_fixed_segments.py`、`tests/test_project_menu.py`、`tests/test_segment_store.py`、`tests/test_node_schema.py`、`README.md`、`VERSION.md`、`RAFOLIE_DEVELOPMENT.md` 逐文件 `Copy-Item` + `Get-FileHash` 核对。核对方式：把开发副本的全部文件（排除 `.git`、`archive/`、`__pycache__` 和临时目录）与运行副本逐个比哈希，结果为 0 处不一致、0 个残留旧文件。
 
-## 2026-10-02 · `a9b7a46`（上一基线）
+## 2026-10-02 · `a9b7a46`（更早基线）
 
 - 快照：`archive/2026-10-02-a9b7a46/`（40 个文件 / 261 KB，排除 `.git`、`__pycache__`、`archive/`）。
 - 该基线包含：ComfyUI V3 迁移 + 片段删除 + 缓存修复（`0944899`，RAFOLIE 全量合并）、`video_fps` NameError 修复（`94692ad`）、主仓库口径署名与安装地址（`a9323b6`）、Picker 第 4 输出 `segment_id` 与 `tests/test_node_schema.py`（`a9b7a46`，采纳 PR #1）。
@@ -58,6 +85,7 @@
 
 ## 变更记录
 
+- 2026-10-03（竖屏卡片）：9:16 等竖屏画面的缩略图不再被裁成中间一条窄带——竖屏改为整帧显示（`object-fit: contain`），左右两侧垫一层同帧模糊副本而不是黑边；横屏照旧铺满。缩略图盒子和卡片尺寸在两种情况下完全一致，缩放档位也不受影响。两个面板的缩略图代码抽成共用模块 `web/thumb_fit.js`。
 - 2026-10-03（末段策略，最终版）：末段不再做任何 17n+5 对齐——最后一段直接取剩余全部帧（含 Motion Context 重叠帧），不重复、不补黑帧、不丢帧，帧数是否合法交给 MiniMax H3 判断；整段仍严格对齐 17n+5 且长度一致。1962 帧 @ 6s/MC22 从「末段 56 帧、丢 2 帧」变成「末段 58 帧、零丢失」。
 - 2026-10-03（末段策略）：末段不再重复上一段、也不再整段丢弃——结尾不足一段的剩余帧会让最后一段变短（向下吸附到最近的 17n+5），最多空出 16 帧，不补黑帧；`generate_fixed_segments()` 去掉 `tail_mode`，`final_align` 参数废弃并在界面上隐藏（保留声明以免旧工作流参数错位）。1962 帧的例子从「重复 83 帧 / 丢 36 帧」变成「丢 2 帧」。
 - 2026-10-03（实测反馈修正）：Manager 面板的卡片区改为读取整个素材库并按片段编号排序，本次运行的片段带 `本次` 角标，状态行显示 `库内 N 段 · 本次生成 M 段`；工具行改为 `🎬 素材库` / `▾ 展开素材库`。新建/删除项目后菜单自己重绘（`setProject()` 结尾 `await refresh()`，`refresh()` 并发去重），修掉「点了建立但库里没出现新文件夹」。

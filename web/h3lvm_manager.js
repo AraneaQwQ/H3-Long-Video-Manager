@@ -128,6 +128,8 @@ app.registerExtension({
             }
             const r = originalConfigure ? originalConfigure.apply(this, arguments) : undefined;
             this._h3lvmRefreshProjects?.();
+            // Widgets hold their saved values now: paint the deck without a click.
+            this._h3lvmDeckRefresh?.();
             return r;
         };
 

@@ -34,6 +34,8 @@ Cut any long video into H3-compatible segments (each satisfying the `17n + 5` fr
 - **Motion Context aware** — extraction range includes MC context frames for continuity
 - **Local segment bin** — safetensors storage (int8 by default, fp16 on request), thumbnail covers, optional MP4 preview
 - **Visual card picker** — click a thumbnail to select a segment, no re-loading video
+- **Portrait frames shown whole** — a 9:16 thumbnail is displayed in full inside the same card: the side space is filled with a blurred copy of the frame instead of black bars. Landscape frames keep filling the box as before, and the card size is identical either way
+- **The deck is always open** — the Manager node keeps its card grid visible, and reopening a workflow shows the cards by itself: no expand button, no 刷新 to click
 - **Zero dependency** beyond `torch` + `safetensors` (both already in ComfyUI)
 
 ### How it works
@@ -139,16 +141,26 @@ graphs saved before this change load unchanged.
 
 **Manager panel** — under the parameters the node has a panel in the same visual language as the
 Segment Picker: the 项目素材库 menu on top (switch / create / delete a bin, with the live segment
-count), then a tool row (`🔄 刷新`, `🎬 素材库` status, `▾ 展开素材库`), then the card deck. The deck reads
-the selected bin and shows every segment in it, ordered by 片段编号 — thumbnail, 片段编号, frame count
+count), then a tool row (`🔄 刷新`, `卡片大小` 100%–400%, `🎬 素材库` status), then the card deck. The deck is always open — there is
+no collapse button. It reads the selected bin and shows every segment in it, ordered by 片段编号 — thumbnail, 片段编号, frame count
 and duration, a ▶ button for the MP4 preview, and clicking a card sets 输出片段编号. Segments that this
 node's last run produced carry a small `本次` badge, and the status line names them
 (`库内 17 段 · 本次生成 6 段（片段 1–6）`). Deleting a card in the Segment Picker removes it here too.
 Nothing is saved: the ids come from the `h3_lvm/changed` event the node already sends after saving,
 so a page reload simply shows the bin without the badge.
+Thumbnails follow the frame orientation: landscape fills the box (`object-fit: cover`), portrait (9:16) is
+shown whole (`object-fit: contain`) with a blurred copy of the same frame behind it, so a vertical video is
+never cropped to a thin strip. The thumbnail box — and therefore the card — is the same size in both cases.
 
-Expanding and collapsing adds or removes exactly the height of one card row, so a node the user
-resized keeps its own width and extra space; the node no longer snaps back to its minimum size.
+**Card size** — both panels use the same control (`web/card_zoom.js`): `−` / `+` step through
+100% / 150% / 200% / 300% / 400%, the ends disable themselves instead of wrapping around, and the deck
+scrolls inside the panel. Only the CSS variables `--card-min` and `--thumb-h` change, so the node keeps
+whatever size the user gave it.
+
+The deck belongs to the bin, not to the page visit: reopening a workflow paints the cards by itself,
+because the panel repaints once the saved 项目素材库 name is restored — no 刷新 click needed. The panel
+height is also the widget's minimum height, so ComfyUI grows any node too short to show a card row and
+keeps the width the user chose.
 
 #### H3 Segment Picker
 
@@ -159,7 +171,7 @@ resized keeps its own width and extra space; the node no longer snaps back to it
 
 **Panel layout** — three rows, top to bottom: ① a labelled project menu with the live
 segment count of the selected bin (`＋ 新建项目…` and `🗑 删除当前项目…` live inside that menu),
-② a tool row (refresh, card size, current selection), ③ the card deck, then a one-line
+② a tool row (refresh, card size 100%–400%, current selection), ③ the card deck, then a one-line
 legend. Card titles and status text are Chinese; the node parameter labels are shown in
 Chinese too (`label` is display-only — saved workflows keep `project_name` / `segment_id`).
 
@@ -219,6 +231,7 @@ H3-Long-Video-Manager/
 │   ├── h3lvm_manager_panel.js           # Manager panel (project menu + this run's cards)
 │   ├── project_menu.js                  # Project switch/create/delete row (both panels)
 │   ├── preview_overlay.js               # MP4 preview modal (Picker + Manager)
+│   ├── thumb_fit.js                   # Card thumbnails: portrait frames shown whole (both panels)
 │   ├── delete_button.js               # Segment card delete button
 │   ├── dom_panel.js                   # DOM widget sizing (Canvas + Nodes 2.0)
 │   └── extension.js                   # (placeholder, intentionally empty)
@@ -259,6 +272,8 @@ H3-Long-Video-Manager/
 - **Motion Context 感知** — 提取范围包含 MC 上下文帧，保证接续连贯
 - **本地片段库** — safetensors 存储（默认 int8，可切 fp16）+ 首帧缩略图 + 可选 MP4 预览
 - **视觉卡片选择** — 点击缩略图选段，无需重新加载视频
+- **竖屏画面完整显示** — 9:16 的缩略图在同一张卡片里整帧可见，左右两侧用同一帧的模糊副本填充而不是黑边；横屏画面照旧铺满，两种情况的卡片尺寸完全一致
+- **素材库常开** — Manager 节点的卡片区一直展开，重新打开工作流卡片直接出现，没有展开按钮，也不用点刷新
 - **零额外依赖** — 仅需 `torch` + `safetensors`（ComfyUI 自带）
 
 ### 工作流程
@@ -358,9 +373,11 @@ Motion Context 的重叠帧会在每一段里再存一份，所以一次运行�
 但 widget 本身被隐藏（`options.hidden`），因为面板顶部已经有同一个菜单——一个设置只留一个控件。隐藏的 widget
 仍按位置序列化，所以改动前保存的工作流打开后参数不会错位。
 
-**Manager 面板** — 参数下面是与 H3 Segment Picker 同一套视觉的面板：顶部是项目素材库菜单（切换 / 新建 / 删除项目，右侧实时显示片段数），接着是工具行（`🔄 刷新`、`🎬 素材库` 状态、`▾ 展开素材库`），再下面是卡片网格。卡片区读的是当前选中的素材库，按片段编号顺序显示库内**全部**片段：缩略图、片段编号、帧数和时长，带 ▶ 按钮播放 MP4 预览，点卡片就是把该段设为「输出片段编号」。本节点上一次运行产出的片段带一个 `本次` 小标记，状态行会写清楚（`库内 17 段 · 本次生成 6 段（片段 1–6）`）。在 Segment Picker 里删除片段，这里同步消失。这里不保存任何状态：本次编号来自节点保存后本来就会发的 `h3_lvm/changed` 事件，刷新页面后只剩素材库本身、没有标记。
+**Manager 面板** — 参数下面是与 H3 Segment Picker 同一套视觉的面板：顶部是项目素材库菜单（切换 / 新建 / 删除项目，右侧实时显示片段数），接着是工具行（`🔄 刷新`、`卡片大小` 100%–400%、`🎬 素材库` 状态），再下面是常开的卡片网格（没有折叠按钮）。卡片区读的是当前选中的素材库，按片段编号顺序显示库内**全部**片段：缩略图、片段编号、帧数和时长，带 ▶ 按钮播放 MP4 预览，点卡片就是把该段设为「输出片段编号」。本节点上一次运行产出的片段带一个 `本次` 小标记，状态行会写清楚（`库内 17 段 · 本次生成 6 段（片段 1–6）`）。在 Segment Picker 里删除片段，这里同步消失。这里不保存任何状态：本次编号来自节点保存后本来就会发的 `h3_lvm/changed` 事件，刷新页面后只剩素材库本身、没有标记。缩略图按画面方向自适应：横屏铺满，竖屏（9:16）整帧显示并在后面垫一层同帧模糊副本，卡片尺寸不变。
 
-展开 / 收起只增减一行卡片的高度，用户自己拉过的宽高会保留，节点不会再缩回最小尺寸。
+卡片区属于素材库而不是这一次页面访问：重新打开工作流时，面板会在「项目素材库」的名字恢复之后自己重画，卡片直接出现，不需要点刷新。面板高度同时是 widget 的最小高度，节点太矮时 ComfyUI 会自动长到能显示一行卡片，宽度按用户自己的设置不变。
+
+**卡片大小** — 两个面板用的是同一个控件（`web/card_zoom.js`）：`−` / `+` 在 100% / 150% / 200% / 300% / 400% 之间步进，到两端按钮自己变灰而不是绕回，卡片区在面板内滚动。它只改 CSS 变量 `--card-min` 和 `--thumb-h`，节点尺寸完全由用户掌握。
 
 #### H3 Segment Picker
 
@@ -369,7 +386,7 @@ Motion Context 的重叠帧会在每一段里再存一份，所以一次运行�
 | `project_name` | H3_LVM | 从哪个库读取。面板上是一个下拉菜单：列出磁盘上所有库并带片段数量，`＋ 新建项目…` 建一个空库，`🗑 删除当前项目…` 在确认行里重复库名后删除整个库 |
 | `segment_id` | 1 | 读取第几段 |
 
-**面板布局** — 自上而下三行：① 带标签的项目菜单，右侧实时显示当前库的片段数量（`＋ 新建项目…` 与 `🗑 删除当前项目…` 都在这个菜单里）；② 工具行（刷新、卡片大小、当前选中）；③ 卡片网格，最下方一行操作图例。卡片标题与状态文字全部中文，节点参数名也显示为中文（`label` 只影响显示，保存的工作流仍然是 `project_name` / `segment_id`）。
+**面板布局** — 自上而下三行：① 带标签的项目菜单，右侧实时显示当前库的片段数量（`＋ 新建项目…` 与 `🗑 删除当前项目…` 都在这个菜单里）；② 工具行（刷新、卡片大小 100%–400%、当前选中）；③ 卡片网格，最下方一行操作图例。卡片标题与状态文字全部中文，节点参数名也显示为中文（`label` 只影响显示，保存的工作流仍然是 `project_name` / `segment_id`）。缩略图按画面方向自适应：横屏铺满（`object-fit: cover`），竖屏（9:16）整帧显示（`object-fit: contain`）并在后面垫一层同帧模糊副本，不会被压成一条窄带；缩略图区域和卡片尺寸在两种情况下完全一致。
 
 ### API 接口
 

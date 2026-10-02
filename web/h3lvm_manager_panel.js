@@ -15,16 +15,17 @@ import { api } from "../../scripts/api.js";
 import { addPanel } from "./dom_panel.js";
 import { openPreview } from "./preview_overlay.js";
 import { createProjectMenu } from "./project_menu.js";
+import { appendThumbnail } from "./thumb_fit.js";
+import { createCardZoom } from "./card_zoom.js";
 
 const PROJECT_FIELD = "project_name";
 const SEGMENT_FIELD = "segment_id";
 
-// Panel height in canvas pixels without the card grid, and with one grid row.
-// Toggling adds or removes exactly this difference, so a node the user resized
-// keeps its own width and extra height.
-const PANEL_CLOSED_H = 118;
-const PANEL_OPEN_H = 320;
-const PANEL_DELTA = PANEL_OPEN_H - PANEL_CLOSED_H;
+// Panel height in canvas pixels: project menu + tool row + one card row + the legend.
+// The deck is always visible, so this doubles as the widget's minimum height. LiteGraph
+// adds it to the parameter rows and grows any node too short to show a card, which is
+// also why there is no expand/collapse button and no manual resizing here.
+const PANEL_H = 320;
 
 export function installManagerPanel(node) {
     const lifetime = node._h3lvmManagerLifetime ?? new AbortController();
@@ -48,7 +49,7 @@ export function installManagerPanel(node) {
     container.appendChild(menu.element);
     node._h3lvmRefreshProjects = menu.refresh;
 
-    // --- Toolbar: what this run made, plus the open/close control ---
+    // --- Tool row: reload, card size, and what this run made ---
     const toolbar = document.createElement("div");
     toolbar.className = "h3lvm-toolbar";
 
@@ -71,15 +72,14 @@ export function installManagerPanel(node) {
     const spacer = document.createElement("span");
     spacer.className = "h3lvm-spacer";
 
-    const toggleBtn = document.createElement("button");
-    toggleBtn.className = "h3lvm-refresh-btn";
-    toolbar.append(refreshBtn, toolSep, toolLabel, runText, spacer, toggleBtn);
+    toolbar.append(refreshBtn);
+    createCardZoom({ container, node }).mount(toolbar);
+    toolbar.append(toolSep, toolLabel, runText, spacer);
     container.appendChild(toolbar);
 
     // --- Card grid ---
     const deck = document.createElement("div");
     deck.className = "h3lvm-deck";
-    deck.hidden = true;
     container.appendChild(deck);
 
     // --- Footer legend ---
@@ -91,9 +91,8 @@ export function installManagerPanel(node) {
     footer.appendChild(hintText);
     container.appendChild(footer);
 
-    addPanel(node, "h3lvm_manager_panel", container, () => (collapsed ? PANEL_CLOSED_H : PANEL_OPEN_H));
+    addPanel(node, "h3lvm_manager_panel", container, PANEL_H);
 
-    let collapsed = true;
     // Which ids this node produced in its last run; used for a badge, not for
     // filtering the deck.
     let runIds = new Set();
@@ -114,26 +113,6 @@ export function installManagerPanel(node) {
         void menu.refresh();
         void render();
     };
-    toggleBtn.onclick = () => setCollapsed(!collapsed);
-
-    function setCollapsed(next) {
-        const changed = next !== collapsed;
-        collapsed = next;
-        deck.hidden = collapsed;
-        toggleBtn.textContent = collapsed ? "▾ 展开素材库" : "▴ 收起素材库";
-        toggleBtn.title = collapsed ? "显示当前素材库里的切片" : "收起切片，只留参数";
-        if (changed) growNode(collapsed ? -PANEL_DELTA : PANEL_DELTA);
-    }
-
-    function growNode(delta) {
-        // Keep whatever size the user gave the node and move only the panel part.
-        // computeSize() would snap it back to the minimum, which is what made the
-        // card area collapse to a stub.
-        if (!delta || !node.setSize) return;
-        const height = Math.max(PANEL_OPEN_H, node.size[1] + delta);
-        node.setSize([node.size[0], height]);
-        node.setDirtyCanvas?.(true, true);
-    }
 
     function formatIds(ids) {
         const sorted = [...ids].sort((a, b) => a - b);
@@ -220,15 +199,7 @@ export function installManagerPanel(node) {
 
         const thumbWrap = document.createElement("div");
         thumbWrap.className = "h3lvm-thumb-wrap";
-        if (seg.thumbnail_url) {
-            const img = document.createElement("img");
-            img.className = "h3lvm-thumb";
-            img.src = seg.thumbnail_url;
-            img.loading = "lazy";
-            thumbWrap.appendChild(img);
-        } else {
-            thumbWrap.innerHTML = '<div class="h3lvm-thumb-placeholder">🎬</div>';
-        }
+        appendThumbnail(thumbWrap, seg);
         if (fromRun) {
             const badge = document.createElement("span");
             badge.className = "h3lvm-badge";
@@ -282,8 +253,6 @@ export function installManagerPanel(node) {
         if (!project || data.project !== project) return;
         if (Array.isArray(data.segments) && data.segments.length) {
             runIds = new Set(data.segments.map(Number).filter(Number.isFinite));
-            // Opening is a user-visible action, so only do it when this node ran.
-            setCollapsed(false);
         }
         void render();
     }
@@ -291,6 +260,11 @@ export function installManagerPanel(node) {
     api.addEventListener("h3_lvm/changed", onChanged);
     signal.addEventListener("abort", () => api.removeEventListener("h3_lvm/changed", onChanged), { once: true });
 
-    setCollapsed(true);
+    // The deck belongs to the bin, not to this page visit: opening the workflow again
+    // shows the cards right away. The project name is only restored in configure(),
+    // which runs after onNodeCreated, so h3lvm_manager.js calls this hook once the
+    // widgets hold their saved values.
+    node._h3lvmDeckRefresh = render;
+
     void render();
 }

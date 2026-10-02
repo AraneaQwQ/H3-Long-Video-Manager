@@ -1,8 +1,10 @@
 // Modified by RAFOLIE 2026-09-28: Nodes 2.0 DOM layout and lifecycle.
 import { addDeleteButton } from "./delete_button.js";
+import { createCardZoom } from "./card_zoom.js";
 import { addPanel } from "./dom_panel.js";
 import { openPreview } from "./preview_overlay.js";
 import { createProjectMenu } from "./project_menu.js";
+import { appendThumbnail } from "./thumb_fit.js";
 /**
  * H3 Long Video Manager — Segment Picker Frontend (Phase B2)
  *
@@ -129,27 +131,6 @@ function setupPickerUI(node) {
     refreshBtn.textContent = "🔄 刷新";
     refreshBtn.title = "重新读取当前项目的片段列表";
 
-    const toolSep = document.createElement("span");
-    toolSep.className = "h3lvm-tool-sep";
-
-    const toolLabel = document.createElement("span");
-    toolLabel.className = "h3lvm-tool-label";
-    toolLabel.textContent = "卡片大小";
-
-    const zoomLabel = document.createElement("span");
-    zoomLabel.className = "h3lvm-zoom-label";
-    zoomLabel.textContent = "100%";
-
-    const btnZoomIn = document.createElement("button");
-    btnZoomIn.className = "h3lvm-refresh-btn";
-    btnZoomIn.textContent = "+";
-    btnZoomIn.title = "放大卡片";
-
-    const btnZoomOut = document.createElement("button");
-    btnZoomOut.className = "h3lvm-refresh-btn";
-    btnZoomOut.textContent = "−";
-    btnZoomOut.title = "缩小卡片";
-
     const spacer = document.createElement("span");
     spacer.className = "h3lvm-spacer";
 
@@ -158,39 +139,10 @@ function setupPickerUI(node) {
     statusText.textContent = `当前选中：片段 ${segmentWidget?.value || 1}`;
 
     toolbar.appendChild(refreshBtn);
-    toolbar.appendChild(toolSep);
-    toolbar.appendChild(toolLabel);
-    toolbar.appendChild(btnZoomOut);
-    toolbar.appendChild(zoomLabel);
-    toolbar.appendChild(btnZoomIn);
+    createCardZoom({ container, node }).mount(toolbar);
     toolbar.appendChild(spacer);
     toolbar.appendChild(statusText);
     container.appendChild(toolbar);
-
-    // --- Card Zoom State ---
-    const ZOOM_STEPS = [1, 1.5, 2, 3, 4]; // 100%, 150%, 200%, 300%, 400%
-    let zoomIdx = 0;
-    const BASE_CARD_MIN = 130; // px
-    const BASE_THUMB_H = 75;   // px
-
-    function applyCardZoom() {
-        const z = ZOOM_STEPS[zoomIdx];
-        const cardMin = Math.round(BASE_CARD_MIN * z);
-        const thumbH = Math.round(BASE_THUMB_H * z);
-        container.style.setProperty("--card-min", cardMin + "px");
-        container.style.setProperty("--thumb-h", thumbH + "px");
-        zoomLabel.textContent = Math.round(z * 100) + "%";
-        requestAnimationFrame(fitToContent);
-    }
-
-    btnZoomIn.onclick = (e) => {
-        e.stopPropagation();
-        if (zoomIdx < ZOOM_STEPS.length - 1) { zoomIdx++; applyCardZoom(); }
-    };
-    btnZoomOut.onclick = (e) => {
-        e.stopPropagation();
-        if (zoomIdx > 0) { zoomIdx--; applyCardZoom(); }
-    };
 
     // Card deck
     const deck = document.createElement("div");
@@ -270,15 +222,7 @@ function setupPickerUI(node) {
                 const thumbWrap = document.createElement("div");
                 thumbWrap.className = "h3lvm-thumb-wrap";
 
-                if (seg.thumbnail_url) {
-                    const img = document.createElement("img");
-                    img.className = "h3lvm-thumb";
-                    img.src = seg.thumbnail_url;
-                    img.loading = "lazy";
-                    thumbWrap.appendChild(img);
-                } else {
-                    thumbWrap.innerHTML = `<div class="h3lvm-thumb-placeholder">🎬</div>`;
-                }
+                appendThumbnail(thumbWrap, seg);
 
                 // Active badge
                 if (seg.segment_id === currentSel) {
