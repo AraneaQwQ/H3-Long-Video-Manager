@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 BIN_DIR_NAME = "h3-lvm"
 INDEX_NAME = "h3lvm_index.json"
 DEFAULT_PROJECT = "H3_LVM"
+MAX_PROJECT_NAME_LENGTH = 80
 
 _base_dir_override: Optional[str] = None
 _project_locks: Dict[str, threading.RLock] = {}
@@ -451,6 +452,74 @@ def list_projects() -> List[str]:
             out.append(name)
     return sorted(out)
 
+def list_projects_with_counts() -> List[Dict[str, Any]]:
+    """Lists project bins together with how many segments each one holds.
+
+    The Picker shows these counts in its menu so a name is never chosen from memory.
+    An empty bin is still a valid place to save the next shot, so nothing is filtered
+    out here - the count only says what the entry points at.
+    """
+    out: List[Dict[str, Any]] = []
+    for name in list_projects():
+        segments = len(load_project_index(name).get("segments", []))
+        out.append({"name": name, "segments": segments})
+    return out
+
+
+def create_project(project: Any) -> Dict[str, Any]:
+    """Creates an empty project bin, or confirms an existing one, and reports the name.
+
+    The Picker offers this so a new story starts in a folder chosen on purpose rather
+    than whatever name the first Manager node happened to be left with. Creating is
+    idempotent - an existing name is selected, not duplicated - and the name returned
+    is the sanitized one the folder really uses, so the UI can never drift from disk.
+
+    An empty index is written because ``list_projects`` only offers folders that
+    already have one; without it a freshly created bin would stay invisible to the menu.
+    The bin lock is held so the index write cannot race a save in the same folder.
+    """
+    typed = str("" if project is None else project).strip()
+    if not any(c.isalnum() for c in typed):
+        raise ValueError("项目名称里至少要有一个字母或数字（例如「科幻短片 01」）。")
+    safe_name = sanitize_project_name(typed)
+    if len(safe_name) > MAX_PROJECT_NAME_LENGTH:
+        raise ValueError("项目名称太长，请控制在 %d 个字符以内。" % MAX_PROJECT_NAME_LENGTH)
+    with _project_lock(safe_name):
+        existed = os.path.isdir(get_project_dir(safe_name, create=False))
+        if not existed:
+            _write_index(safe_name, {"project_name": safe_name, "total_segments": 0, "segments": []})
+        segments = len(load_project_index(safe_name).get("segments", []))
+    logger.info("[H3 LVM] %s project '%s'", "Reusing existing" if existed else "Created", safe_name)
+    return {"name": safe_name, "created": not existed, "segments": segments}
+
+
+def delete_project(project: Any, confirm: Any = "") -> Dict[str, Any]:
+    """Deletes a whole project bin: every segment, cover and preview inside it.
+
+    This is the mirror of ``create_project`` - same name rules, and the name that
+    reaches the disk is the sanitized one. ``confirm`` has to repeat that name, which
+    stops a panel left open on another bin from emptying the wrong folder when the
+    user switched bins in a second tab. The bin lock is held so a shot cannot be
+    saved into a folder that is being removed underneath it.
+    """
+    typed = str("" if project is None else project).strip()
+    if not any(c.isalnum() for c in typed):
+        raise ValueError("项目名称里至少要有一个字母或数字。")
+    safe_name = sanitize_project_name(typed)
+    if str("" if confirm is None else confirm).strip() != safe_name:
+        raise ValueError("请先确认要删除的项目名称，再按删除。")
+    with _project_lock(safe_name):
+        base = os.path.realpath(get_base_dir())
+        target = os.path.realpath(os.path.join(base, safe_name))
+        if target == base or os.path.dirname(target) != base:
+            raise ValueError("项目名称无效，只能删除素材库内的项目文件夹。")
+        if not os.path.isdir(target):
+            return {"name": safe_name, "deleted": False, "segments": 0}
+        segments = len(load_project_index(safe_name).get("segments", []))
+        shutil.rmtree(target)  # Never hide permission / in-use errors from the UI.
+    logger.info("[H3 LVM] Deleted project '%s' (%d segments)", safe_name, segments)
+    return {"name": safe_name, "deleted": True, "segments": segments}
+
 
 @project_locked
 def delete_segment(project: Any, seg_index_1based: int) -> bool:
@@ -493,5 +562,9 @@ __all__ = [
     "load_project_index",
     "list_project",
     "list_projects",
+    "list_projects_with_counts",
+    "create_project",
+    "delete_project",
+    "MAX_PROJECT_NAME_LENGTH",
     "delete_segment",
 ]
