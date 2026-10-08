@@ -85,5 +85,46 @@ class TestNodeSchema(unittest.TestCase):
         )
 
 
+# Smart Split is a new node, so its order is free to be the clean one: no
+# deprecated final_align, no Manager-only fields it must not expose.
+SMART_INPUTS = [
+    "video", "fps", "detection_sensitivity", "motion_context_frames", "segment_id",
+    "audio", "scale_percent", "project_name", "save_enabled", "save_preview_mp4",
+    "save_dtype",
+]
+
+
+@unittest.skipIf(NODES is None, f"comfy_api unavailable: {LOAD_ERROR}")
+class TestSmartSplitSchema(unittest.TestCase):
+    def test_registered(self):
+        self.assertIn("H3SmartSplit", [cls.__name__ for cls in NODES.NODE_LIST])
+
+    def test_input_order(self):
+        self.assertEqual(_input_ids("H3SmartSplit"), SMART_INPUTS)
+
+    def test_outputs_match_the_manager(self):
+        # The Picker must be able to read either producer unchanged.
+        self.assertEqual(
+            _outputs("H3SmartSplit"),
+            _outputs("H3LongVideoManager"),
+        )
+
+    def test_no_fixed_duration_or_h3_alignment(self):
+        """Planning doc sections 34 and 8: smart split has no fixed slice length."""
+        forbidden = {"segment_duration", "align_to_h3_grid", "final_align",
+                     "person_crop", "person_crop_expand_percent"}
+        self.assertEqual(forbidden.intersection(set(_input_ids("H3SmartSplit"))), set())
+
+    def test_motion_context_menu_and_default(self):
+        schema = next(cls for cls in NODES.NODE_LIST if cls.__name__ == "H3SmartSplit").define_schema()
+        mc = next(inp for inp in schema.inputs if inp.id == "motion_context_frames")
+        self.assertEqual(list(mc.options), ["0", "5", "22", "39", "56"])
+        self.assertEqual(mc.default, "0")
+
+    def test_saving_bypasses_the_cache(self):
+        self.assertNotEqual(NODES.H3SmartSplit.fingerprint_inputs(save_enabled=True), False)
+        self.assertFalse(NODES.H3SmartSplit.fingerprint_inputs(save_enabled=False))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -188,6 +188,8 @@ def _encode_mp4(images: torch.Tensor, audio: Optional[Dict[str, Any]], fps: int,
     if H % 2:
         H -= 1
     imgs = images[:, :H, :W, :]
+    # A segment on disk may be packed int8; rawvideo needs 0..1 float bytes.
+    imgs = _decode_video(imgs)
     try:
         raw = imgs.detach().clamp(0, 1).mul(255).to(torch.uint8).contiguous().cpu().numpy().tobytes()
     except Exception as e:
@@ -293,12 +295,21 @@ def save_segment(
     save_mp4: bool = False,
     meta: Optional[Dict[str, Any]] = None,
     save_dtype: str = "int8",
+    thumbnail_frame: int = 0,
+    cover_source: Optional[torch.Tensor] = None,
 ) -> Dict[str, Any]:
     """Save one segment to the project folder and upsert it into the index.
 
     ``seg_index_1based``: 1-based segment id (seg01, seg02, ...).
+    ``thumbnail_frame``: which frame of the saved tensor becomes the cover. The
+    default keeps the historical behaviour (frame 0); Smart Split passes the
+    Motion Context length so the cover is the first frame of the MAIN range
+    rather than the first frame of the overlapped extraction.
     "save_dtype": "int8" (half the bytes, lossless for 8-bit sources) or "fp16"
     (the original format). Either way the loader hands back float [0,1].
+    ``cover_source``: the tensor the cover is taken from when it is not ``video``.
+    merge_segments stores a packed int8/fp16 tensor and hands the decoded first
+    segment here, so the cover stays right without unpacking the whole clip.
     Returns the meta dict for this segment.
     """
     project = sanitize_project_name(project)
@@ -330,8 +341,10 @@ def save_segment(
     # --- first-frame cover PNG ---
     thumbnail = ""
     try:
+        cover_video = cover_source if isinstance(cover_source, torch.Tensor) else video
+        cover = min(max(int(thumbnail_frame), 0), max(0, int(cover_video.shape[0]) - 1))
         thumbnail = f"{tag}_first.png"
-        tensor_to_pil(video[0]).save(os.path.join(sdir, thumbnail))
+        tensor_to_pil(cover_video[cover]).save(os.path.join(sdir, thumbnail))
     except Exception as e:
         logger.warning("[H3 LVM] first-frame cover failed for %s: %s", tag, e)
         thumbnail = ""
@@ -585,6 +598,234 @@ def delete_segment(project: Any, seg_index_1based: int) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Merge: join adjacent segments by hand
+# ---------------------------------------------------------------------------
+
+# Keys save_segment owns. A merge must not carry one of them over from the first
+# segment: frames, file names and the saved_at stamp all change.
+_MERGE_OWN_KEYS = (
+    "segment_id", "tag", "dir", "frames", "width", "height", "fps", "duration_sec",
+    "video_dtype", "has_audio", "sample_rate", "has_mp4", "tensors_file",
+    "thumbnail", "mp4", "mp4_url", "thumbnail_url", "saved_at",
+)
+
+
+def new_tag_prefix(seg_index_1based: int) -> str:
+    """The folder/file prefix for a 1-based segment id: 3 -> seg03."""
+    return f"seg{int(seg_index_1based):02d}"
+
+
+def _segment_dir(project: str, seg_index_1based: int) -> str:
+    return checked_asset_dir(get_base_dir(), get_project_dir(project, create=False), new_tag_prefix(seg_index_1based))
+
+
+def _checked_merge_ids(segment_ids: Any) -> List[int]:
+    """Validate the requested ids: at least two, unique, and consecutive."""
+    if isinstance(segment_ids, (str, bytes)) or not isinstance(segment_ids, (list, tuple)):
+        raise ValueError("请给出要合并的片段编号列表。")
+    ids = set()
+    for value in segment_ids:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("segment_id 必须是正整数")
+        ids.add(int(value))
+    if len(ids) < 2:
+        raise ValueError("请至少选择两个片段再合并。")
+    ordered = sorted(ids)
+    if any(b - a != 1 for a, b in zip(ordered, ordered[1:])):
+        raise ValueError("只能合并相邻的片段（编号必须连续）。")
+    return ordered
+
+
+def _load_segment_tensors(project: str, seg_index_1based: int) -> Dict[str, torch.Tensor]:
+    tag = new_tag_prefix(seg_index_1based)
+    sdir = _segment_dir(project, seg_index_1based)
+    for name in (f"{tag}.safetensors", f"{tag}.pt"):
+        path = os.path.join(sdir, name)
+        if os.path.isfile(path):
+            return _load_tensors(path)
+    raise ValueError(f"片段 {seg_index_1based} 的张量文件缺失，无法合并。")
+
+
+def _rename_segment_dir(project: str, old_id: int, new_id: int) -> None:
+    """Rename segNN to segMM, including the files inside that carry the tag."""
+    old_tag, new_tag = new_tag_prefix(old_id), new_tag_prefix(new_id)
+    old_dir = _segment_dir(project, old_id)
+    new_dir = os.path.join(os.path.dirname(old_dir), new_tag)
+    if not os.path.isdir(old_dir):
+        raise ValueError(f"片段 {old_id} 已不存在，请刷新列表。")
+    if os.path.exists(new_dir):
+        raise ValueError(f"片段编号 {new_id} 已被占用，请刷新列表后重试。")
+    os.rename(old_dir, new_dir)
+    for name in sorted(os.listdir(new_dir)):
+        if name.startswith(old_tag):
+            os.rename(os.path.join(new_dir, name), os.path.join(new_dir, new_tag + name[len(old_tag):]))
+
+
+def _retag(value: Any, old_tag: str, new_tag: str) -> Any:
+    """seg03_first.png -> seg02_first.png; anything else is left alone."""
+    if isinstance(value, str) and value.startswith(old_tag):
+        return new_tag + value[len(old_tag):]
+    return value
+
+
+@project_locked
+def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
+    """Join consecutive segments into one card, then close the numbering gap.
+
+    Automatic splitting sometimes cuts one shot into several tiny pieces. The user
+    picks those cards and merges them: the merged card keeps the smallest id, and
+    every card behind it shifts down by the number of removed segments, so the bin
+    stays numbered 1..N with no holes - which is what 输出片段编号 expects.
+
+    Saved tensors start with the Motion Context overlap of the previous shot, so
+    each segment after the first loses those head frames; without that the joined
+    clip would replay the same frames at every seam.
+
+    Video stays packed (int8/fp16) while concatenating: a long shot is several GB
+    as float32, and merging should not double that.
+    """
+    project = sanitize_project_name(project)
+    ids = _checked_merge_ids(segment_ids)
+
+    idx = load_project_index(project)
+    by_id = {int(s.get("segment_id")): s for s in idx.get("segments", [])
+             if isinstance(s.get("segment_id"), int)}
+    missing = [i for i in ids if i not in by_id]
+    if missing:
+        raise ValueError("片段 " + "、".join(str(i) for i in missing) + " 已不存在，请刷新列表。")
+    metas = [by_id[i] for i in ids]
+
+    fps = int(metas[0].get("fps") or 0)
+    size = (int(metas[0].get("width") or 0), int(metas[0].get("height") or 0))
+    if fps < 1 or size[0] < 1 or size[1] < 1:
+        raise ValueError("片段的元数据缺少帧率或分辨率，无法合并。")
+    for meta in metas[1:]:
+        if int(meta.get("fps") or 0) != fps:
+            raise ValueError("这些片段的帧率不同，无法合并成一个片段。")
+        if (int(meta.get("width") or 0), int(meta.get("height") or 0)) != size:
+            raise ValueError("这些片段的分辨率不同，无法合并成一个片段。")
+
+    save_dtype = normalize_save_dtype(metas[0].get("video_dtype"))
+    wants_float = save_dtype == "fp16"
+    parts: List[torch.Tensor] = []
+    waves: List[Any] = []
+    sample_rate = 0
+    dropped: List[int] = []
+    for position, seg_id in enumerate(ids):
+        tensors = _load_segment_tensors(project, seg_id)
+        video = tensors.get("video")
+        if not isinstance(video, torch.Tensor) or video.ndim != 4 or video.shape[0] < 1:
+            raise ValueError(f"片段 {seg_id} 的视频张量形状异常，无法合并。")
+        is_float = video.dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+        if is_float != wants_float:
+            video = _encode_video(_decode_video(video), save_dtype)
+        overlap = 0
+        if position:
+            # The head of this segment repeats the tail of the previous one.
+            overlap = min(max(0, int(metas[position].get("context_frames") or 0)), int(video.shape[0]) - 1)
+            if overlap:
+                video = video[overlap:]
+                dropped.append(overlap)
+        parts.append(video.contiguous())
+
+        rate = tensors.get("sample_rate")
+        seg_sr = int(rate.reshape(-1)[0]) if isinstance(rate, torch.Tensor) and rate.numel() else 0
+        wave = tensors.get("audio")
+        if isinstance(wave, torch.Tensor) and wave.ndim >= 2:
+            if overlap and seg_sr > 0:
+                # The audio slice covers the same frames as the video, so the
+                # repeated head frames have to leave the audio too - otherwise the
+                # joined clip drifts off the picture by one overlap per seam.
+                cut = min(int(round(overlap / fps * seg_sr)), int(wave.shape[-1]) - 1)
+                if cut > 0:
+                    wave = wave[..., cut:]
+            waves.append(wave)
+            sample_rate = sample_rate or seg_sr
+        else:
+            waves.append(None)
+
+    merged_video = torch.cat(parts, dim=0)
+    audio = None
+    if all(w is not None for w in waves) and sample_rate > 0:
+        channels = {int(w.shape[-2]) for w in waves}
+        if len(channels) == 1:
+            audio = {"waveform": torch.cat(waves, dim=-1), "sample_rate": sample_rate}
+
+    carried = {k: v for k, v in metas[0].items() if k not in _MERGE_OWN_KEYS}
+    carried.update({
+        "segmentation_method": "manual_merge",
+        "merged_from": ids,
+        "merged_parts": len(ids),
+        "merged_overlap_frames": sum(dropped),
+        "main_start": metas[0].get("main_start"),
+        "main_end": metas[-1].get("main_end"),
+        "main_frames": sum(int(m.get("main_frames") or 0) for m in metas),
+        "context_frames": int(metas[0].get("context_frames") or 0),
+    })
+
+    merged = save_segment(
+        project, ids[0], merged_video, audio, fps,
+        save_mp4=any(bool(m.get("mp4")) for m in metas),
+        meta=carried,
+        save_dtype=save_dtype,
+        # The merged head is the first segment's head, so its cover still fits.
+        thumbnail_frame=int(metas[0].get("context_frames") or 0),
+        cover_source=_decode_video(parts[0]),
+    )
+
+    for seg_id in ids[1:]:
+        delete_segment(project, seg_id)
+
+    shift = len(ids) - 1
+    after = load_project_index(project)
+    above = sorted(int(s["segment_id"]) for s in after.get("segments", [])
+                   if isinstance(s.get("segment_id"), int) and s["segment_id"] > ids[-1])
+    renames: List[Tuple[int, int]] = []
+    try:
+        for old_id in above:
+            new_id = old_id - shift
+            _rename_segment_dir(project, old_id, new_id)
+            renames.append((old_id, new_id))
+    except OSError:
+        for old_id, new_id in reversed(renames):
+            try:
+                _rename_segment_dir(project, new_id, old_id)
+            except OSError:
+                logger.exception("[H3 LVM] merge rollback failed for %s", new_tag_prefix(new_id))
+        raise
+
+    if renames:
+        idx = load_project_index(project)
+        entries = {int(s["segment_id"]): s for s in idx.get("segments", [])
+                   if isinstance(s.get("segment_id"), int)}
+        for old_id, new_id in renames:
+            seg = entries.get(old_id)
+            if seg is None:
+                continue
+            old_tag, new_tag = new_tag_prefix(old_id), new_tag_prefix(new_id)
+            seg["segment_id"] = new_id
+            seg["tag"] = new_tag
+            seg["dir"] = new_tag
+            for key in ("tensors_file", "thumbnail", "mp4"):
+                seg[key] = _retag(seg.get(key), old_tag, new_tag)
+        idx["segments"].sort(key=lambda s: s.get("segment_id", 0))
+        idx["total_segments"] = len(idx["segments"])
+        idx["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _write_index(project, idx)
+
+    logger.info("[H3 LVM] merged %s -> seg%02d (%d frames, dropped %d overlap frames, renumbered %d)",
+                ids, ids[0], int(merged["frames"]), sum(dropped), len(renames))
+    return {
+        "project": project,
+        "merged_id": ids[0],
+        "merged_from": ids,
+        "dropped_overlap_frames": sum(dropped),
+        "renumbered": [{"from": old_id, "to": new_id} for old_id, new_id in renames],
+        "segment": merged,
+    }
+
+
 __all__ = [
     "BIN_DIR_NAME",
     "INDEX_NAME",
@@ -605,4 +846,5 @@ __all__ = [
     "delete_project",
     "MAX_PROJECT_NAME_LENGTH",
     "delete_segment",
+    "merge_segments",
 ]

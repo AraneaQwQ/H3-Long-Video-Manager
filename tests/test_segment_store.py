@@ -287,5 +287,44 @@ class TestSaveDtype(unittest.TestCase):
         self.assertLessEqual(float(loaded.max()), 1.0)
         self.assertTrue(torch.allclose(loaded, video.clamp(0.0, 1.0), atol=1.0 / 255.0))
 
+
+class TestThumbnailFrame(unittest.TestCase):
+    """Smart Split needs the cover to be the first MAIN frame, not the MC overlap."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="h3lvm_thumb_")
+        set_base_dir_override(self._tmpdir)
+
+    def tearDown(self):
+        set_base_dir_override(None)
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _ramp_video(self, frames=30):
+        """Frame i is a flat colour of value i, so a cover pixel names its frame."""
+        video = torch.zeros(frames, 8, 8, 3, dtype=torch.float32)
+        for index in range(frames):
+            video[index] = index / 255.0
+        return video
+
+    def _cover_pixel(self, project, tag="seg01"):
+        from PIL import Image
+
+        path = os.path.join(get_project_dir(project, create=False), tag, f"{tag}_first.png")
+        with Image.open(path) as image:
+            return image.convert("RGB").getpixel((0, 0))
+
+    def test_default_cover_is_still_frame_zero(self):
+        save_segment("ThumbDefault", 1, self._ramp_video(), None, fps=24)
+        self.assertEqual(self._cover_pixel("ThumbDefault"), (0, 0, 0))
+
+    def test_thumbnail_frame_skips_the_context_overlap(self):
+        save_segment("ThumbMain", 1, self._ramp_video(), None, fps=24, thumbnail_frame=22)
+        self.assertEqual(self._cover_pixel("ThumbMain"), (22, 22, 22))
+
+    def test_out_of_range_cover_clamps_to_the_last_frame(self):
+        save_segment("ThumbClamp", 1, self._ramp_video(5), None, fps=24, thumbnail_frame=99)
+        self.assertEqual(self._cover_pixel("ThumbClamp"), (4, 4, 4))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

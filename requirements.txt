@@ -1,0 +1,5 @@
+# 只有 H3 Smart Split 需要这个依赖。
+# 缺包不影响插件加载：Manager / Segment Picker / 拼接输出都能正常用，
+# 只有 Smart Split 节点在运行时才会报一条带安装命令的错误。
+#   pip install "scenedetect>=0.6.4,<0.8"
+scenedetect>=0.6.4,<0.8

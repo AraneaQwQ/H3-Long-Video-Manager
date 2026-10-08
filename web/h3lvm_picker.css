@@ -253,6 +253,41 @@
     box-shadow: 0 0 14px rgba(16, 185, 129, 0.45);
 }
 
+/* Merge mode. The buttons reuse .h3lvm-refresh-btn, so only the state colours
+   differ and the tool row keeps one height. */
+.h3lvm-merge-btn.on {
+    background: #7c2d12;
+    border-color: #f59e0b;
+    color: #fed7aa;
+}
+
+.h3lvm-merge-ok:not(:disabled) {
+    background: #14532d;
+    border-color: #10b981;
+    color: #d1fae5;
+}
+
+.h3lvm-card.picked {
+    border-color: #f59e0b;
+    background: #241a09;
+    box-shadow: 0 0 14px rgba(245, 158, 11, 0.45);
+}
+
+.h3lvm-pick-badge {
+    position: absolute;
+    z-index: 3;
+    top: 4px;
+    right: 4px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(245, 158, 11, 0.92);
+    color: #241a09;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.4;
+    pointer-events: none;
+}
+
 /* Thumbnail */
 .h3lvm-thumb-wrap {
     position: relative;

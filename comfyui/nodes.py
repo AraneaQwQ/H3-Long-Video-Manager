@@ -17,6 +17,9 @@ from ..core.models import MotionContextConfig, MOTION_CONTEXT_OPTIONS, SourceVid
 from ..core.manifest import build_manifest
 from ..core.h3_grid import is_valid_h3_frame_count
 from ..core.person_crop import crop_video_to_person
+from ..core.smart_split import (
+    assert_lossless, build_smart_segments, detect_scene_cuts,
+)
 from .segment_store import (
     save_segment as _save_segment, load_segment, load_project_index,
     list_project, list_projects, sanitize_project_name, DEFAULT_PROJECT,
@@ -493,7 +496,209 @@ class H3SegmentPicker(io.ComfyNode):
         return io.NodeOutput(video, audio, frame_count, segment_id)
 
 
-NODE_LIST = [H3LongVideoManager, H3SegmentPicker]
+class H3SmartSplit(io.ComfyNode):
+    """H3 Smart Split - cut the source video on real scene boundaries.
+
+    Second producer for the SAME Project Segment Store:
+
+        fixed  H3 Long Video Manager   17n+5 grid, equal slices
+        smart  this node              real shot boundaries, no grid
+
+    Detection runs once on the full input timeline, so a detected cut is a
+    frame index of this very tensor. The four invariants are enforced by
+    core.smart_split (no dropped frame / no duplicated main frame / no padding
+    / no H3 alignment); extraction and storage are the Manager's own helpers,
+    not a second copy. Output shape matches the Manager so the existing
+    H3 Segment Picker reads either producer unchanged.
+    """
+
+    @classmethod
+    def fingerprint_inputs(cls, save_enabled=True, **kwargs):
+        # Saving is a disk side effect: a cached output cannot recreate deleted assets.
+        return float("nan") if save_enabled else False
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id='H3 Smart Split',
+            display_name='H3 Smart Split',
+            category='H3/Video',
+            inputs=[
+                io.Image.Input('video'),
+                io.Int.Input('fps', default=24, min=1, max=240, tooltip='源视频帧率，用于时长和音频计算'),
+                io.Combo.Input('detection_sensitivity', options=['low', 'medium', 'high'], default='medium',
+                    tooltip='镜头切点检测灵敏度：漏切选 high，误切过多选 low。只影响检测，不改变“不丢帧/不重复/不补帧”的切分结果'),
+                io.Combo.Input('motion_context_frames', options=['0', '5', '22', '39', '56'], default='0',
+                    tooltip='Motion Context 只增加当前镜头提取时的前置上下文，不改变镜头切点，也不进行 H3 17n+5 对齐'),
+                io.Int.Input('segment_id', default=1, min=1, max=999),
+                io.Audio.Input('audio', optional=True),
+                io.Float.Input('scale_percent', optional=True, default=100.0, min=10.0, max=100.0, step=1.0),
+                io.String.Input('project_name', optional=True, default=DEFAULT_PROJECT, placeholder='留空 → 默认库：H3_LVM'),
+                io.Boolean.Input('save_enabled', optional=True, default=True),
+                io.Boolean.Input('save_preview_mp4', optional=True, default=False),
+                io.Combo.Input('save_dtype', options=['int8', 'fp16'], optional=True, default='int8',
+                    tooltip='素材存盘精度：int8 体积只有 fp16 的一半（源视频本身是 8-bit，读回后画质一致）；fp16 是旧格式，需要保留原始浮点张量时再选'),
+            ],
+            outputs=[
+                io.Image.Output(display_name='IMAGE'),
+                io.Audio.Output(display_name='AUDIO'),
+                io.Int.Output(display_name='frame_count'),
+                io.Int.Output(display_name='total_segments'),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, video, fps, detection_sensitivity, motion_context_frames, segment_id,
+                audio=None, scale_percent=100.0, project_name=DEFAULT_PROJECT,
+                save_enabled=True, save_preview_mp4=False, save_dtype="int8"):
+        if not isinstance(video, torch.Tensor):
+            raise TypeError(f"Expected IMAGE tensor [F,H,W,C], got {type(video).__name__}")
+        if video.ndim != 4:
+            raise ValueError(f"Expected IMAGE tensor [F,H,W,C], got shape {list(video.shape)}")
+
+        fps = int(fps)
+        total_frames = int(video.shape[0])
+        src_h, src_w = int(video.shape[1]), int(video.shape[2])
+        print(f"[H3 Smart Split] input video: {total_frames} frames, {src_w}x{src_h}, "
+              f"fps={fps}, duration={total_frames / float(fps):.2f}s")
+        if total_frames <= 0:
+            raise ValueError("H3 Smart Split: 输入视频没有帧，无法检测镜头。")
+
+        # --- 1. Detect on the FULL timeline, never on a pre-sliced one ---
+        try:
+            cuts, detect_meta = detect_scene_cuts(video, total_frames, fps, detection_sensitivity)
+        except ImportError as exc:
+            raise RuntimeError(str(exc)) from exc
+        print(f"[H3 Smart Split] scene detection: {detect_meta['method']} "
+              f"sensitivity={detect_meta['sensitivity']} threshold={detect_meta['adaptive_threshold']} "
+              f"analysis={detect_meta['analysis_size']} -> {detect_meta['cut_count']} cuts "
+              f"({detect_meta['scene_count']} scenes)")
+        if cuts:
+            print(f"[H3 Smart Split] cut frames: {cuts}")
+        else:
+            print("[H3 Smart Split] no scene cut found: the whole video is one segment "
+                  "(a legal result, not an error).")
+
+        # --- 2. Boundaries -> exact, contiguous segments (no grid, no padding) ---
+        segments = build_smart_segments(total_frames, cuts, int(motion_context_frames))
+        assert_lossless(segments, total_frames)
+        total_segments = len(segments)
+
+        print(f"[H3 Smart Split] === SEGMENT TABLE (SMART, {total_segments} segments) ===")
+        for seg in segments:
+            print(f"  Seg {seg['segment_id'] + 1} (scene {seg['scene_id'] + 1}): "
+                  f"main=[{seg['main_start']},{seg['main_end']}) ={seg['main_frames']}f "
+                  f"({seg['main_frames'] / float(fps):.3f}s), context={seg['context_frames']}f, "
+                  f"extract=[{seg['extract_start']},{seg['extract_end']}) ={seg['extract_frames']}f")
+        print(f"[H3 Smart Split] {sum(s['main_frames'] for s in segments)}/{total_frames} source "
+              "frames covered: no dropped frame, no duplicated main frame, no padding, no 17n+5")
+        print("[H3 Smart Split] ==========================================")
+
+        if segment_id < 1 or segment_id > total_segments:
+            raise ValueError(
+                f"segment_id={segment_id} out of range [1, {total_segments}]. "
+                f"Source: {total_frames} frames @ {fps}fps -> {total_segments} smart segments "
+                f"(cuts at {cuts})"
+            )
+
+        # --- Resolution scaling: the Manager's own dimension math ---
+        working = WorkingVideoConfig(
+            target_fps=fps,
+            scale_percent=scale_percent if scale_percent < 100.0 else None,
+        )
+        target_w, target_h = working.compute_working_dimensions(src_w, src_h)
+        need_scale = (target_w != src_w or target_h != src_h)
+
+        def _emit(seg):
+            """Slice one smart segment with the Manager's extraction helpers."""
+            start, end = int(seg["extract_start"]), int(seg["extract_end"])
+            seg_video = _slice_and_scale(video, start, end,
+                                        target_w if need_scale else None,
+                                        target_h if need_scale else None)
+            seg_audio, waveform, sr = _slice_audio(audio, start, end, float(fps))
+            if seg_audio is not None and waveform is not None:
+                expected_samples = int((end - start) / float(fps) * sr)
+                if waveform.shape[-1] < expected_samples:
+                    seg_audio = _pad_silent_audio(seg_audio, expected_samples)
+            if seg_audio is None:
+                seg_audio = _make_silent_audio((end - start) / float(fps))
+            return seg_video, seg_audio
+
+        # --- Save all segments into the existing Project Segment Store ---
+        if save_enabled:
+            if not STORE_AVAILABLE:
+                raise RuntimeError("H3 Smart Split: 素材存储模块不可用，无法保存片段。")
+            project = project_name if project_name and str(project_name).strip() else DEFAULT_PROJECT
+            # The Store upserts by segment_id; it never clears the bin. Mixing a
+            # Smart Split into a project that holds more (Fixed) segments leaves
+            # the higher ids behind, so say so instead of pretending otherwise.
+            stale = sorted(
+                int(entry.get("segment_id", 0))
+                for entry in load_project_index(project).get("segments", [])
+                if int(entry.get("segment_id", 0)) > total_segments
+            )
+            if stale:
+                print(f"[H3 Smart Split] WARNING: project '{project}' still keeps segment ids "
+                      f"{stale}, which this Smart Split did not write. The store updates ids in "
+                      "place and does not clear the bin; 需要清理请在素材库里删除这些片段。")
+            print(f"[H3 Smart Split] saving {total_segments} segments to project '{project}'")
+            saved_ids = []
+            for seg in segments:
+                seg_id_1based = int(seg["segment_id"]) + 1
+                seg_video, seg_audio = _emit(seg)
+                try:
+                    _save_segment(
+                        project=project,
+                        seg_index_1based=seg_id_1based,
+                        video=seg_video,
+                        audio=seg_audio,
+                        fps=fps,
+                        save_mp4=save_preview_mp4,
+                        save_dtype=save_dtype,
+                        # Cover = first frame of the MAIN range, not of the
+                        # Motion Context overlap the extraction starts with.
+                        thumbnail_frame=int(seg["context_frames"]),
+                        meta={
+                            "main_start": seg["main_start"],
+                            "main_end": seg["main_end"],
+                            "main_frames": seg["main_frames"],
+                            "context_frames": seg["context_frames"],
+                            "segmentation_method": "smart",
+                            "scene_id": seg["scene_id"],
+                        },
+                    )
+                    saved_ids.append(seg_id_1based)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"H3 Smart Split: 保存项目 '{project}' 的片段 #{seg_id_1based} 失败。"
+                        "请检查磁盘空间、写入权限或文件占用；本次保存未完成。"
+                    ) from e
+            print(f"[H3 Smart Split] save complete: {total_segments} segments -> '{project}' "
+                  f"(素材精度 {normalize_save_dtype(save_dtype)})")
+            import server
+            prompt_server = getattr(server.PromptServer, "instance", None)
+            if prompt_server is not None:
+                prompt_server.send_sync("h3_lvm/changed", {
+                    "project": project,
+                    "segments": saved_ids,
+                })
+        else:
+            print("[H3 Smart Split] save disabled (pure live mode)")
+
+        # --- Output the selected segment (same contract as the Manager) ---
+        seg = segments[int(segment_id) - 1]
+        result_video, result_audio = _emit(seg)
+        final_frame_count = int(result_video.shape[0])
+        print(f"[H3 Smart Split] selected segment {segment_id} (scene {seg['scene_id'] + 1}): "
+              f"extract=[{seg['extract_start']},{seg['extract_end']}) ={final_frame_count}f, "
+              f"main=[{seg['main_start']},{seg['main_end']}) ={seg['main_frames']}f, "
+              f"context={seg['context_frames']}f (not 17n+5: smart lengths are left to H3)")
+        print(f"[H3 Smart Split] output video: {final_frame_count} frames, "
+              f"{result_video.shape[2]}x{result_video.shape[1]}")
+        return io.NodeOutput(result_video, result_audio, final_frame_count, total_segments)
+
+
+NODE_LIST = [H3LongVideoManager, H3SmartSplit, H3SegmentPicker]
 
 
 

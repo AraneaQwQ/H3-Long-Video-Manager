@@ -9,3 +9,12 @@ build/
 
 # 版本铁规的本地快照目录（不进入 git，也不进入 ComfyUI 运行副本）
 archive/
+
+# 测试与探针留下的本地临时目录（沙箱里删不掉，不进 git）
+.tmp_tests/
+.tmp_run/
+.tmp_run*/
+.probe_dir/
+.probe*/
+probe_mk*/
+mk_*/

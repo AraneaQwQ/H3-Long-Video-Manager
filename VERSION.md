@@ -7,7 +7,38 @@
 
 - `v1.0.0` → `305a5d7`（首个 tag）：定长切段（每段含 MC 重叠帧固定 ≤ 用户输入时长且对齐 17n+5）+ 末段零丢失不对齐、素材存盘 int8/fp16 开关、项目素材库选单（切换/新建/删除整库）、两个节点的中文可视面板与常开卡片区、竖屏卡片完整显示、卡片缩放 100%–400% 共用控件。已推送 `origin`（`git-push-github.ps1 -Tags` 只推 tag，分支要再跑一次不带 `-Tags`）。
 
-## 2026-10-03 · `89dd70b`（当前基线）
+## 2026-10-09 · `06a259a`（当前基线）
+
+- 快照：`archive/2026-10-08-06a259a/`（49 个文件 / 406 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。
+- 该基线包含 v1.0.0（annotated tag `v1.0.0` = tag 对象 `ba4897c` → commit `305a5d7`）及之后的 `06a259a` 文档提交，均已推送 `origin`。
+- 本轮改动（第十二轮：Smart Split 卡片去掉说明文字 + 卡片区新增合并模式）：
+  - 用户实测反馈两条：① Smart Split 卡片下面那两行规则说明「没必要存在」→ 删掉。`web/deck_panel.js` 去掉 `footerLines` 参数与渲染，`web/h3lvm_smart.js`、`web/h3lvm_manager_panel.js` 不再传文案。② 自动切分有时会把一个镜头切得很小，需要手动把某些片段接回去 → 新增合并模式。
+  - 交互（用户要求）：`🔗 合并模式` 按钮与 `🔄 刷新`、`卡片大小` 同一行同高度（复用 `.h3lvm-refresh-btn` 保证等高）；进入后点选**相邻**卡片（点不相邻的重新从该段开始选），`✅ 确认合并` 只在选中 ≥2 段时可点；卡片加 `.picked` 高亮与 `已选` 角标，状态行显示已选编号。合并模式是 UI 状态，不落盘、不进工作流。
+  - 编号规则（用户要求）：新卡片 id = 所选里最小的 id；随后把 `> 最大所选 id` 的段按升序整体前移 `len(ids)-1`，目录 `segNN` 与目录内 `tensors/thumbnail/mp4` 文件名一起改名，索引条目 retag，改名中途失败按逆序回滚。结果：库内始终 1..N 连续无空洞，`输出片段编号` 不会出现读不到的号。前端在合并成功后同步跟随（段内 → merged_id，之后 → 减 shift）。
+  - `comfyui/segment_store.py`：新增 `merge_segments(project, segment_ids)` 与辅助 `new_tag_prefix`、`_segment_dir`、`_checked_merge_ids`、`_load_segment_tensors`、`_rename_segment_dir`、`_retag`、`_MERGE_OWN_KEYS`。语义：只接受 ≥2 且编号连续的 id；帧率或分辨率不一致 → 中文 `ValueError`；**每段（首段除外）去掉头部 `context_frames` 重叠帧**，并按 `overlap / fps * sample_rate` 同步裁掉音频头部（否则每个接缝重复一帧、音频逐段累积漂移）；只要有一段缺音频，合并结果整段不带音频；`video_dtype` 沿用首段；拼接全程保持 packed（int8/fp16），不做 float32 展开（一段长镜头就是几 GB）。meta 写 `segmentation_method="manual_merge"`、`merged_from`、`merged_parts`、`merged_overlap_frames`、`main_start/main_end/main_frames`。
+  - `save_segment()` 新增可选 `cover_source`（已解码张量，封面取所选首段的主区间帧，不用为封面再解码整段）；`_encode_mp4()` 先 `_decode_video()`，否则 packed int8 在旧路径下会出黑帧。
+  - `comfyui/server_api.py`：新增 `POST /h3_lvm/merge`（CSRF 与其他写接口一致），`ValueError` → 400、`MemoryError` → 507（中文提示）、`OSError` → 409；成功后广播 `h3_lvm/changed {"project", "merged_id"}`。
+  - `web/h3lvm_picker.css`：`.h3lvm-merge-btn.on`、`.h3lvm-merge-ok:not(:disabled)`、`.h3lvm-card.picked`、`.h3lvm-pick-badge`。Manager 与 Smart Split 共用 `web/deck_panel.js`，所以两个节点同时得到这个功能。
+  - 测试：新增 `tests/test_merge_segments.py` 11 例（帧序与去重叠、封面取自主区间、dtype 保持、帧率/分辨率不符、重排与文件改名、末尾合并不重排、非法 id 组合、缺段、连续两次合并、音频拼接与缺失）→ 全套 `Ran 195 tests ... OK`（184 → 195，须设 `COMFYUI_ROOT`）。桩 DOM `C:\Users\az\Documents\Codex\2026-10-02\xia\work\test_deck_panel.mjs` 扩到 29 项（合并交互、不相邻重开选择、POST body、id 顺延）。
+  - 本轮**改了 Python**：复测要重启 ComfyUI，不是只 `Ctrl+F5`。
+
+- 本轮改动（第十一轮：新增 `H3 Smart Split` 节点，按镜头切段）：
+  - 需求来源是用户的《H3 Long Video Manager — Smart Split 节点企划书与 Agent 实施指导书》：不想手动填「每段时长」，改成按画面里的镜头切点分段，长度交给 MiniMax H3 自己判断。
+  - 新增 `core/smart_split.py`（纯函数层，不 import `core/h3_grid.py`）：`SENSITIVITY_THRESHOLDS`（low 4.5 / medium 3.0 / high 2.0，与 Director `lib/shot_detect.py` 同值三档）、`DETECT_MAX_SIDE = 256` 分析分辨率、`normalize_boundaries()`、`build_smart_segments()`、`assert_lossless()`、`analysis_size()`、`detect_scene_cuts()`（懒导入 scenedetect，`AdaptiveDetector.process_frame/post_process` 逐帧扫描，兼容 0.6 与 0.7 两代 API）。
+  - 新增 `comfyui/nodes.py::H3SmartSplit`（`node_id = 'H3 Smart Split'`，category `H3/Video`）：输入顺序 `video, fps, detection_sensitivity, motion_context_frames, segment_id, audio, scale_percent, project_name, save_enabled, save_preview_mp4, save_dtype`；输出与 Manager 完全一致，Picker 与拼接节点无需改动，两个 producer 共用同一个素材库。内部 id 是 0 基，对外 `segment_id` 与落盘目录 `segNN` 一律 1 基。日志打印 `SEGMENT TABLE (SMART, N segments)` 与覆盖率行。
+  - 无损约束：主段半开区间必须 `first.start == 0`、`last.end == total`、首尾相接；没有切点时输出 1 段（合法）。不补黑帧、不丢帧、不重复正文帧、不合并短镜头、不限制最大长度、不做 17n+5、不自动推 MC（`motion_context_frames` 默认 `0`）。`detection_sensitivity` 是刻意保留的唯一检测旋钮。
+  - 检测跑在节点输入的内存 IMAGE 张量上（`target_fps == fps` 的 1:1 时间轴），不读文件、不做二次解码，`total_frames = video.shape[0]` 就是无损基准。
+  - `comfyui/segment_store.py`：`save_segment()` 新增 `thumbnail_frame`（默认 0，clamp 到段范围内），Smart Split 用它把封面停在正文第一帧而不是重叠帧。
+  - 新增 `web/h3lvm_smart.js`：中文面板，复用 `web/project_menu.js` 的项目选单（切换 / 新建 / 删除整库）与两行规则说明；固定高度、无折叠按钮。自带 `declareProjectCombo` / `hideProjectWidget` / `allowSavedProject`，不改已实测的 `web/h3lvm_manager.js`。
+  - 实测反馈（用户）：「检测分镜功能正常，但它的卡片展示区域不会出现各个裁切好的视频选项卡」。原设计「刻意不做第二套卡片区」被推翻——素材库是共用的，两个产出节点都该看到卡片。
+  - 做法是把卡片区抽成一份共用实现而不是复制：新增 `web/deck_panel.js`（`createDeck()`，工具行 + 卡片网格 + 图例 + `h3_lvm/changed` 监听），`web/h3lvm_manager_panel.js` 改为调用它（行为不变，只是不再自带这些代码），`web/h3lvm_smart.js` 挂同一个 `createDeck()`，面板高度与 Manager 一致（`PANEL_H = 320`），并在 `configure()` 里补 `this._h3lvmDeckRefresh?.()`，载入工作流直接出卡片。两个节点共用：片段按 `segment_id` 排序、`本次` 角标、卡片缩放 100%–400%、点卡片写回 `输出片段编号`、空库提示、`abort` 后停止重绘；差异只有文案（`footerLines`）和刷新时是否重读项目列表（`onRefresh`）。
+  - 前端用桩 DOM 验证 15 项（`C:\Users\az\Documents\Codex\2026-10-02\xia\work\test_deck_panel.mjs`）：排序、状态行 `库内 N 段 · 本次生成 M 段（片段 …）`、只有带 mp4 的卡片有 ▶、角标只落在本次的卡片、其他项目的 `h3_lvm/changed` 不污染本次、点卡片写回 widget 与 active、空库走 empty 分支、abort 后不再重绘。本轮纯前端，Python 未改，用例数仍为 `Ran 184 tests ... OK`。
+  - 依赖：新增 `requirements.txt`（`scenedetect>=0.6.4,<0.8`）。只有 Smart Split 用到；缺包时插件照常加载，Manager / Picker / 拼接输出都不受影响，只有该节点运行时报一条带 `pip install` 命令的错误。
+  - 文档：`README.md` 中英文各加节点表行、核心特性、流程图分支、可选依赖说明、`#### H3 Smart Split` 参数表与「刻意没有 `segment_duration` / `align_to_h3_grid` / `final_align` / `person_crop*`」的说明；新增 `SMART_SPLIT_AUDIT.md`（对照 ComfyUI_MiniMaxH3_Director 的真实调用链：检测入口是 `director/http_routes.py` 的 `minimax_detect_shots` 而不是节点；`_merge_close_cuts`、`MIN_SEG_FRAMES = 4`、`_src_frame_to_logical` 均不复用）。
+  - 测试：`Ran 184 tests ... OK`（125 → 184）。新增 `tests/test_smart_split_core.py`（43 例：边界归一化、分段构造、无损断言、阈值与分析尺寸）、`tests/test_smart_split_node.py`（7 例端到端，含 MC 重叠、`segment_id` 越界、关闭保存模式；须用 `importlib.import_module(".segment_store", package=NODES.__package__)` 才命中节点实际使用的模块实例）；`tests/test_node_schema.py::TestSmartSplitSchema` 锁定输入顺序与三档灵敏度；`tests/test_segment_store.py::TestThumbnailFrame` 4 例。
+  - `.gitignore` 补上测试与探针留下的本地临时目录（`.tmp_tests/`、`.tmp_run*/`、`.probe*/`、`probe_mk*/`、`mk_*/`）：这些目录在沙箱里 `Permission denied` 删不掉，但不应进入版本库。
+
+## 2026-10-03 · `89dd70b`（上一基线）
 
 - 快照：`archive/2026-10-03-89dd70b/`（47 个文件 / 388 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。
 - 该基线包含第八轮之前的全部改动（Manager 素材库面板、参数中文化、int8/fp16 存盘精度、定长分段与末段零丢失），已 commit 为 `89dd70b`，测试 `Ran 125 tests ... OK`。
@@ -34,7 +65,7 @@
   - README 中英文：Manager 面板工具行描述加上 `卡片大小` 100%–400%，新增「卡片大小」小节说明这是两个面板共用的控件；Picker 的「面板布局」段落补上档位。
   - 纯前端，无新增节点输入、无新增工作流字段，Python 未改，用例仍为 125；`node --check` 通过 `card_zoom.js`、`h3lvm_picker.js`、`h3lvm_manager_panel.js`；共用控件用桩 DOM 跑过 10 次步进 + 两端夹紧 + 置灰（`C:\Users\az\Documents\Codex\2026-10-02\xia\work\card_zoom.test.mjs`）。
 
-## 2026-10-03 · `90851a8`（上一基线）
+## 2026-10-03 · `90851a8`（更早基线）
 
 - 快照：`archive/2026-10-03-90851a8/`（41 个文件 / 262 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。
 - 本轮改动（H3 Segment Picker 项目选单，与 ClipStream v0.7.4 同一套交互）：

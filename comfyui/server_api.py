@@ -6,6 +6,7 @@ Registers routes with ComfyUI's PromptServer:
   POST /h3_lvm/project/delete → delete a whole project bin
   GET /h3_lvm/segments?project=<name> → enriched project index
   POST /h3_lvm/delete → delete one indexed segment
+  POST /h3_lvm/merge → join consecutive segments into one, renumber the rest
 
 Namespace isolation: uses /h3_lvm/* (clipstream uses /minimax/clip_bin/*).
 """
@@ -31,6 +32,7 @@ from .segment_store import (
     delete_segment,
     list_project,
     list_projects_with_counts,
+    merge_segments,
     sanitize_project_name,
 )
 
@@ -148,6 +150,34 @@ def register_h3lvm_routes() -> None:
             return web.json_response({"error": "片段已不存在，请刷新列表。"}, status=404)
         prompt_server.send_sync("h3_lvm/changed", {"project": project, "deleted_id": asset_id})
         return web.json_response({"deleted": asset_id})
+
+    @routes.post("/h3_lvm/merge")
+    async def handle_merge(request):
+        """Join consecutive segments into one card and close the numbering gap."""
+        blocked = _csrf_block(request)
+        if blocked is not None:
+            return blocked
+        if request.content_type != "application/json":
+            return web.json_response({"error": "Expected JSON"}, status=415)
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Expected an object")
+            if not isinstance(body.get("project"), str) or not body["project"].strip():
+                raise ValueError("A project name is required")
+            result = await asyncio.to_thread(merge_segments, body["project"], body.get("segment_ids"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except (TypeError, KeyError):
+            return web.json_response({"error": "Invalid project or segment_ids"}, status=400)
+        except MemoryError:
+            logger.exception("Failed to merge segments: out of memory")
+            return web.json_response({"error": "合并失败：内存不足，请减少一次合并的片段数量。"}, status=507)
+        except OSError:
+            logger.exception("Failed to merge segments")
+            return web.json_response({"error": "合并失败：文件可能被占用或没有写入权限，请关闭预览后重试。"}, status=409)
+        prompt_server.send_sync("h3_lvm/changed", {"project": result["project"], "merged_id": result["merged_id"]})
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
 
     logger.info("[H3 LVM API] Successfully registered /h3_lvm/* routes with PromptServer.")
 
