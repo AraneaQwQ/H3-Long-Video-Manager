@@ -6,11 +6,14 @@
 ## Tag 线
 
 - `v1.0.0` → `305a5d7`（首个 tag）：定长切段（每段含 MC 重叠帧固定 ≤ 用户输入时长且对齐 17n+5）+ 末段零丢失不对齐、素材存盘 int8/fp16 开关、项目素材库选单（切换/新建/删除整库）、两个节点的中文可视面板与常开卡片区、竖屏卡片完整显示、卡片缩放 100%–400% 共用控件。已推送 `origin`（`git-push-github.ps1 -Tags` 只推 tag，分支要再跑一次不带 `-Tags`）。
+- `v1.1.0` → `0a1cdd4`（tag 对象 `5d7b5a3`）：新增 `H3 Smart Split` 节点（按镜头切点分段，长度交给 MiniMax H3 判断，无损覆盖全部帧）+ 两个产出节点共用的一套卡片区 `web/deck_panel.js`（常开、载入即出卡片、`本次` 角标、卡片缩放 100%–400%、点卡片写回输出片段编号）+ 卡片区合并模式（相邻多选、`✅ 确认合并`、新卡片沿用最小 id 且后续编号顺延、接缝去掉 MC 重叠帧并同步裁音频、packed int8/fp16 直拼、`POST /h3_lvm/merge`）。已推送 `origin/main`（远端 main = `0a1cdd4`）与 `v1.1.0`。
 
-## 2026-10-09 · `06a259a`（当前基线）
+## 2026-10-09 · `0a1cdd4`（当前基线）
 
 - 快照：`archive/2026-10-08-06a259a/`（49 个文件 / 406 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。
-- 该基线包含 v1.0.0（annotated tag `v1.0.0` = tag 对象 `ba4897c` → commit `305a5d7`）及之后的 `06a259a` 文档提交，均已推送 `origin`。
+- 该基线包含 v1.0.0（annotated tag `v1.0.0` = tag 对象 `ba4897c` → commit `305a5d7`）、`06a259a` 文档提交，以及本轮的 `0a1cdd4`（第十一轮 Smart Split + 第十二轮合并模式，18 文件 / +2754 −240）。annotated tag `v1.1.0` = tag 对象 `5d7b5a3` → commit `0a1cdd4`。`origin/main` = `0a1cdd4`，`v1.0.0` 与 `v1.1.0` 均已推送。
+- 下一轮改动前的快照：`archive/2026-10-09-0a1cdd4/`（57 个文件 / 531 KB，`git archive HEAD` 解出，与 `git ls-files` 数量一致）。
+- 仓库目录已原地整理：本轮在 `C:\Users\az\Documents\Codex\2026-10-02\xia\work\h3lvm-release-clone`（`robocopy` 整仓副本，含 `.git`）里跑测试并 commit/tag/push，然后逐文件哈希证明副本 == 刚测过的工作树、`git merge-base --is-ancestor 06a259a HEAD` 与 `git fsck` 通过，再把原目录改名、把已推送的副本移到 `C:\Users\az\Documents\Codex\projects\H3-Long-Video-Manager`。现在开发副本 HEAD = `0a1cdd4`、`main...origin/main` 无差异、`.git` 可写，不需要用户再跑 `git fetch` / `git reset`。旧目录只剩 `C:\Users\az\Documents\Codex\projects\h3lvm-old-git-06a259a`（内容与现仓库完全冗余，其中 `.git` 在沙箱里删不动），可手动删除。
 - 本轮改动（第十二轮：Smart Split 卡片去掉说明文字 + 卡片区新增合并模式）：
   - 用户实测反馈两条：① Smart Split 卡片下面那两行规则说明「没必要存在」→ 删掉。`web/deck_panel.js` 去掉 `footerLines` 参数与渲染，`web/h3lvm_smart.js`、`web/h3lvm_manager_panel.js` 不再传文案。② 自动切分有时会把一个镜头切得很小，需要手动把某些片段接回去 → 新增合并模式。
   - 交互（用户要求）：`🔗 合并模式` 按钮与 `🔄 刷新`、`卡片大小` 同一行同高度（复用 `.h3lvm-refresh-btn` 保证等高）；进入后点选**相邻**卡片（点不相邻的重新从该段开始选），`✅ 确认合并` 只在选中 ≥2 段时可点；卡片加 `.picked` 高亮与 `已选` 角标，状态行显示已选编号。合并模式是 UI 状态，不落盘、不进工作流。
