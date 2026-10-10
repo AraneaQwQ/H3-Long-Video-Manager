@@ -8,7 +8,91 @@
 - `v1.0.0` → `305a5d7`（首个 tag）：定长切段（每段含 MC 重叠帧固定 ≤ 用户输入时长且对齐 17n+5）+ 末段零丢失不对齐、素材存盘 int8/fp16 开关、项目素材库选单（切换/新建/删除整库）、两个节点的中文可视面板与常开卡片区、竖屏卡片完整显示、卡片缩放 100%–400% 共用控件。已推送 `origin`（`git-push-github.ps1 -Tags` 只推 tag，分支要再跑一次不带 `-Tags`）。
 - `v1.1.0` → `0a1cdd4`（tag 对象 `5d7b5a3`）：新增 `H3 Smart Split` 节点（按镜头切点分段，长度交给 MiniMax H3 判断，无损覆盖全部帧）+ 两个产出节点共用的一套卡片区 `web/deck_panel.js`（常开、载入即出卡片、`本次` 角标、卡片缩放 100%–400%、点卡片写回输出片段编号）+ 卡片区合并模式（相邻多选、`✅ 确认合并`、新卡片沿用最小 id 且后续编号顺延、接缝去掉 MC 重叠帧并同步裁音频、packed int8/fp16 直拼、`POST /h3_lvm/merge`）。已推送 `origin/main`（远端 main = `0a1cdd4`）与 `v1.1.0`。
 
-## 2026-10-09 · `0a1cdd4`（当前基线）
+## 2026-10-10 · 未提交（当前基线 `1bd48e2`）
+
+- 快照：`archive/2026-10-10-1bd48e2/`（57 个文件 / 532 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。开发副本 HEAD = `1bd48e2`，已有 tags `v1.0.0`、`v1.1.0`。
+- 本轮改动（第十三轮：图片/音频参考加载器，按企划书 `H3_Image_Audio_Reference_Loaders_Implementation_Brief.md`）：
+  - 动机：官方 `MiniMaxH3ReferenceToVideo` 的参考端口是 Autogrow 的编号端口（`ref_image_0..8`、`ref_audio_0..2`），要喂参考图就得在画布上摆一排 `LoadImage` + 缩放节点。两个新节点把素材收成卡片，端口数量与顺序保持不变，空槽输出真 `None`（官方 execute 里 `if img is None: continue`）。
+  - `core/ref_size.py`：`plan_size()` / `clamp_megapixels()`。目标 MP（默认 0.25，范围 0.02–8.0）+ 32 像素网格，不裁切、不补边；候选尺寸来自理想尺寸 / 面积匹配 / 比例匹配三组，再用确定性 tie-break 选一个。实测最坏（目标 ≥ 0.25 MP、源比例 ≤ 3:1）面积误差 8.95%、比例误差 3.57%；480×640 @ 0.25 MP 会主动让一点比例去保面积。`MAX_SOURCE_PIXELS = 40_000_000`。
+  - `core/ref_media.py`：`parse_media_list`（面板 JSON 或纯文件名列表、路径安全校验、超量截断）、`resolve_media_path`、`media_fingerprint`（含 size + mtime_ns，同名替换文件会重新解码）、`fill_slots`（空槽是真 `None`，不是占位）。
+  - `comfyui/ref_nodes.py`：`H3 Image Reference Loader`（`media_files` + `target_megapixels`，9 个 `io.Image.Output(display_name="ref_image_N")`，带 `validate_inputs` / `fingerprint_inputs` / `execute`）、`H3 Audio Reference Loader`（3 个 AUDIO）。图片走 PIL + `ImageOps.exif_transpose` + LANCZOS + `convert("RGB")` → `[1,H,W,3]` float32 0..1（与 `LoadImage` 同形状）；音频复用 `comfy_extras.nodes_audio.load`，不重采样、不截断、不混音。
+  - `comfyui/server_api.py`：新增 `GET /h3_lvm/ref_plan?w=&h=&mp=`。卡片上显示的输出尺寸由服务端唯一实现回答，避免在 JavaScript 里复刻一份算法（那就是「卡片说的和 tensor 不一样」的来源）。
+  - 前端：`web/ref_state.js` 纯函数（解析/序列化、增删改与排序、槽位上限、槽位标签、尺寸与音频信息文案）；`web/ref_loader.js` 面板（复用 `card_zoom.js` / `thumb_fit.js` / `dom_panel.js` 与 `h3lvm_picker.css` 的类名 token，固定 `PANEL_H`、不自调高度；上传走 `/upload/image`，支持拖放 / 添加 / 替换 / 移除，槽位顺序靠拖拽卡片改；图片卡片显示 `源 W×H → 输出 W×H · 实际 MP`，音频卡片内嵌播放器 + 时长 / 采样率 / 声道）；`web/ref_loader.css` 只放 `h3ref-*` 局部样式。
+  - 实测反馈（用户）：「改成可以通过拖拽卡片调换顺序的形式，不要用按钮，按钮太不方便，删除和替换图片按钮可以保留」。做法：卡片 `draggable = true`，去掉 `←` / `→` 两个按钮与 `reorder()`，改用 HTML5 拖放换序。外部文件拖入与自己的卡片换序用 `dataTransfer.types` 是否含 `"Files"` 区分（ComfyUI 在 document 上监听文件拖放，会顺手建一个 `LoadImage` 节点，所以这里的拖放事件 `stopPropagation`）；插入位置按卡片中线前/后判定，空白网格 = 追加到末尾，落点用蓝色边线提示（`.h3lvm-card.h3ref-drop-before` / `.h3ref-drop-after`，必须带 `.h3lvm-card` 前缀才压得过 picker 的 `:hover` box-shadow，且本表在 picker 之后加载）。排序仍然只改 `ref_state.js` 的纯函数 `moveEntry()`，用例不变。
+  - 实测反馈（用户）：「有些时候拖拽失效啊，感觉触发区域给的太小了」。四个真正的原因：① 落点只认「指针正下方那张卡」，卡片间的缝隙会把卡片甩到末尾；② `dragover`/`drop` 只挂在网格上，指针一出卡片区就完全没反应；③ 缩略图 `<img>` 自带可拖拽，抓图片时拖拽源变成图片，拖影只有一小块（「触发区域很小」的直觉来源）；④ 卡片区会滚动，超出可视范围的行根本拖不到。
+  - 修法：新增纯函数 `ref_state.js::insertPosition(rects, x, y, draggedIndex)`（按「到矩形边缘的距离」找最近卡片，同行按中线前/后、不同行按上/下；指针在被拖卡片自己上面返回 -1，即「这次松手不改变什么」），几何信息是参数因此可用桩网格监测试；拖拽事件改挂到整个面板（文件上传仍然只认网格内的落点，避免在工具行上松手就丢文件）；`thumb_fit.js` 给缩略图与模糊背景图加 `draggable = false`，拖拽源回到卡片本身（拖影是整张卡片）；指针停在卡片区上下边缘 28px 内时用 `requestAnimationFrame` 自动滚动；再加一条保险：若浏览器没报 `dragstart`，就用 `pointerdown` 记下的卡片与 `dataTransfer.types` 里的 `CARD_MIME` 把来源补回来。新增 3 个用例（缝隙、末行下方、拖到自己、无效 rects）→ `ref_state.test.mjs` 16/16。
+  - 测试：新增 `tests/test_ref_size.py`、`tests/test_ref_media.py`、`tests/test_ref_nodes.py`（0/1/9 图的槽位与 `None` 位置、顺序 = 卡片顺序、batch = 1、RGBA/L/EXIF、缓存键、schema 名称与顺序、音频不重采样）。前端纯函数另测 `C:\Users\az\Documents\Codex\2026-10-02\xia\work\ref_state.test.mjs`（13 例，`node <file>` 直跑；`node --test` 在沙箱里 `spawn EPERM`）。全量 `Ran 250 tests ... OK`（必须用 ComfyUI 自带解释器：系统 `C:\Python314` 缺 `packaging`，节点测试会全部 skip）。
+- 本轮改动（第十四轮：图片参考的缩放选项，按补丁企划书 `H3_Image_Resize_Methods_Plan_Patch.md`）：
+  - 需求：图片适配固定为「按比例缩放」（不裁切、不补边、不拉到统一宽高），但把两件事交给用户——重采样算法，以及要不要把小图放大到目标 MP。
+  - `core/ref_size.py`：新增 `RESAMPLE_METHODS`（`Lanczos` / `Bicubic` / `Bilinear` / `Nearest`，默认 `Lanczos`）、`DEFAULT_UPSCALE_SMALL_IMAGES = False`、`clamp_resampling_method()`（大小写与前后空格宽容，未知值直接报错，不会静默退回默认滤镜）；`_source_size()` 统一校验源尺寸（`plan_size` 也改用它）；`plan_grid_align()`（已在网格上就原样返回，否则 ±1 网格步候选，排序键＝面积变化 → 比例误差 → 单轴变化 → 面积 → w → h）；`plan_reference()` 返回 plan + `mode`（`target_mp` / `grid_align`）。`plan_size()` 行为不变。
+  - 语义边界（写进文档也写进测试）：「关闭放大」= 不对小图施加目标面积，**不是**「像素数绝不增加」——300×200 会变成 320×192，因为 32 网格要求这样；已经在 32 网格上的小图原样返回并跳过重采样。
+  - `comfyui/ref_nodes.py`：schema 在 `target_megapixels` 之后新增 `io.Combo.Input("resampling_method")` 与 `io.Boolean.Input("upscale_small_images")`；`RESAMPLE_FILTERS` 把四个选项映射到 `Image.Resampling`（老 Pillow 用 `getattr(Image, "Resampling", Image)` 回退到旧常量）；`validate_inputs` / `fingerprint_inputs` / `execute` 都接两个新参数，缓存键的 `extra` 含 mp + method + upscale；`build_image_slot()` 走 `plan_reference()`，计划尺寸与源尺寸一致时跳过 resize；日志加 `mode` / `method`。
+  - `comfyui/server_api.py`：`GET /h3_lvm/ref_plan` 增加 `upscale=0|1` 并返回 `mode`；新增 `_query_bool()`。卡片上的尺寸仍然只有服务端一份实现。
+  - 前端：`ref_state.js::sizeLine()` 在 `mode === "grid_align"` 时追加「（未放大，仅对齐网格）」；`ref_loader.js` 给两个新控件加中文标签与 tooltip（`🔍 重采样算法`、`↕ 放大小图至目标 MP`），MP 与放大开关的 callback 统一挂上并重新取 `/ref_plan`（重采样算法不改变尺寸，所以不触发取 plan），面板底部说明「关闭放大小图时小图只做网格对齐」。
+  - 测试：`tests/test_ref_size.py` 新增 `TestClampResamplingMethod` / `TestPlanGridAlign` / `TestPlanReference`（大图两种模式都到目标面积、小图只在开启时放大、关闭时实际 MP 与源 MP 相差 ≤10%、已对齐小图完全不动、恰好等于目标面积时只做网格对齐、极端比例仍保证 32 倍数、确定性、非法输入报错）；`tests/test_ref_nodes.py` 新增 `TestImageResizeSettings`（`RESAMPLE_FILTERS` 的键 == 选项表、2×2 四色图 Nearest 只出现 4 色而 Bilinear 会插值、换滤镜会改变像素、已对齐小图 + 关闭放大 → tensor 尺寸 == 源尺寸、开启放大才变大、缓存键随 mp/method/upscale 变化、未知滤镜给出可读错误）并把 schema 断言改成四个输入 + options/default；前端 `work/ref_state.test.mjs` 新增「未放大」标记一例。全套 `Ran 275 tests ... OK`（250 → 275），前端 17 项全绿。
+  - 待办：用户实测通过后才 commit / annotated tag（建议 `v1.2.0`）/ 推送，并同步 `C:\Users\az\Documents\Codex\CHANGELOG.md`、`PROJECTS.md`。
+- 本轮改动（第十五轮：参考加载器的卡片「跳过 / 放回」）：
+  - 实测反馈（用户）：「加一个卡片屏蔽功能，可以选卡片让它被绕过并置于后排」「放在替换和移除按钮并列就好了，选 b」。
+  - 做法：不新增输入、不新增概念——跳过状态存在同一个 `media_files` 里（条目带 `"skip": true`），节点在填槽位之前把它过滤掉。列表只有一个规范顺序：槽位卡片在前、已跳过卡片在后，所以卡片在卡片区里的位置就是它在列表里的下标。
+  - `core/ref_media.py`：`parse_media_list()` 只在跳过为真时写入 `skip`（旧列表的解析结果一字不变），槽位上限只数活动条目（已跳过的不会被截断）；新增 `is_skipped()` / `split_entries()` / `active_entries()`。
+  - `comfyui/ref_nodes.py`：两个节点的 `execute` 与 `fingerprint_inputs` 走 `active_entries(...)`（跳过项不进缓存键，因为节点根本不读它），`validate_inputs` 不变；节点描述与 `media_files` tooltip 说明「已跳过的卡片不输出、不占槽位」。
+  - `web/ref_state.js`：`normalizeEntry` / `serializeMedia` 同样只在跳过时写 `skip`；新增 `isSkipped` / `splitEntries` / `countActive` / `skipAt` / `restoreAt` / `restoreAll` / `moveActive`；`parseMedia` 与 `addEntries` 的上限只数活动卡片，新卡片永远插在槽位区块末尾、已跳过区块之前。
+  - `web/ref_loader.js`：卡片按钮行改成 `↻` / `⊘` / `✕`（被跳过的卡片是 `↩` / `✕`）；卡片区画成两个区块，中间一行 `⊘ 已跳过 N 张 · 不输出、不占槽位（不能拖动）`；添加行新增 `↺ 全部放回`（只在有跳过项时出现，槽位不够的留在后排）；状态行追加 `已跳过 N（不占槽位）`；拖动只认槽位区块（`data-active-index`，被跳过的卡片既不能被拖也不是落点）；面板底部说明补 `⊘ 跳过` / `↩ 放回`。
+  - `web/ref_loader.css`：`.h3ref-skipped`（灰边、变暗、缩略图去饱和、不可拖动；卡片尺寸不变，所以网格不会重排）、`.h3ref-deck-sep`（`grid-column: 1 / -1`，与 `.h3lvm-empty` 一样不占列）、`.h3ref-restore`（与添加按钮同一外壳，添加行不会多出一行）。
+  - 卡片编号（实测反馈，用户）：「汉字的参考图 0 其实是不对的，官方 skill 把 ref_image_0 写成 picture1，也就是说对于用户来说看到【参考图1 → ref_image_0】才是符合直觉的」。卡片标题只由 `slotTitle()` 生成，它改成 1-based（0 号槽位显示「参考图 1」）；端口名仍由 `slotName()` 生成，保持 0-based，注释里写死两者不许互换。README 中英文的示例跟着改成 `参考图 3 → ref_image_2`。
+  - 卡片高度对齐（实测反馈，用户）：「因为有放大和未放大的区别而导致的换行，卡片不好看了，你不能都对齐一下」「不应该是省略，而是（没有）信息行的默认高度和有信息行的维持一致」。卡片的信息块改成固定两行（`web/ref_loader.css` 的 `.h3ref-deck .h3lvm-seg-info`：`line-height: 1.3` + `min-height/max-height: 26px` + `overflow: hidden` + `overflow-wrap: anywhere`）——尺寸没读回来之前就把高度占好，读回来不会跳，长文本换到第二行也不会把这张卡片顶得比邻居高；不用省略号截断，装不下的内容在卡片 tooltip 里（`ref_loader.js` 的 `setInfo()` 同时写文本和 tooltip）。卡片上的「未放大」标记改成短形式 `· 未放大`，完整句子只在 tooltip（`sizeLine({ full: true })`），因为长句子正是把那两行撑爆的东西。
+  - 槽位语义：跳过第 2 张后后面的卡片自动补位；放回永远放在槽位顺序末尾，槽位满时什么都不动并给出可读提示（`槽位已满（9），请先移除或跳过一张再放回`）。
+  - 测试：`work/ref_state.test.mjs` 新增 9 项（JSON 往返、上限只数活动卡片、`skipAt`/`restoreAt`/`restoreAll`/`moveActive` 的边界与不可变性、新卡片不会插到已跳过卡片后面、已跳过文件仍算重复）；`tests/test_ref_media.py` 新增 4 项；`tests/test_ref_nodes.py` 新增 3 项（跳过的卡片不占槽位且后面补位、已跳过卡片不会把在用的卡片挤出槽位、跳过项不改变缓存键）。全套 `Ran 282 tests ... OK`（275 → 282），前端 26 项全绿（17 → 26）。
+  - 待办：用户实测通过后才 commit / annotated tag（建议 `v1.2.0`）/ 推送。
+
+- 本轮改动（第十六轮：参考加载器的「项目参考预设」）：
+  - 需求（用户）：「类似 H3 Segment Picker 的新建项目和删除项目，以及下拉菜单。方便用户存储参考图预设组合——但是，我们不要重复存储参考图，而是读取 input 文件夹，保存对应项目下参考图的路径并随时调取，节省空间。」
+  - 做法：预设就是卡片列表本身（`{filename, subfolder, type}`），只存路径、不复制媒体；位置 `<output>/h3-lvm/<project>/h3lvm_references.json`，与项目索引同目录。图片与音频分开（9/3 上限不同），已跳过的卡片一并保留。
+  - 新增 `comfyui/ref_presets.py`：`preset_path()`、`load_references()`（缺失或损坏 → 空；某一类读不动不影响另一类；条目重新过 `parse_media_list()`，因为素材目录可能已经变过）、`@project_locked save_references(project, kind, entries)`（kind 只认 image/audio，条目同样过解析器，tmp + `os.replace` 原子写，只替换该 kind，另一类原样保留）。复用 `segment_store` 的 `get_project_dir` / `project_locked` / `sanitize_project_name`。
+  - `comfyui/server_api.py`：新增 `GET /h3_lvm/ref_presets?project=` 与 `POST /h3_lvm/ref_presets`（CSRF / 415 / 400 / 409 语义与其他写接口一致）。
+  - `comfyui/ref_nodes.py`：两个节点的输入**末尾**追加 `io.String.Input("project_name", default=DEFAULT_PROJECT)`（末尾是刻意的：`configure()` 按位置恢复控件值）；`validate_inputs` / `fingerprint_inputs` / `execute` 都带 `project_name=DEFAULT_PROJECT` 默认参数，缓存键与像素都不含它。
+  - 前端：`web/ref_state.js` 新增 `pickPresetEntries(preset, kind)`（防御式：缺文件、半截 JSON 都读成空）；`web/ref_loader.js` 第一行挂共用的 `web/project_menu.js`（切换 / 新建 / 删除整库，与其他可视化节点同一套），添加行新增 `📥 载入项目预设` / `📤 存为项目预设`，载入走现成的 `addEntries()`（去重与槽位上限同规则），存为用 `serializeMedia()`（含已跳过卡片），状态行追加 `项目预设 N` / `项目预设 空`，空库时载入按钮禁用，`🔄 刷新` 与切换项目都会重读预设；`project_name` 控件在面板运行后隐藏。面板高度只在创建时增加（380→440 / 300→360），按按钮仍然不会改变节点尺寸。
+  - 测试：新增 `tests/test_ref_presets.py` 14 例（往返与顺序、只存路径且体积 <400 字节、存一类不动另一类、已跳过卡片保留、面板 JSON 直接可用、按 kind 的上限、已跳过不占上限、非法 kind、非法条目不落盘、缺文件不建库、损坏文件读为空且下次保存修好、某一类坏不影响另一类、项目名 sanitize）；`tests/test_ref_nodes.py` 的 schema 断言加上 `project_name`，并新增默认值断言与「换项目不改变缓存键」；前端 `work/ref_state.test.mjs` 新增 3 项。全套 `Ran 298 tests ... OK`（282 → 298），前端 29 项全绿（26 → 29）。
+  - 本轮**改了 Python**：复测要重启 ComfyUI，不是只 `Ctrl+F5`。
+
+- 本轮改动（第十七轮：预设还原的是「排列」，不只是文件）：
+  - 实测反馈（用户）：「不仅仅保留图片路径，还要存为预设时候的跳过/取用情况及它们的排序顺序。」
+  - 定位：预设文件本来就带顺序与 `skip`（`parse_media_list()` 原样保留顺序，只在跳过为真时写 `skip`），丢东西的是前端——`loadPreset()` 走 `addEntries()`，那是**追加**：预设的顺序被面板当时的顺序吃掉，被跳过的条目还会落进槽位区块。
+  - `web/ref_state.js`：新增 `applyPreset(entries, incoming, max)`——预设的卡片按保存顺序在前、各自的活动/跳过状态原样恢复；面板上有而预设没提的卡片排在后面（载入不能删工作）；槽位上限只数活动区块，且截断从尾部吃，所以先丢「预设没提的卡片」，不会丢用户存下的卡片。返回 `restored / parked / kept / truncated / ignored` 供状态行如实汇报，其中 `kept` 只统计真正回到列表里的，状态行不会同时说「保留了 2 张」和「没载入 2 张」。
+  - `web/ref_loader.js`：`loadPreset()` 改走 `applyPreset()`；载入前后 `serializeMedia()` 一致时直接回答「卡片已经和该预设一致」；状态行改成 `已按保存的顺序载入 N 张 · 其中 M 张保持跳过 · 保留 K 张预设外的卡片 · 超出 9 个槽位，未载入 X 张`；`项目预设 N` 在有跳过项时显示 `项目预设 N（含 M 张已跳过）`；两个按钮的 tooltip 写明「含排列顺序与跳过状态」。
+  - 测试：`work/ref_state.test.mjs` 新增 6 项（还原顺序、还原跳过状态且槽位数不变、预设外的卡片排在后面、上限先吃预设外的卡片、同一预设载入两次结果不变、坏条目与重复条目只计数不致命、空预设不动面板）；`tests/test_ref_presets.py` 新增 1 项（磁盘文件本身带顺序与 `skip`，活动条目仍与旧格式一字不差）。全套 `Ran 299 tests ... OK`（282 → 299），前端 35 项全绿（29 → 35）。
+  - 本轮只改前端与测试；但第十六轮的 Python 改动（`ref_presets.py`、`project_name` 输入）还没重启验证过，复测仍然要**重启 ComfyUI**，不是只 `Ctrl+F5`。
+
+- 本轮改动（第十八轮：音频卡片可以裁时间窗，卡片视觉与其它可视化节点统一）：
+  - 实测反馈（用户）：「H3 音频参考加载器那个节点…需要有类似于 load audio 原生节点的，每个音频可以调节其时长及开始时间点的设置接口，并且，它的可视化有点问题，卡片大小不是很匹配我们其他的类似节点的设计语言」。
+  - 做法：裁切存在**条目本身**（`start` / `duration`，单位秒），不新增节点输入——每张卡片要自己的窗口，而且只有这样它才能跟着保存、刷新和项目预设一起活下来。语义完全对齐 ComfyUI 原生 `TrimAudioDuration`（`comfy_extras/nodes_audio.py:426`）：`start` 可为负＝从片尾往前算，`duration` 为 0＝一直到片尾，两端都夹进文件内。
+  - `core/ref_media.py`：`media_kind()`（按扩展名分 audio / image / other，与前端 `ref_state.js` 同一套正则）、`_clean_seconds()`（有限数字；接受写成文本的数字，因为手写 widget 会加引号；拒绝布尔 / NaN / 负时长）、`parse_media_list()` 只对音频扩展名读 `start` / `duration`（0 或缺失不写字段 → 旧列表字节不变）、`trim_range()`、`trim_audio()`（按采样数切 `[batch, channels, samples]` 的最后一轴，两端 clamp，裁空用中文报错，无裁切时原样返回同一个 dict）、`media_fingerprint()` 每条目加入 `|{start}|{length}`（换窗口必须重新解码）。
+  - `comfyui/ref_nodes.py`：`build_audio_slot(path, start, duration)` 解码后裁切；`execute` 从条目取 `trim_range()` 并把窗口写进日志；节点 description 与 `media_files` 的 tooltip 说明这两个字段。仍然不重采样、不混音，采样率与声道原样交给 H3。
+  - `web/ref_state.js`：新增 `normalizeTrim` / `trimRange` / `resolveTrim`（镜像后端的 clamp，返回 `{first, last, empty}`）/ `hasTrim` / `formatTime`；`normalizeEntry` 只对音频条目保留 `start` / `duration`；`serializeMedia` 写这两个字段（0 不写）；`audioInfoLine` 显示 `0:01.00 → 0:04.00 · 3.00 秒 … 全片 12.40 秒`，裁空再加 `⚠ 裁切后没有样本`。
+  - `web/ref_loader.js` + `web/ref_loader.css`：音频卡改成与图片卡**同规格**——删掉 `.h3ref-deck-audio`（240px 的列宽下限）与 `.h3ref-audio`（32px 的原生播放器条），共用 `--card-min` / `--thumb-h`，由同一个 `卡片大小` 控件缩放；缩略图框里画**波形 canvas**（蓝色＝会被输出，灰色＝不会；`▶` 只播这一段，点波形在窗口内定位，`timeupdate` 到窗口末尾自动停），卡内一行 `开始` / `时长` 数字输入 + `↺` 清除裁切；被跳过的卡片保留这一行但禁用输入，两个区块的卡片因此等高、网格不重排。波形重绘用 `ResizeObserver`（改卡片大小不用重渲染），`render()` 开头 `stopPlayers()` 停掉旧卡片的播放器与观察器。
+  - 测试：`work/ref_state.test.mjs` 新增 9 项（秒数解析与四种拒绝、`trimRange`、`resolveTrim` 的负 start / 越界 clamp / 裁空 / 未知长度、`formatTime`、卡片文案含窗口与「全片」、只有音频条目带窗口、未裁切列表序列化字节不变、窗口经 widget JSON 往返、预设连窗口一起还原）→ 44 全绿（35 → 44）。Python 新增 15 项（`media_kind`、只给音频写窗口、写成文本的数字、负 start、四种非法数字、`trim_range`、窗口进缓存键、节点槽位长度＝窗口长度且样本与整段对齐、`trim_audio` 采样数 / 负 start / 两端 clamp / 裁空中文报错 / 无裁切返回同一对象、预设文件本身带窗口）→ `Ran 314 tests ... OK`（299 → 314）。
+  - 本轮改了 Python（`core/ref_media.py`、`comfyui/ref_nodes.py`）：复测必须**重启 ComfyUI**，再 `Ctrl+F5`。
+
+- 本轮改动（第十九轮：项目菜单的计数口径 + 载入预设改成整组替换）：
+  - 实测反馈（用户）：「H3 图片参考加载器有两个问题，下拉菜单的项目名后的括号内一直都是空，（空）。另一个问题是，载入项目预设后，预设外的卡片还是别留下为好。想要加新卡片就后续再加。」
+  - 定位一：`GET /h3_lvm/projects` 只回答 `segments`（视频片段数），而 `web/project_menu.js` 不分面板都用它写菜单文案——只用参考加载器的库片段数永远是 0，于是菜单里永远是（空）。
+  - `comfyui/ref_presets.py`：新增 `count_references()`（该库 images + audios 的条目数；缺文件/坏文件按 0，与 `load_references()` 同一口径；计数不会建库）和 `list_projects_with_reference_counts()`（在 `list_projects_with_counts()` 的结果上补 `references`——只有这个模块知道预设存在哪）。`comfyui/server_api.py` 的 `GET /h3_lvm/projects` 改用它，每项变成 `{"name", "segments", "references"}`。
+  - `web/project_menu.js`：`createProjectMenu()` 新增 `countFor`（默认 `"segment"`，Picker / Manager 的文案一字不变）。`"reference"` 时菜单项写 `项目名 (4 张)`、行内计数写 `共 4 张参考`、空库写 `无预设`；删除确认按库里真实内容拼（先参考预设，再已保存片段，两者都没有就说「空的素材库文件夹」）。`web/ref_loader.js` 传 `countFor: 'reference'`。
+  - `web/ref_state.js`：`applyPreset()` 从「预设在前 + 保留预设外卡片」改成**整组替换**——之后面板就是预设（顺序与跳过状态原样），预设外的卡片（含已跳过的）被移除；返回值里的 `kept` 改成 `dropped`（被移除的张数）。理由：预设就是一个项目的参考组合，留着剩下的等于下一轮悄悄带上用户已经不要的参考，要加卡片走正常「＋ 添加」。槽位上限仍然只数活动区块，截断仍然吃预设的尾部。
+  - `web/ref_loader.js`：状态行改成 `已按保存的顺序载入 N 张 · 其中 M 张保持跳过 · 移除了 K 张预设外的卡片 · 超出 9 个槽位，未载入 X 张`；`📥 载入项目预设` 的 tooltip 写明「预设外的卡片会被移除」。空预设时载入按钮本来就是禁用的，所以「整组替换」不会把面板清空。
+  - 测试：`work/ref_state.test.mjs` 把 5 项改成替换语义（预设外的卡片被移除、被点名的卡片仍按预设顺序、槽位上限吃预设尾部、第二次载入没有可移除的、空预设会清空面板、音频窗口那条断言 `dropped`）并新增 1 项 → 45 全绿（44 → 45）。Python 新增 `TestProjectCounts` 4 项（两类合计计数、坏文件按 0、计数不建库、`/h3_lvm/projects` 同时带两个计数）→ `Ran 319 tests ... OK`（315 → 319）。
+  - 本轮改了 Python（`comfyui/ref_presets.py`、`comfyui/server_api.py`）：复测必须**重启 ComfyUI**，再 `Ctrl+F5`。
+
+- 本轮改动（第二十轮：参考库按类型分开存，图片一套、音频一套）：
+  - 需求（用户）：「H3 音频参考加载器不应该和 H3 图片参考加载器共用一个素材库存储项目。因为文件性质不同。」
+  - 定位：预设文件 `<output>/h3-lvm/<project>/h3lvm_references.json` 里 `images` / `audios` 两个列表并存，而这个目录本身就是**视频素材库**的 bin。`GET /h3_lvm/projects` 列的是视频库，所以两个加载器的菜单看到的是同一串项目名，一个按片子命名的库看起来同时装着两种材料——参考图片和参考音频是给不同端口的不同材料，一份按片子命名的组合说明不了哪些配音属于它。
+  - `comfyui/ref_presets.py` 整文件重写：`KIND_ROOTS = {"image": "h3-lvm-image-refs", "audio": "h3-lvm-audio-refs"}`（在 `get_base_dir()` 下，与视频库 `h3-lvm/` 同级）、`LIST_KEY = "references"`（一个文件只装一份列表）、`LEGACY_KEYS`（旧共用文件里的两个键）。**kind 一律是第一个参数**：`library_dir` / `ref_project_dir` / `preset_path` / `load_references` / `save_references` / `count_references` / `list_reference_projects` / `create_reference_project` / `delete_reference_project`。锁改成本模块自己的 `_library_lock`（按参考库目录的 realpath 取键，不再借用视频 bin 的锁），写文件仍是 tmp + `os.replace`。删掉 `KIND_KEYS` 与 `list_projects_with_reference_counts()`——计数不再由视频库转发，`list_reference_projects(kind)` 直接列本类库并带 `references` 数。
+  - 一次性迁移 `_migrate_legacy(kind, name)`：本类库缺文件时读旧共用文件，把**本类**那份列表复制进本类库并返回；旧文件为空或读不动就不建库（不能凭空造出一个用户没存过的库），旧文件本身不删不改。迁移只在第一次读时发生，之后以库为准。
+  - `comfyui/server_api.py`：新增 `_scope()`（默认 `segments`，即视频库；`image` / `audio` 是那一类的参考库）。`GET /h3_lvm/projects?scope=segments|image|audio` 按 scope 选目录；`POST /h3_lvm/project` 与 `POST /h3_lvm/project/delete` 的 body 带 `scope`，新建/删除只作用于那一个库；`GET /h3_lvm/ref_presets?project=&kind=` 的 kind 非法时返回中文 400。
+  - 前端：`web/project_menu.js` 的 `countFor` 换成 **`scope`**（`segments` / `image` / `audio`），列表请求带 `?scope=`、新建与删除的 body 带 `scope`，文案口径不变（`N 段` / `N 张参考`、`空库` / `无预设`）；`web/ref_state.js` 的 `pickPresetEntries(preset)` 去掉 kind 参数、读 `preset.references`；`web/ref_loader.js` 传 `scope: spec.kind`，预设请求带 `&kind=${spec.kind}`。
+  - 测试：`tests/test_ref_presets.py` 按新 API 重写为 29 例（两类互不可见、各有根目录与项目列表、预设不落在视频 bin 里、新建/删除只作用于本类、删除要重名确认、旧共用文件按类各复制一次且只复制一次、迁移后以库为准、空/坏的旧文件不建库、新文件里的旧两列表形状不再被读、计数只数本类）。`work/ref_state.test.mjs` 跟着改成 `{references: [...]}` 并新增「旧两列表形状不再被读」→ 45 全绿。全套 `Ran 328 tests ... OK`（319 → 328）。
+  - 实测反馈（用户）：「全改坏了」——两个参考加载器的面板整个不见了，只剩 `media_files` / `project_name` 两个裸控件。定位：`web/project_menu.js` 里 `api.fetchApi(...)` 那一行被改成了带 `?scope=` 的模板串却**丢了后面的 `, { cache: "no-store" })`**，这是**语法错误**；ES 模块语法错误 = 整个扩展不注册 = 所有面板（Picker / Manager / Smart Split / 两个加载器）一起消失，`node --check` 之前只对 `ref_loader.js` 做过，没覆盖共用模块。修：补回 fetch 的第二参数与右括号；同时补上本轮漏掉的 `const refScope = scope !== "segments"`（`binTotal` / `countLabel` / `emptyLabel` / `deleteWarning` 都在用它，否则运行期 ReferenceError），并清掉一处重复注释。防呆：`work/check_plugin_web.ps1`（两个插件的 `web/*.js` 逐个 `node --check`，当前 0 failures）。复测点：两个加载器的 `📦 项目素材库` 列表互不相同；新建/删除只影响本类；拆分之前存的旧预设仍能在对应加载器里看到（第一次读时各复制一份）。
+## 2026-10-09 · `0a1cdd4`（上一基线）
 
 - 快照：`archive/2026-10-08-06a259a/`（49 个文件 / 406 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。
 - 该基线包含 v1.0.0（annotated tag `v1.0.0` = tag 对象 `ba4897c` → commit `305a5d7`）、`06a259a` 文档提交，以及本轮的 `0a1cdd4`（第十一轮 Smart Split + 第十二轮合并模式，18 文件 / +2754 −240）。annotated tag `v1.1.0` = tag 对象 `5d7b5a3` → commit `0a1cdd4`。`origin/main` = `0a1cdd4`，`v1.0.0` 与 `v1.1.0` 均已推送。

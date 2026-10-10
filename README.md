@@ -126,6 +126,9 @@ ComfyUI/output/h3-lvm/<project_name>/
 │   └── seg01.mp4             # optional preview (only if save_preview_mp4=True)
 ├── seg02/
 │   └── ...
+
+ComfyUI/output/h3-lvm-image-refs/<project_name>/h3lvm_references.json   # image reference preset
+ComfyUI/output/h3-lvm-audio-refs/<project_name>/h3lvm_references.json   # audio reference preset
 ```
 
 Disk use is frames × width × height × 3 × bytes-per-value: at 1280×720 that is
@@ -240,14 +243,109 @@ segment count of the selected bin (`＋ 新建项目…` and `🗑 删除当前�
 legend. Card titles and status text are Chinese; the node parameter labels are shown in
 Chinese too (`label` is display-only — saved workflows keep `project_name` / `segment_id`).
 
+#### H3 Image Reference Loader / H3 Audio Reference Loader
+
+These two nodes feed the reference ports of the official `MiniMaxH3ReferenceToVideo`
+(`ref_image_0..8`, `ref_audio_0..2`) without a wall of `LoadImage` / `LoadAudio` nodes plus
+resize nodes. Card order **is** slot order, and an unused slot outputs a real `None`, which
+the H3 node skips (`if img is None: continue`).
+
+| Parameter | Default | Shown on the node | Notes |
+|-----------|---------|-----------------|-------|
+| `media_files` | `[]` | 🎞 参考素材列表 | JSON list written by the card panel: `[{"filename", "subfolder", "type"}, ...]`; an audio entry may also carry `"start"` / `"duration"` in seconds, which is that card's trim window. A plain list of file names also works for hand-written API prompts. The widget is hidden once the panel is running (`options.hidden`); the value is still serialised by position. A parked card carries `"skip": true` and is never read by the node |
+| `target_megapixels` | 0.25 | 🎯 目标像素量 (MP) | Per-image target in megapixels (0.02–8.0). Every image keeps its own aspect ratio and is snapped to the 32 px H3 grid; changing the value re-plans every card at once |
+| `project_name` | `H3_LVM` | 📦 项目素材库 | Which project bin `📥 载入项目预设` / `📤 存为项目预设` read and write. Appended last on purpose — `configure()` restores widget values by position — and it is never part of the cache key and never changes a pixel. Hidden once the panel's project menu is running, exactly like `media_files` |
+| `resampling_method` | `Lanczos` | 🔍 重采样算法 | `Lanczos` / `Bicubic` / `Bilinear` / `Nearest`, mapped straight onto PIL's filters — the option list, the backend and the tests read the same tuple, so the UI can never promise a filter the node does not use. `Lanczos` is the best downscaler; `Nearest` keeps hard edges for pixel art. Changing it re-decodes the images (it is part of the cache key) but never changes the output size |
+| `upscale_small_images` | false | ↕ 放大小图至目标 MP | Off: only images above the target area are scaled down, a smaller image is only nudged onto the 32 grid and its card says `（未放大，仅对齐网格）`. On: every image is scaled to the target area. Off by default — upscaling invents detail the source does not have and costs encoder time |
+
+**Outputs** — `ref_image_0 … ref_image_8` (`IMAGE`, batch size 1) and `ref_audio_0 …
+ref_audio_2` (`AUDIO`). Always nine / three ports, in that order.
+
+**Image sizing** — `core/ref_size.py` is the single implementation: proportional scaling
+onto the 32 px grid, never a crop and never a pad. `plan_reference()` chooses the mode:
+`target_mp` scales to the target area (anything above it, or anything at all when
+`upscale_small_images` is on), `grid_align` only moves each axis by at most one grid step
+and returns an already-legal source unchanged, which is how the node knows to skip
+resampling it. Both modes build candidates from the ideal size, the area match and the ratio
+match, then a deterministic tie-break picks one. Worst case in the tested range
+(target ≥ 0.25 MP, source ratio ≤ 3:1) is 8.95% area error and 3.57% ratio error; a
+480×640 source at 0.25 MP deliberately trades a little ratio to hit the requested area.
+"Upscaling off" is not "the pixel count never changes": 300×200 becomes 320×192 because the
+32 px grid requires it, and the card says `（未放大，仅对齐网格）` so it does not read as a
+bug. The card shows `source → output · actual MP`, and that number comes from
+`GET /h3_lvm/ref_plan` — the same planner the node runs, not a JavaScript copy of it. EXIF
+orientation is applied, alpha is dropped (like `LoadImage`), an animated source contributes
+its first frame, and a source over 40 MP is refused with a readable error.
+
+**Audio** — the one thing the loader changes is where a clip starts and how long it is: every
+audio card has `开始` / `时长` inputs in seconds, stored on the entry as `"start"` /
+`"duration"`, so a cut survives a save, a reload and a project preset. The rules are
+ComfyUI's own `TrimAudioDuration`: a negative start counts back from the end of the file, a
+duration of 0 runs to the end, and both ends are clamped into the file — only a window with no
+samples in it is an error, and it says so in Chinese. Everything else is passed through as-is:
+no resample, no remix. H3 resamples inside `_encode_ref_audio` for its audio VAE, so the
+loader keeps the original sample rate and channel count. Decoding uses ComfyUI's own
+`comfy_extras.nodes_audio.load`, the same decoder `LoadAudio` uses.
+
+**Panel** — the same visual language as the deck panels: a tool row (`🔄 刷新`,
+`卡片大小` 100%–400%, slot status `已用 3/9（ref_image_0..ref_image_2） · 空槽输出 None`), an
+`＋ 添加参考图` / `＋ 添加参考音频` button, drag & drop onto the grid, and one card per slot
+with the thumbnail (portrait shown whole, same card size) or — for an audio card — a waveform
+drawn in the same thumbnail box (blue bars are what H3 receives, grey bars are not; `▶`
+previews only that window and clicking the waveform seeks inside it) plus a `开始` / `时长`
+row in seconds and `↺` to clear the cut, the port it feeds (`参考图 3 → ref_image_2` — the number on the card is 1-based for humans, the port name is not), the real output size, and `↻ 替换` / `⊘ 跳过` / `✕ 移除` buttons (a parked card carries `↩ 放回` / `✕ 移除` instead). Dragging a card anywhere in the panel reorders the slots — the card order *is* the slot order. The
+landing spot is the nearest card, so gaps between cards and the space below the last row are
+usable targets, and the grid scrolls while the pointer is held near its top or bottom edge. The panel
+height is fixed, so nothing on it can resize the node. Files go through ComfyUI's
+`/upload/image` into the `input` folder; the list only ever stores relative paths, and
+replacing a file on disk re-decodes it, because the cache key includes size + mtime.
+
+**Parked cards (`⊘ 跳过`)** — a card that must stay in the workflow but should not be sent
+to H3 this run is parked instead of deleted: it moves to a second block at the back of the
+deck, dimmed, labelled `⊘ 已跳过 · 不占槽位`, and is not draggable. The numbered ports come
+from the slot block only, so parking card 2 closes the gap (cards 3… become 2…), while the
+parked file stays in `media_files` with `"skip": true` — `↩ 放回` puts it back at the end of
+the slot order without re-uploading, and `↺ 全部放回` (only shown while something is parked)
+brings back everything that fits. Parked cards never count against the 9/3 slot limit and are
+not part of the cache key, because the node never reads them.
+
+**Project reference presets** — a story reuses the same characters and scenes over and over, so the panel can keep the
+current card list as the preset of a project bin and put it back into any node of the same kind: `📤 存为项目预设` writes
+`<output>/h3-lvm-image-refs/<project>/h3lvm_references.json` (the audio loader writes its own
+`<output>/h3-lvm-audio-refs/<project>/h3lvm_references.json`), `📥 载入项目预设` puts that bin's cards back. A preset stores
+**paths only** — the same `{filename, subfolder, type}` a card already holds — so it costs a few hundred bytes however
+big the media is, and nothing is copied, re-uploaded, or duplicated. What it stores is the **arrangement**, not a bag
+of files: the order of the slot cards (that order is the order of the `ref_image_` ports) and which cards were parked
+are saved and restored. Images and audios live in **separate libraries** — one root, one project list, and one list
+file per kind — because a reference image and a reference audio are different material for different ports: the audio
+loader never offers the image loader's bins, and a bin named for a story cannot look like it holds both. A preset saved
+before that split is copied out of the old shared file once, into its own kind's library, and the old file is left
+where it is. The slot limit still applies on the way back, and cards the panel holds that the preset does not mention
+are **removed** — a preset *is* the reference set of a project, so keeping the leftovers beside it means the next run
+quietly carries references the user had already decided against; adding a card back is a normal add, and loading the
+same preset twice still changes nothing. The first row of the panel is the shared `📦 项目素材库` menu
+(switch / `＋ 新建项目…` / `🗑 删除当前项目…`), and on these two nodes it lists that kind's own library and counts
+**reference cards** — `项目名 (4 张)`, `共 4 张参考`, `无预设` — because a reference-only bin holds no saved segments and used
+to read `（空）` forever; the Picker and the Manager still count segments. Creating or deleting a project there touches
+that kind only: deleting a story's voice presets keeps its character images. The status line says what the bin holds
+(`项目预设 4（含 1 张已跳过）`), and 载入 is disabled while it is empty. A missing or half-written preset reads as empty
+instead of breaking the panel, and switching project re-reads it.
+
+**Defaults vs. the official node** — the official `ref_image_size` is `match`/`max`
+(short side ≤ 2048, ≈ 3.2 MP for a 16:9 frame), while a `LoadImage` + resize chain with a
+512 long edge lands near 0.15 MP. These nodes default to 0.25 MP; set `target_megapixels`
+to about 3.2 to match the official default.
 ### API endpoints
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /h3_lvm/projects` | `{"projects": [{"name": ..., "segments": N}, ...], "default": "H3_LVM"}` — every bin with its segment count |
-| `POST /h3_lvm/project` | body `{"project": <typed name>}` → `{"name": <sanitized>, "created": true/false, "segments": N}` |
-| `POST /h3_lvm/project/delete` | body `{"project": <name>, "confirm": <same name>}` → `{"name": ..., "deleted": true, "segments": N}` |
+| `GET /h3_lvm/projects?scope=segments\|image\|audio` | `{"projects": [...], "default": "H3_LVM"}` — `scope=segments` (default) is the video bins with their segment count (Picker/Manager); `scope=image` / `scope=audio` is that kind's own reference library with its card count (the two loaders) |
+| `POST /h3_lvm/project` | body `{"project": <typed name>, "scope": "segments"\|"image"\|"audio"}` → `{"name": <sanitized>, "created": true/false, "segments"\|"references": N}` — the scope picks which library the bin is created in |
+| `POST /h3_lvm/project/delete` | body `{"project": <name>, "confirm": <same name>, "scope": ...}` → `{"name": ..., "deleted": true, ...}` — only that library is touched, never the video bin or the other kind |
+| `GET /h3_lvm/ref_presets?project=<name>&kind=image\|audio` | `{"project_name": <name>, "references": [...]}` — that kind's preset for one project, paths only; a Chinese 400 for a kind that is neither |
+| `POST /h3_lvm/ref_presets` | body `{"project": <name>, "kind": "image"\|"audio", "entries": <panel JSON>}` → `{"name": ..., "kind": ..., "saved": N}` — writes that kind's own library file only |
 | `GET /h3_lvm/segments?project=<name>` | Full segment list with thumbnail URLs |
+| `GET /h3_lvm/ref_plan?w=&h=&mp=&upscale=0|1` | `{"width", "height", "actual_megapixels", "area_error", "ratio_error", "mode"}` — the 32-grid size the reference loader will really produce for that source, target and upscale setting; `mode` is `target_mp` or `grid_align` and is what puts the "not upscaled" note on the card |
 | `POST /h3_lvm/delete` | body `{"project": <name>, "segment_id": N}` → `{"deleted": N}` |
 | `POST /h3_lvm/merge` | body `{"project": <name>, "segment_ids": [3, 4, 5]}` → `{"project": ..., "merged_id": 3, "merged_from": [3, 4, 5], "dropped_overlap_frames": N, "renumbered": [{"from": 6, "to": 4}], "segment": {...}}` — joins consecutive segments; a Chinese 400 for a non-consecutive selection or mismatched fps/size |
 
@@ -275,6 +373,8 @@ H3-Long-Video-Manager/
 ├── comfyui/
 │   ├── __init__.py                    # Plugin package (nodes loaded by root extension)
 │   ├── nodes.py                       # Manager (V3) + Picker nodes
+│   ├── ref_nodes.py                   # 图片/音频参考加载器（固定编号槽位）
+│   ├── ref_presets.py                 # 参考库：图片/音频各一套（只存路径，不复制媒体）
 │   ├── nodes_v1.py                    # backup (pre-audio)
 │   ├── nodes_v2.py                    # backup (pre-save-bin)
 │   ├── nodes_v3_backup.py             # backup (pre-V3-API)
@@ -294,6 +394,8 @@ H3-Long-Video-Manager/
 │   ├── manifest_v4_backup.py          # backup
 │   ├── segmentation.py                # Duration → frames computation
 │   ├── person_crop.py                 # Person detection + edge crop
+│   ├── ref_size.py                    # Target MP / grid-align size planner + resampling options
+│   ├── ref_media.py                   # Media list parsing, path safety, cache keys
 │   └── extraction.py                  # Frame range extraction (PyAV)
 ├── web/
 │   ├── h3lvm_picker.js                # Card gallery frontend
@@ -308,6 +410,9 @@ H3-Long-Video-Manager/
 │   ├── thumb_fit.js                   # Card thumbnails: portrait frames shown whole
 │   ├── delete_button.js               # Segment card delete button
 │   ├── dom_panel.js                   # DOM widget sizing (Canvas + Nodes 2.0)
+│   ├── ref_loader.js                  # Reference loader card panel (image/audio)
+│   ├── ref_state.js                   # Media list rules (pure, node --test)
+│   ├── ref_loader.css                 # Reference panel extras only
 │   └── extension.js                   # (placeholder, intentionally empty)
 └── tests/
     ├── __init__.py
@@ -320,6 +425,10 @@ H3-Long-Video-Manager/
     ├── test_project_menu.py           # Project menu (list/create/delete) tests
     ├── test_smart_split_core.py         # Scene-cut → lossless shot segments tests
     ├── test_smart_split_node.py         # Smart Split node end-to-end tests
+    ├── test_ref_size.py               # 32 px grid size planner tests
+    ├── test_ref_media.py              # Media list / path safety tests
+    ├── test_ref_nodes.py              # Slot order, None slots, dtype tests
+    ├── test_ref_presets.py            # 参考库：两类互不可见 / 旧共用文件迁移 / 预设读写与损坏
 
     └── test_segment_store.py          # Storage round-trip tests
 ```
@@ -441,6 +550,9 @@ ComfyUI/output/h3-lvm/<项目名>/
 │   └── seg01.mp4             # 可选预览（需开启 save_preview_mp4）
 ├── seg02/
 │   └── ...
+
+ComfyUI/output/h3-lvm-image-refs/<项目名>/h3lvm_references.json   # 图片参考预设
+ComfyUI/output/h3-lvm-audio-refs/<项目名>/h3lvm_references.json   # 音频参考预设
 ```
 
 占用空间 = 帧数 × 宽 × 高 × 3 × 每个值的字节数：1280×720 下 fp16 每帧约 5.5 MB，int8 约 2.8 MB。
@@ -514,14 +626,74 @@ Motion Context 的重叠帧会在每一段里再存一份，所以一次运行�
 
 **面板布局** — 自上而下三行：① 带标签的项目菜单，右侧实时显示当前库的片段数量（`＋ 新建项目…` 与 `🗑 删除当前项目…` 都在这个菜单里）；② 工具行（刷新、卡片大小 100%–400%、当前选中）；③ 卡片网格，最下方一行操作图例。卡片标题与状态文字全部中文，节点参数名也显示为中文（`label` 只影响显示，保存的工作流仍然是 `project_name` / `segment_id`）。缩略图按画面方向自适应：横屏铺满（`object-fit: cover`），竖屏（9:16）整帧显示（`object-fit: contain`）并在后面垫一层同帧模糊副本，不会被压成一条窄带；缩略图区域和卡片尺寸在两种情况下完全一致。
 
+#### H3 图片参考加载器 / H3 音频参考加载器
+
+这两个节点直接喂官方 `MiniMaxH3ReferenceToVideo` 的参考端口（`ref_image_0..8`、
+`ref_audio_0..2`），不用再摆一排 `LoadImage` / `LoadAudio` 加缩放节点。卡片顺序就是槽位顺序，
+空槽输出真正的 `None`，H3 节点会跳过（`if img is None: continue`）。
+
+| 参数 | 默认值 | 节点上显示为 | 说明 |
+|------|--------|--------------|------|
+| `media_files` | `[]` | 🎞 参考素材列表 | 由卡片面板写入的 JSON 列表：`[{"filename", "subfolder", "type"}, ...]`；音频条目还可以带 `"start"` / `"duration"`（单位秒），那就是这张卡片的裁切窗口。手写 API 时也可以直接填文件名列表。面板正常运行后这个控件会被隐藏（`options.hidden`），但值仍按位置序列化。「已跳过」的卡片带 `"skip": true`，节点不会读它 |
+| `target_megapixels` | 0.25 | 🎯 目标像素量 (MP) | 每张图的目标像素量（百万像素，0.02–8.0）。每张图保持自己的比例并对齐 32 像素网格；改这个数会立刻重算所有卡片的尺寸 |
+| `project_name` | `H3_LVM` | 📦 项目素材库 | 决定「📥 载入项目预设 / 📤 存为项目预设」读写哪个项目文件夹。刻意排在输入最后——`configure()` 按位置恢复控件值，新字段不能把已有字段挤位；它不进缓存键，也不改变任何像素。面板的项目选单运行后这个控件同样被隐藏，与 `media_files` 一致 |
+| `resampling_method` | `Lanczos` | 🔍 重采样算法 | `Lanczos` / `Bicubic` / `Bilinear` / `Nearest`，直接映射到 PIL 的滤镜；选项表、后端和测试读的是同一份常量，界面不可能出现「写着 A 实际跑 B」。缩小优先 `Lanczos`，像素风素材要硬边用 `Nearest`。改它会重新解码图片（它在缓存键里），但不会改变输出尺寸 |
+| `upscale_small_images` | false | ↕ 放大小图至目标 MP | 关闭：只把大于目标面积的图缩小，小于它的图只做 32 网格所需的最小调整，卡片会标 `（未放大，仅对齐网格）`。开启：所有图都缩放到目标面积。默认关闭——放大只是凭空造细节，还会增加后续编码开销 |
+
+**输出端口** — `ref_image_0 … ref_image_8`（`IMAGE`，batch = 1）与 `ref_audio_0 …
+ref_audio_2`（`AUDIO`）。永远是九个 / 三个端口，顺序固定。
+
+**图片尺寸** — 唯一实现在 `core/ref_size.py`：按比例缩放到 32 像素网格，不裁切、不补边。`plan_reference()`
+决定用哪种模式：`target_mp` 按目标面积缩放（大于目标面积的图，或开启 `upscale_small_images` 时的全部图）；
+`grid_align` 每个轴最多只挪一个网格步，本来合法的源原样返回——节点就是靠这一点跳过重采样的。两种模式的候选
+都来自三条思路（理想尺寸、面积匹配、比例匹配），再用确定的 tie-break 选一个。在测试范围内（目标 ≥ 0.25 MP、
+源比例 ≤ 3:1）最坏是面积误差 8.95%、比例误差 3.57%；480×640 的源在 0.25 MP 下会主动让一点比例去换目标面积。
+「关闭放大」不等于「像素数一定不变」：300×200 会变成 320×192，因为 32 像素网格要求这样，卡片会标
+`（未放大，仅对齐网格）`，免得看起来像 bug。卡片上显示的是 `源尺寸 → 输出尺寸 · 实际 MP`，这个数字来自
+`GET /h3_lvm/ref_plan`，也就是节点真正跑的那套算法，不是 JavaScript 复刻。EXIF 方向会应用，alpha 会丢弃
+（与 `LoadImage` 一致），动图取第一帧，超过 40 MP 的源会用可读的错误拒绝。
+
+**音频** — 加载器唯一会改的是「从哪一秒开始、要多久」：每张音频卡片都有 `开始` / `时长` 两个输入
+（单位秒），写在条目上的 `"start"` / `"duration"`，所以这段裁切会跟着保存、刷新和项目预设一起存活。
+规则与 ComfyUI 自带的 `TrimAudioDuration` 一致：开始时间填负数是从片尾往前算，时长填 0 表示一直到片尾，
+两端都会被夹到文件范围内；只有「裁完没有样本」才是错误，而且会用中文说清楚。其余一切原样传递——不重采样、
+不混音。H3 在 `_encode_ref_audio` 内部为自己的音频 VAE 重采样，所以加载器保留原始采样率与声道数。
+解码用的是 ComfyUI 自带的 `comfy_extras.nodes_audio.load`，和 `LoadAudio` 同一个解码器。
+
+**面板** — 与素材库面板同一套视觉语言：工具行（`🔄 刷新`、`卡片大小` 100%–400%、槽位状态
+`已用 3/9（ref_image_0..ref_image_2） · 空槽输出 None`）、`＋ 添加参考图` / `＋ 添加参考音频`
+按钮、把文件直接拖进网格，以及每个槽位一张卡片：缩略图（竖屏整帧显示，卡片尺寸不变），音频卡片则是画在同一个缩略图框里的波形（蓝色就是会被输出的部分，灰色不会；`▶` 只试听这一段，点波形可以在这一段里定位）加一行 `开始` / `时长`（秒）和 `↺` 清除裁切——音频卡片与图片卡片同尺寸，由同一个 `卡片大小` 控件缩放，
+它对应的端口（`参考图 3 → ref_image_2`——卡片上的编号给人看，从 1 开始；端口名仍是 `ref_image_2`）、真实输出尺寸，以及 `↻ 替换` / `⊘ 跳过` / `✕ 移除` 按钮（被跳过的卡片上是 `↩ 放回` / `✕ 移除`）；卡片本身可以直接拖动，拖到哪里就换到哪个槽位（卡片顺序就是槽位顺序）。整个面板都是落点，落点取最近的卡片，卡片之间的缝隙和末行下方的空白都能用，指针停在上下边缘时卡片区会自己滚动。面板高度是固定的，
+所以面板上的任何按钮都不会改变节点尺寸。文件通过 ComfyUI 的 `/upload/image` 存到 `input` 目录；
+列表里只保存相对路径；同名文件被替换后会重新解码，因为缓存键包含文件大小与修改时间。
+
+**已跳过（`⊘ 跳过`）** — 这一轮不想送进 H3、但还想留在工作流里的卡片不会被删除，而是被停到后排：
+它移到卡片区后面的第二个区块，变暗、标 `⊘ 已跳过 · 不占槽位`、不可拖动。编号端口只由前面的槽位区块决定，
+所以跳过第 2 张后后面的卡片自动补位（第 3 张变成第 2 张…），而那张卡片的文件仍在 `media_files` 里，带
+`"skip": true`——`↩ 放回` 把它放回槽位顺序的末尾，不需要重新上传；`↺ 全部放回`（只有存在跳过项时才出现）
+把放得下的都放回去，放不下的留在后排。已跳过的卡片不占 9/3 的槽位上限，也不进缓存键，因为节点根本不读它。
+
+**项目参考预设** — 一部片子会反复用到同一批角色与场景参考，所以面板可以把当前卡片组合存成某个项目的预设，再放进任何同类节点：
+`📤 存为项目预设` 写入 `<output>/h3-lvm-image-refs/<项目>/h3lvm_references.json`（音频加载器写自己的 `<output>/h3-lvm-audio-refs/<项目>/h3lvm_references.json`），`📥 载入项目预设` 把库里那套卡片放回来。
+预设里**只有路径**——就是卡片本来就持有的那三个字段——所以图片再大也只花几百字节，不复制、不重复上传、不产生第二份文件。
+存的是**排列**，不是一堆文件路径：槽位卡片的先后顺序（这个顺序就是 `ref_image_` 端口的顺序）和哪些卡片当时被跳过，都会存下来并原样恢复。
+图片库与音频库**完全分开**：每一类各有自己的根目录、项目列表和一个只装一份列表的文件——参考图片和参考音频是给不同端口的不同材料，一个按片子命名的素材库说明不了哪些配音属于它，所以音频加载器不会看到图片加载器的项目，反之也一样；拆分前那份共用文件会在第一次读取时按类别各复制一次到对应库里，旧文件原样留着。回来时同样受槽位上限约束（超出部分吃预设的尾部）；载入是**整组替换**——面板之后就是预设那一套（顺序与跳过状态原样），预设外的卡片（含被跳过的）会被移除：预设就是一个项目的参考组合，把剩下的留在旁边等于下一轮悄悄带上用户已经不要的参考；想加卡片就正常「＋ 添加」，同一个预设连载入两次也不会变。
+面板第一行就是共用的 `📦 项目素材库` 选单（切换 / `＋ 新建项目…` / `🗑 删除当前项目…`），在这两个节点上它列的是**本类自己的库**、数的是**参考卡片张数**（`项目名 (4 张)`、`共 4 张参考`、`无预设`）——参考库里没有视频片段，以前只会显示（空）；Picker 与 Manager 仍然数片段。在这里新建或删除项目也只作用于本类：删掉一部片子的配音预设不会带走它的角色图。状态行会显示库里有什么（`项目预设 4（含 1 张已跳过）`），空库时载入按钮是禁用的。预设文件缺失或写坏时读出来是空的，不会让面板报错；切换项目会重新读取。
+
+**与官方节点的默认值差异** — 官方 `ref_image_size` 是 `match`/`max`（短边 ≤ 2048，16:9 画面约
+3.2 MP），而 `LoadImage` + 缩放到长边 512 的旧链路大约只有 0.15 MP。这两个节点默认 0.25 MP；
+想要官方默认量级就把 `target_megapixels` 设到 3.2 左右。
 ### API 接口
 
 | 接口 | 返回 |
 |------|------|
-| `GET /h3_lvm/projects` | `{"projects": [{"name": ..., "segments": N}, ...], "default": "H3_LVM"}` — 所有库 + 片段数量 |
-| `POST /h3_lvm/project` | 请求 `{"project": <用户输入的名字>}` → `{"name": <清洗后的名字>, "created": true/false, "segments": N}` |
-| `POST /h3_lvm/project/delete` | 请求 `{"project": <库名>, "confirm": <同一个库名>}` → `{"name": ..., "deleted": true, "segments": N}` |
+| `GET /h3_lvm/projects?scope=segments\|image\|audio` | `{"projects": [...], "default": "H3_LVM"}` — `scope=segments`（默认）是视频素材库 + 片段数量（Picker/Manager 用）；`scope=image` / `scope=audio` 是那一类自己的参考库 + 卡片数（两个参考加载器用） |
+| `POST /h3_lvm/project` | 请求 `{"project": <用户输入的名字>, "scope": "segments"\|"image"\|"audio"}` → `{"name": <清洗后的名字>, "created": true/false, "segments"\|"references": N}` — scope 决定在哪个库里新建 |
+| `POST /h3_lvm/project/delete` | 请求 `{"project": <库名>, "confirm": <同一个库名>, "scope": ...}` → `{"name": ..., "deleted": true, ...}` — 只动那一个库，不会碰视频素材库或另一类参考 |
+| `GET /h3_lvm/ref_presets?project=<项目名>&kind=image\|audio` | `{"project_name": <项目名>, "references": [...]}` — 那一类在该项目下的预设，只有路径；kind 不是 image/audio 时返回中文 400 |
+| `POST /h3_lvm/ref_presets` | 请求 `{"project": <项目名>, "kind": "image"\|"audio", "entries": <面板 JSON>}` → `{"name": ..., "kind": ..., "saved": N}` — 只写那一类自己的库文件 |
 | `GET /h3_lvm/segments?project=<名称>` | 完整片段列表 + 缩略图 URL |
+| `GET /h3_lvm/ref_plan?w=&h=&mp=&upscale=0|1` | `{"width", "height", "actual_megapixels", "area_error", "ratio_error", "mode"}` — 参考图加载器对该源图、目标 MP 与放大开关实际会产出的 32 网格尺寸（卡片上的尺寸就来自这里）；`mode` 是 `target_mp` 或 `grid_align`，卡片上「未放大」的说明就由它决定 |
 | `POST /h3_lvm/delete` | 请求 `{"project": <库名>, "segment_id": N}` → `{"deleted": N}` |
 | `POST /h3_lvm/merge` | 请求 `{"project": <库名>, "segment_ids": [3, 4, 5]}` → `{"project": ..., "merged_id": 3, "merged_from": [3, 4, 5], "dropped_overlap_frames": N, "renumbered": [{"from": 6, "to": 4}], "segment": {...}}` — 只接受编号连续的片段；选择不连续或帧率/分辨率不一致会返回中文 400 |
 

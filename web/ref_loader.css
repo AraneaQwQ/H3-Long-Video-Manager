@@ -1,0 +1,253 @@
+/* H3 reference loaders - only what the deck panels do not already provide.
+   The container, tool row, buttons, card grid, cards and thumbnails all come from
+   h3lvm_picker.css on purpose: two copies of that styling is how two panels start
+   looking like different products.
+   CSS prefix: .h3ref-* */
+
+.h3ref-add-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 6px;
+    flex: 0 0 auto;
+}
+
+.h3ref-add {
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.h3ref-hint {
+    font-size: 11px;
+    color: #94a3b8;
+    overflow-wrap: anywhere;
+}
+
+/* Drop feedback: the grid gets a dashed frame while a file is over it. The border
+   is always there (transparent), so the grid never shifts when a drag starts. */
+.h3ref-deck {
+    border: 1px dashed transparent;
+    border-radius: 6px;
+}
+
+.h3ref-deck.h3ref-drop {
+    border-color: #60a5fa;
+    background: rgba(96, 165, 250, 0.08);
+}
+
+/* An audio card is the same box as an image card: same column floor, same thumbnail
+   height, both scaled by the 卡片大小 control. It used to carry a native
+   <audio controls> bar, which is why this deck had a wider floor; the waveform is a
+   canvas in the same thumbnail slot, so the deck no longer needs an override. */
+
+/* Card actions: one small button row under the meta line. */
+.h3ref-acts {
+    display: flex;
+    gap: 4px;
+    padding: 4px 6px 6px 6px;
+    background: #202020;
+    border-top: 1px solid #333;
+}
+
+.h3ref-act {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 3px 4px;
+    border: 1px solid #3f3f46;
+    border-radius: 4px;
+    background: #2b2b2b;
+    color: #cbd5e1;
+    font-size: 11px;
+    line-height: 1.3;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.h3ref-act:hover {
+    border-color: #60a5fa;
+    background: #1e293b;
+    color: #e2e8f0;
+}
+
+.h3ref-act:disabled {
+    opacity: .35;
+    cursor: default;
+}
+
+/* The audio card: a waveform in the thumbnail slot, a play button on top of it, and one
+   row of two numbers for the trim window. Blue bars are what H3 receives, grey bars are
+   what it does not. Everything is sized off the same --card-min / --thumb-h the 卡片大小
+   control writes, so an audio card is the same size as every other card here. */
+.h3ref-wave {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.h3ref-play {
+    position: absolute;
+    left: 4px;
+    top: 4px;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid #3f3f46;
+    border-radius: 4px;
+    background: rgba(17, 17, 17, .8);
+    color: #e2e8f0;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.h3ref-play:hover {
+    border-color: #60a5fa;
+    background: #1e293b;
+}
+
+.h3ref-trim {
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+    padding: 4px 6px;
+    background: #202020;
+    border-top: 1px solid #333;
+}
+
+.h3ref-trim-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 0;
+    min-width: 0;
+    font-size: 9px;
+    color: #94a3b8;
+}
+
+.h3ref-num {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 2px 3px;
+    border: 1px solid #3f3f46;
+    border-radius: 4px;
+    background: #2b2b2b;
+    color: #e2e8f0;
+    font-size: 11px;
+}
+
+.h3ref-num:disabled {
+    opacity: .35;
+}
+
+/* The clear-trim button sits in the number row, so it must keep a square button size
+   instead of stretching like the buttons in .h3ref-acts. */
+.h3ref-trim .h3ref-act {
+    flex: 0 0 auto;
+    width: 26px;
+}
+
+/* The segment decks reserve right padding in .h3lvm-meta for a delete button these
+   cards do not have, so their text may use the full width. */
+.h3ref-deck .h3lvm-meta {
+    padding-right: 8px;
+}
+
+/* One card = one fixed meta block. The size line may wrap onto a second line, but the
+   block is always exactly two lines tall (26px = 2 x 10px x 1.3), so a long size string
+   can never make one card taller than its neighbours and the rows keep lining up. The
+   height is reserved before the size is known, so nothing jumps when it arrives, and
+   nothing is cut with an ellipsis: what does not fit is in the card tooltip. */
+.h3ref-deck .h3lvm-seg-info {
+    line-height: 1.3;
+    min-height: 26px;
+    max-height: 26px;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+}
+/* Reordering by dragging a card. The dragged card fades and the gap where it would
+   land is marked with a blue edge on the neighbour. The .h3lvm-card prefix is not
+   decoration: that rule sets a box-shadow on hover, and this sheet loads after the
+   picker sheet, so an unprefixed class would lose. */
+.h3lvm-card.h3ref-dragging {
+    opacity: .35;
+    border-style: dashed;
+    cursor: grabbing;
+}
+
+.h3lvm-card.h3ref-drop-before {
+    box-shadow: -4px 0 0 0 #60a5fa;
+}
+
+.h3lvm-card.h3ref-drop-after {
+    box-shadow: 4px 0 0 0 #60a5fa;
+}
+
+/* The whole card is the drag handle, so the pointer should say so - except over the
+   buttons, the waveform, and the two trim inputs, which are clicks and typing. */
+.h3lvm-card[draggable="true"] {
+    cursor: grab;
+}
+
+.h3lvm-card[draggable="true"] .h3ref-act,
+.h3lvm-card[draggable="true"] .h3ref-play {
+    cursor: pointer;
+}
+
+.h3lvm-card[draggable="true"] .h3ref-wave {
+    cursor: crosshair;
+}
+
+.h3lvm-card[draggable="true"] .h3ref-num {
+    cursor: text;
+}
+
+/* Parked cards (the 跳过 state). They stay in the deck but below the slot block,
+   dimmed and not draggable - they hold no slot, so there is no order to change.
+   The card keeps its size, so the grid does not reflow when a card moves out and
+   back in. */
+.h3lvm-card.h3ref-skipped {
+    border-color: #3f3f46;
+    background: #1c1c1c;
+    cursor: default;
+}
+
+.h3lvm-card.h3ref-skipped:hover {
+    border-color: #52525b;
+    transform: none;
+    box-shadow: none;
+}
+
+.h3lvm-card.h3ref-skipped .h3lvm-thumb-wrap {
+    filter: grayscale(.7) brightness(.7);
+}
+
+.h3lvm-card.h3ref-skipped .h3lvm-seg-label {
+    color: #8b8b93;
+}
+
+.h3lvm-card.h3ref-skipped .h3ref-act {
+    cursor: pointer;
+}
+
+/* The row that separates the two blocks. It spans the grid the way .h3lvm-empty
+   does, so it never takes a column of its own. */
+.h3ref-deck-sep {
+    grid-column: 1 / -1;
+    margin-top: 2px;
+    padding-top: 6px;
+    border-top: 1px dashed #3f3f46;
+    font-size: 11px;
+    color: #94a3b8;
+}
+
+/* Same shell as 添加参考图 so the add row keeps one height; it only appears while
+   something is parked. */
+.h3ref-restore {
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+

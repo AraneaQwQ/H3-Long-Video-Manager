@@ -25,6 +25,7 @@ function markPortrait(thumbWrap, img) {
     bg.className = "h3lvm-thumb-bg";
     bg.src = img.src;
     bg.alt = "";
+    bg.draggable = false;
     bg.setAttribute("aria-hidden", "true");
     thumbWrap.insertBefore(bg, img);
 }
@@ -39,6 +40,9 @@ export function appendThumbnail(thumbWrap, seg) {
     img.className = "h3lvm-thumb";
     img.src = seg.thumbnail_url;
     img.loading = "lazy";
+    // The picture must not become the drag source: on a draggable card that
+    // turns the drag ghost into a small thumbnail, and the card is what moves.
+    img.draggable = false;
     thumbWrap.appendChild(img);
 
     const portrait = portraitFromMeta(seg);

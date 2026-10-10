@@ -25,6 +25,9 @@ from .segment_store import (
     list_project, list_projects, sanitize_project_name, DEFAULT_PROJECT,
     normalize_save_dtype,
 )
+# RAFOLIE 2026-10-10: the two reference loaders live in their own module; they share
+# only core/ helpers with this file, so the node list is assembled here.
+from .ref_nodes import H3AudioReferenceLoader, H3ImageReferenceLoader
 
 logger = logging.getLogger(__name__)
 CORE_AVAILABLE = True
@@ -698,7 +701,10 @@ class H3SmartSplit(io.ComfyNode):
         return io.NodeOutput(result_video, result_audio, final_frame_count, total_segments)
 
 
-NODE_LIST = [H3LongVideoManager, H3SmartSplit, H3SegmentPicker]
+NODE_LIST = [
+    H3LongVideoManager, H3SmartSplit, H3SegmentPicker,
+    H3ImageReferenceLoader, H3AudioReferenceLoader,
+]
 
 
 

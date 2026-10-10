@@ -20,10 +20,14 @@ const DELETE_PROJECT = "__h3lvm_delete__";
  * @param {object} options.node     the LGraphNode that owns the project_name widget
  * @param {object} options.widget   the project_name widget (string or combo)
  * @param {AbortSignal} options.signal  dies with the node
+ * @param {"segments" | "image" | "audio"} [options.scope]  which library this menu reads, creates and deletes
  * @param {(name: string) => void} [options.onChange]  called after the bin changes
  * @returns {{element: HTMLElement, refresh: () => Promise<void>, name: () => string}}
  */
-export function createProjectMenu({ node, widget, signal, onChange }) {
+export function createProjectMenu({ node, widget, signal, scope = "segments", onChange }) {
+    // Only the video bins hold saved segments; a reference library holds one preset
+    // per project, so its menu counts cards instead.
+    const refScope = scope !== "segments";
     let bins = [];
 
     const root = document.createElement("div");
@@ -89,6 +93,40 @@ export function createProjectMenu({ node, widget, signal, onChange }) {
         return typeof raw === "string" && raw.trim() ? raw.trim() : DEFAULT_PROJECT;
     }
 
+    // A count is only useful when it is the count of what this menu can read: the
+    // video bins report saved segments, a reference library reports its cards. Counting
+    // segments here is what made a bin full of reference presets show （空） forever.
+    function rawCount(bin, field) {
+        const value = Number(bin?.[field]);
+        return Number.isFinite(value) && value > 0 ? value : 0;
+    }
+
+    function binTotal(bin) {
+        return rawCount(bin, refScope ? "references" : "segments");
+    }
+
+    function countLabel(total) {
+        return refScope ? `${total} 张参考` : `${total} 段`;
+    }
+
+    function emptyLabel() {
+        return refScope ? "无预设" : "空库";
+    }
+
+    // Deleting a bin always removes the whole folder, so the warning lists whatever is
+    // really in it - for the loaders that is the preset first, then any saved segments.
+    function deleteWarning(name, bin) {
+        if (!refScope) {
+            return `删除「${name}」会同时删掉 ${binTotal(bin)} 个已保存片段（含缩略图和预览），此操作不可撤销。`;
+        }
+        const parts = [];
+        if (binTotal(bin)) parts.push(`它的参考预设（${binTotal(bin)} 张卡片）`);
+        const segments = rawCount(bin, "segments");
+        if (segments) parts.push(`${segments} 个已保存片段（含缩略图和预览）`);
+        if (!parts.length) return `删除「${name}」会删掉这个空的素材库文件夹，此操作不可撤销。`;
+        return `删除「${name}」会同时删掉 ${parts.join(" 与 ")}，此操作不可撤销。`;
+    }
+
     // Creating a bin, the panel's own reload and the refresh button can all ask for
     // the list at the same moment; one request at a time keeps the menu consistent.
     let inFlight = null;
@@ -104,7 +142,10 @@ export function createProjectMenu({ node, widget, signal, onChange }) {
         let list = [];
         let fetched = false;
         try {
-            const res = await api.fetchApi("/h3_lvm/projects", { cache: "no-store" });
+            const res = await api.fetchApi(
+                `/h3_lvm/projects?scope=${encodeURIComponent(scope)}`,
+                { cache: "no-store" },
+            );
             if (res.ok) {
                 const data = await res.json().catch(() => ({}));
                 list = Array.isArray(data.projects) ? data.projects : [];
@@ -117,7 +158,7 @@ export function createProjectMenu({ node, widget, signal, onChange }) {
 
         const active = currentName();
         if (!list.some(bin => bin.name === active)) {
-            list.unshift({ name: active, segments: 0 });
+            list.unshift({ name: active, segments: 0, references: 0 });
         }
         bins = list;
 
@@ -126,7 +167,8 @@ export function createProjectMenu({ node, widget, signal, onChange }) {
         if (fetched) {
             const shown = bins.find(bin => bin.name === active);
             if (shown) {
-                projectCount.textContent = shown.segments ? `共 ${shown.segments} 段` : "空库";
+                const total = binTotal(shown);
+                projectCount.textContent = total ? `共 ${countLabel(total)}` : emptyLabel();
             }
         }
 
@@ -138,7 +180,8 @@ export function createProjectMenu({ node, widget, signal, onChange }) {
         for (const bin of bins) {
             const option = document.createElement("option");
             option.value = bin.name;
-            option.textContent = bin.segments ? `${bin.name} (${bin.segments} 段)` : `${bin.name}（空）`;
+            const total = binTotal(bin);
+            option.textContent = total ? `${bin.name} (${countLabel(total)})` : `${bin.name}（空）`;
             if (bin.name === active) option.selected = true;
             projectSelect.appendChild(option);
         }
@@ -195,7 +238,7 @@ export function createProjectMenu({ node, widget, signal, onChange }) {
             const res = await api.fetchApi("/h3_lvm/project", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ project: typed }),
+                body: JSON.stringify({ project: typed, scope }),
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
@@ -213,8 +256,8 @@ export function createProjectMenu({ node, widget, signal, onChange }) {
 
     function openDeleteRow() {
         const name = currentName();
-        const bin = bins.find(item => item.name === name) || { segments: 0 };
-        deleteText.textContent = `删除「${name}」会同时删掉 ${bin.segments} 个已保存片段（含缩略图和预览），此操作不可撤销。`;
+        const bin = bins.find(item => item.name === name) || { segments: 0, references: 0 };
+        deleteText.textContent = deleteWarning(name, bin);
         deleteBtn.textContent = `✔ 删除「${name}」`;
         deleteRow.dataset.project = name;
         deleteError.textContent = "";
@@ -244,7 +287,7 @@ export function createProjectMenu({ node, widget, signal, onChange }) {
             const res = await api.fetchApi("/h3_lvm/project/delete", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ project: name, confirm: name }),
+                body: JSON.stringify({ project: name, confirm: name, scope }),
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
