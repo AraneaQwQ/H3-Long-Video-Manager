@@ -7,8 +7,9 @@
 
 - `v1.0.0` → `305a5d7`（首个 tag）：定长切段（每段含 MC 重叠帧固定 ≤ 用户输入时长且对齐 17n+5）+ 末段零丢失不对齐、素材存盘 int8/fp16 开关、项目素材库选单（切换/新建/删除整库）、两个节点的中文可视面板与常开卡片区、竖屏卡片完整显示、卡片缩放 100%–400% 共用控件。已推送 `origin`（`git-push-github.ps1 -Tags` 只推 tag，分支要再跑一次不带 `-Tags`）。
 - `v1.1.0` → `0a1cdd4`（tag 对象 `5d7b5a3`）：新增 `H3 Smart Split` 节点（按镜头切点分段，长度交给 MiniMax H3 判断，无损覆盖全部帧）+ 两个产出节点共用的一套卡片区 `web/deck_panel.js`（常开、载入即出卡片、`本次` 角标、卡片缩放 100%–400%、点卡片写回输出片段编号）+ 卡片区合并模式（相邻多选、`✅ 确认合并`、新卡片沿用最小 id 且后续编号顺延、接缝去掉 MC 重叠帧并同步裁音频、packed int8/fp16 直拼、`POST /h3_lvm/merge`）。已推送 `origin/main`（远端 main = `0a1cdd4`）与 `v1.1.0`。
+- `v1.2.0` → `0b8d8b5`（tag 对象 `87c39ac`）：新增 `H3 图片参考加载器` / `H3 音频参考加载器`（官方 Autogrow 端口的数量与顺序不变，空槽输出真 `None`）+ 按比例缩放的目标 MP 与 32 像素网格、四种重采样滤镜、`放大小图` 开关（关闭时只做网格对齐，不施加目标面积）+ 卡片跳过/放回（状态存在 `media_files` 的 `skip`，活动卡片在前、已跳过在后）+ 卡片拖拽换序 + 音频卡片的时间窗（起始/时长）+ 参考预设按类型分开存（`<output>/h3-lvm-image-refs`、`<output>/h3-lvm-audio-refs`，与视频库 `h3-lvm/` 同级；预设只存路径 + 排序 + 跳过状态，旧共用文件 `h3lvm_references.json` 一次性按类各复制一份且原文件不动）+ `GET /h3_lvm/ref_plan`、项目接口的 `scope=segments|image|audio`、预设接口的 `kind=`、`POST /h3_lvm/ref_presets`。已推送 `origin/main`（远端 main = `0b8d8b5`）与 `v1.2.0`。
 
-## 2026-10-10 · 未提交（当前基线 `1bd48e2`）
+## 2026-10-11 · `0b8d8b5`（当前基线）
 
 - 快照：`archive/2026-10-10-1bd48e2/`（57 个文件 / 532 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。开发副本 HEAD = `1bd48e2`，已有 tags `v1.0.0`、`v1.1.0`。
 - 本轮改动（第十三轮：图片/音频参考加载器，按企划书 `H3_Image_Audio_Reference_Loaders_Implementation_Brief.md`）：
