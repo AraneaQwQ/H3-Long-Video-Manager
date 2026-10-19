@@ -69,7 +69,33 @@ class TestNodeSchema(unittest.TestCase):
         self.assertEqual(_input_ids("H3LongVideoManager"), MANAGER_INPUTS)
 
     def test_picker_input_order(self):
-        self.assertEqual(_input_ids("H3SegmentPicker"), ["project_name", "segment_id"])
+        # output_size and then custom_max_side are appended last, as source_mode was before
+        # them: configure() restores widgets by position, so a workflow saved before any of
+        # them keeps its older values and reads the cut bin at the original size.
+        self.assertEqual(_input_ids("H3SegmentPicker"),
+                         ["project_name", "segment_id", "source_mode", "output_size",
+                          "custom_max_side"])
+
+    def test_picker_output_size_offers_the_shared_option_list(self):
+        schema = next(cls for cls in NODES.NODE_LIST if cls.__name__ == "H3SegmentPicker").define_schema()
+        size = next(inp for inp in schema.inputs if inp.id == "output_size")
+        self.assertEqual(size.default, NODES.DEFAULT_RESIZE)
+        self.assertIn("最长边 1920", list(size.options))
+        # The node and the card API read one option list, so a card can never promise a
+        # size the node would refuse.
+        self.assertEqual(list(size.options), list(NODES.RESIZE_OPTIONS))
+        # The custom entry is offered last and carries no number: its number is the other
+        # widget, so the two controls have to ship together.
+        self.assertEqual(list(size.options)[-1], NODES.RESIZE_CUSTOM)
+
+    def test_picker_custom_max_side_matches_the_decoder_bounds(self):
+        # A widget that lets you type 5 or 90000 would be a control the node then refuses,
+        # so the Int bounds are the decoder's own constants.
+        schema = next(cls for cls in NODES.NODE_LIST if cls.__name__ == "H3SegmentPicker").define_schema()
+        custom = next(inp for inp in schema.inputs if inp.id == "custom_max_side")
+        self.assertEqual(custom.default, NODES.CUSTOM_MAX_SIDE_DEFAULT)
+        self.assertEqual(custom.min, NODES.MIN_MAX_SIDE)
+        self.assertEqual(custom.max, NODES.MAX_MAX_SIDE)
 
     def test_picker_outputs(self):
         # segment_id is appended last so existing 3-output links stay valid.

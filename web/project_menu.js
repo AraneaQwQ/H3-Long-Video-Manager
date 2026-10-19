@@ -20,14 +20,54 @@ const DELETE_PROJECT = "__h3lvm_delete__";
  * @param {object} options.node     the LGraphNode that owns the project_name widget
  * @param {object} options.widget   the project_name widget (string or combo)
  * @param {AbortSignal} options.signal  dies with the node
- * @param {"segments" | "image" | "audio"} [options.scope]  which library this menu reads, creates and deletes
+ * @param {"segments" | "uploads" | "image" | "audio"} [options.scope]  which library this menu reads, creates and deletes
  * @param {(name: string) => void} [options.onChange]  called after the bin changes
  * @returns {{element: HTMLElement, refresh: () => Promise<void>, name: () => string}}
  */
+// What a menu is allowed to say about one library. Every scope counts a different
+// key ("segments" / "videos" / "references") and holds a different thing, so the
+// unit word and the delete warning belong here rather than in a refScope boolean:
+// "N 段" is wrong for a video library and "N 张参考" is wrong for both.
+const REFERENCE_CONFIG = {
+    field: "references",
+    label: "📦 项目素材库",
+    labelTitle: "打开菜单可以切换项目，也可以新建或删除项目",
+    placeholder: "新项目名（例如：科幻短片 01）",
+    empty: "无预设",
+    count: (total) => `${total} 张参考`,
+    warning: null, // reference bins describe the preset plus any segments, below
+};
+
+const SCOPE_CONFIG = {
+    segments: {
+        field: "segments",
+        label: "📦 项目素材库",
+        labelTitle: "打开菜单可以切换项目，也可以新建或删除项目",
+        placeholder: "新项目名（例如：科幻短片 01）",
+        empty: "空库",
+        count: (total) => `${total} 段`,
+        warning: (name, total) =>
+            `删除「${name}」会同时删掉 ${total} 个已保存片段（含缩略图和预览），此操作不可撤销。`,
+    },
+    uploads: {
+        field: "videos",
+        label: "📦 项目视频库",
+        labelTitle: "当前模式的投放视频库；这里的新建/删除只影响投放视频，不动裁切片段库",
+        placeholder: "新项目名（例如：投放素材 01）",
+        empty: "空视频库",
+        count: (total) => `${total} 个视频`,
+        warning: (name, total) =>
+            `删除「${name}」会同时删掉 ${total} 个投放视频（原文件与封面），此操作不可撤销；`
+            + "裁切片段库里的同名项目不受影响。",
+    },
+    image: REFERENCE_CONFIG,
+    audio: REFERENCE_CONFIG,
+};
+
 export function createProjectMenu({ node, widget, signal, scope = "segments", onChange }) {
-    // Only the video bins hold saved segments; a reference library holds one preset
-    // per project, so its menu counts cards instead.
-    const refScope = scope !== "segments";
+    // An unknown scope reads as the cut-segment bin, which is what the backend does.
+    const config = SCOPE_CONFIG[scope] ?? SCOPE_CONFIG.segments;
+    const refScope = config.field === "references";
     let bins = [];
 
     const root = document.createElement("div");
@@ -39,12 +79,12 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
 
     const projectLabel = document.createElement("span");
     projectLabel.className = "h3lvm-project-label";
-    projectLabel.textContent = "📦 项目素材库";
-    projectLabel.title = "打开菜单可以切换项目，也可以新建或删除项目";
+    projectLabel.textContent = config.label;
+    projectLabel.title = config.labelTitle;
 
     const projectSelect = document.createElement("select");
     projectSelect.className = "h3lvm-project";
-    projectSelect.title = "切换项目素材库；菜单内可新建或删除项目";
+    projectSelect.title = `${config.labelTitle}；菜单内可新建或删除项目`;
 
     const projectCount = document.createElement("span");
     projectCount.className = "h3lvm-count";
@@ -60,7 +100,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     const nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.className = "h3lvm-new-input";
-    nameInput.placeholder = "新项目名（例如：科幻短片 01）";
+    nameInput.placeholder = config.placeholder;
     const createBtn = document.createElement("button");
     createBtn.className = "h3lvm-refresh-btn";
     createBtn.textContent = "✔ 建立";
@@ -102,22 +142,24 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     }
 
     function binTotal(bin) {
-        return rawCount(bin, refScope ? "references" : "segments");
+        return rawCount(bin, config.field);
     }
 
     function countLabel(total) {
-        return refScope ? `${total} 张参考` : `${total} 段`;
+        return config.count(total);
     }
 
     function emptyLabel() {
-        return refScope ? "无预设" : "空库";
+        return config.empty;
     }
 
     // Deleting a bin always removes the whole folder, so the warning lists whatever is
     // really in it - for the loaders that is the preset first, then any saved segments.
     function deleteWarning(name, bin) {
         if (!refScope) {
-            return `删除「${name}」会同时删掉 ${binTotal(bin)} 个已保存片段（含缩略图和预览），此操作不可撤销。`;
+            const total = binTotal(bin);
+            if (!total) return `删除「${name}」会删掉这个空的素材库文件夹，此操作不可撤销。`;
+            return config.warning(name, total);
         }
         const parts = [];
         if (binTotal(bin)) parts.push(`它的参考预设（${binTotal(bin)} 张卡片）`);

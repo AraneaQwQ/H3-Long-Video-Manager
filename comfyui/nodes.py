@@ -11,6 +11,7 @@ v3 changes:
 from comfy_api.latest import io
 
 import logging
+import os
 import torch
 
 from ..core.models import MotionContextConfig, MOTION_CONTEXT_OPTIONS, SourceVideoInfo, WorkingVideoConfig
@@ -25,6 +26,12 @@ from .segment_store import (
     list_project, list_projects, sanitize_project_name, DEFAULT_PROJECT,
     normalize_save_dtype,
 )
+# RAFOLIE 2026-10-19: the Picker's second library. Kept out of segment_store on purpose -
+# the cut bin stores tensors, this one stores the user's own video files untouched.
+from .uploaded_video_store import resolve_upload
+from .video_decode import (CUSTOM_MAX_SIDE_DEFAULT, DEFAULT_RESIZE, MAX_MAX_SIDE,
+                          MIN_MAX_SIDE, RESIZE_CUSTOM, RESIZE_OPTIONS, TARGET_FPS,
+                          decode_video, parse_max_side)
 # RAFOLIE 2026-10-10: the two reference loaders live in their own module; they share
 # only core/ helpers with this file, so the node list is assembled here.
 from .ref_nodes import H3AudioReferenceLoader, H3ImageReferenceLoader
@@ -422,13 +429,27 @@ class H3LongVideoManager(io.ComfyNode):
         return io.NodeOutput(result_video, result_audio, final_frame_count, total_segments)
 
 
+# The panel's two mode buttons, the API's scope argument, and this node all speak the
+# same two strings. A third library means adding it here and in server_api._scope().
+MODE_SEGMENTS = "segments"
+MODE_UPLOADS = "uploads"
+
+
 class H3SegmentPicker(io.ComfyNode):
-    """H3 Segment Picker — load a saved segment from the H3 Segment Bin.
+    """H3 Segment Picker - one node, two libraries, the same four outputs.
 
-    No video input needed. Reads the tensor bundle (safetensors) saved by
-    the H3 Long Video Manager and outputs IMAGE + AUDIO directly.
+    segments (the original behaviour, and the default):
+        Read the tensor bundle the H3 Long Video Manager or the H3 Smart Split saved
+        in the cut bin. No video input is needed and nothing is decoded again.
 
-    Feed the outputs into MiniMaxH3ReferenceToVideo ref_videos / ref_audio.
+    uploads:
+        Read a whole video the user dropped into this node's own library
+        (output/h3-lvm-video-uploads). Only the selected card is decoded, and only
+        when the workflow runs, sampled to the 24 fps the H3 nodes expect.
+
+    Feed the outputs into MiniMaxH3ReferenceToVideo ref_videos / ref_audio either way.
+    The two libraries never share a folder, so the same project name means different
+    bytes in each mode - which is exactly what the two mode buttons promise.
     """
 
     @classmethod
@@ -440,6 +461,23 @@ class H3SegmentPicker(io.ComfyNode):
             inputs=[
                 io.String.Input('project_name', default=DEFAULT_PROJECT, placeholder='库名（默认 H3_LVM）'),
                 io.Int.Input('segment_id', default=1, min=1, max=999),
+                # Appended last on purpose: ComfyUI restores widget values by position, so
+                # a workflow saved before this field existed keeps its two old values and
+                # keeps reading the cut bin.
+                io.Combo.Input('source_mode', options=[MODE_SEGMENTS, MODE_UPLOADS], default=MODE_SEGMENTS,
+                    tooltip='裁切片段 = 本插件 Manager / Smart Split 保存的切片；投放视频 = 在节点面板里拖入或载入的完整视频。两个素材库完全独立，同名项目互不影响。'),
+                # Appended last again for the same reason: a workflow saved before this field
+                # existed keeps its three values and decodes at the original size.
+                io.Combo.Input('output_size', options=list(RESIZE_OPTIONS), default=DEFAULT_RESIZE,
+                    tooltip='只作用于投放视频：执行时把画面等比缩小到该最长边，磁盘上的原文件不变。'
+                            '4K/2K 素材建议选 1920 或 1280，交给 MiniMax 的压力会小很多。'
+                            '选「' + RESIZE_CUSTOM + '」时用下面的「自定义最长边」填像素数。裁切片段模式不受影响。'),
+                # Only used when 输出分辨率 is set to 自定义（自己填最长边）. Kept visible with a
+                # label that says so rather than hidden: a control that appears and disappears
+                # looks broken, and the node body would jump in height.
+                io.Int.Input('custom_max_side', default=CUSTOM_MAX_SIDE_DEFAULT,
+                    min=MIN_MAX_SIDE, max=MAX_MAX_SIDE, step=2,
+                    tooltip='只在「输出分辨率」选择自定义时生效：解码时把画面等比缩小到这个最长边（像素）。等比缩放、对齐偶数、不会放大，磁盘上的原文件不变。'),
             ],
             outputs=[
                 io.Image.Output(display_name='IMAGE'),
@@ -456,7 +494,21 @@ class H3SegmentPicker(io.ComfyNode):
         return float("nan")
 
     @classmethod
-    def execute(cls, project_name, segment_id):
+    def execute(cls, project_name, segment_id, source_mode=MODE_SEGMENTS,
+                output_size=DEFAULT_RESIZE, custom_max_side=CUSTOM_MAX_SIDE_DEFAULT):
+        mode = str(source_mode or MODE_SEGMENTS).strip().lower()
+        if mode == MODE_UPLOADS:
+            return cls._execute_upload(project_name, segment_id, output_size,
+                                       custom_max_side)
+        if mode != MODE_SEGMENTS:
+            raise ValueError(
+                "未知的素材库模式：%r。只能是 %s（裁切片段）或 %s（投放视频）。"
+                % (source_mode, MODE_SEGMENTS, MODE_UPLOADS)
+            )
+        return cls._execute_segment(project_name, segment_id)
+
+    @classmethod
+    def _execute_segment(cls, project_name, segment_id):
         if not STORE_AVAILABLE:
             raise RuntimeError("segment_store module not available. Cannot load saved segments.")
 
@@ -497,6 +549,46 @@ class H3SegmentPicker(io.ComfyNode):
             print(f"[H3 LVM Picker] no audio saved, generating silent: {duration_sec:.2f}s")
 
         return io.NodeOutput(video, audio, frame_count, segment_id)
+
+    @classmethod
+    def _execute_upload(cls, project_name, segment_id, output_size=DEFAULT_RESIZE,
+                        custom_max_side=CUSTOM_MAX_SIDE_DEFAULT):
+        """Decode one card of the upload library into the same four outputs.
+
+        The file on disk is never re-encoded, trimmed, or padded: frames are sampled to
+        TARGET_FPS because that is the H3 convention, and frame_count is the tensor this
+        call really produced rather than what the container claimed. A clip without a
+        sound track gets the same silent AUDIO the cut-bin path has always produced, so
+        downstream H3 nodes never receive None.
+
+        output_size only caps the decoded frames (see video_decode.scale_plan); the custom
+        entry takes its number from custom_max_side. The stored bytes stay exactly as they
+        were uploaded, so changing either setting and running again costs a decode and
+        nothing else.
+        """
+        path, record = resolve_upload(project_name, segment_id)
+        max_side = parse_max_side(output_size, custom_max_side)
+        video, audio, info = decode_video(path, max_side=max_side)
+        frame_count = int(video.shape[0])
+        project = sanitize_project_name(project_name)
+        scaled_note = ""
+        if info.get("scaled"):
+            scaled_note = " (from %dx%d)" % (info.get("source_width"), info.get("source_height"))
+
+        print(f"[H3 LVM Picker] loaded uploaded video {record['segment_id']} from '{project}': "
+              f"{frame_count} frames at {TARGET_FPS}fps "
+              f"(source {info.get('source_fps') or 'unknown'}fps"
+              f"{', variable rate' if info.get('variable_fps') else ''}), "
+              f"{video.shape[2]}x{video.shape[1]}{scaled_note}, "
+              f"{record.get('original_name') or os.path.basename(path)}, "
+              f"{'with audio' if audio else 'no audio'}")
+
+        if audio is None:
+            duration_sec = frame_count / float(TARGET_FPS)
+            audio = {"waveform": torch.zeros(1, 1, max(1, int(duration_sec * 44100))), "sample_rate": 44100}
+            print(f"[H3 LVM Picker] this video has no audio track, generating silent: {duration_sec:.2f}s")
+
+        return io.NodeOutput(video, audio, frame_count, int(record["segment_id"]))
 
 
 class H3SmartSplit(io.ComfyNode):

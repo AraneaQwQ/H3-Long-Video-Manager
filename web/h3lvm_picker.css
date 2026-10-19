@@ -521,3 +521,138 @@
 .h3lvm-meta > .h3-asset-delete:hover { color: #fca5a5; border-color: #ef4444; background: #451a1a; }
 .h3lvm-meta > .h3-asset-delete:focus-visible { outline: 2px solid #f87171; outline-offset: 2px; }
 .h3lvm-meta > .h3-asset-delete:disabled { opacity: .45; cursor: wait; }
+
+/* ---------------------------------------------------------------------------
+   RAFOLIE 2026-10-19: the Segment Picker's two libraries.
+   An empty card list is usually the wrong mode rather than a missing file, so the
+   mode row is always visible and the current mode is always lit. */
+.h3lvm-mode-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.h3lvm-mode-btn {
+    flex: 1 1 150px;
+    min-width: 150px;
+    background: #16202e;
+    border: 1px solid #334155;
+    color: #94a3b8;
+    padding: 7px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.h3lvm-mode-btn:hover {
+    color: #e2e8f0;
+    border-color: #60a5fa;
+}
+
+.h3lvm-mode-btn.active {
+    background: #1d4ed8;
+    border-color: #60a5fa;
+    color: #ffffff;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+/* One line of context per mode, in the same quiet tone as the footer hint. */
+.h3lvm-mode-hint {
+    flex: 1 1 100%;
+    font-size: 10px;
+    color: #64748b;
+    overflow-wrap: anywhere;
+}
+
+/* Upload mode: the import control is a normal tool button with a green accent. The
+   file input is never drawn - the button opens the browser dialog instead. */
+.h3lvm-upload-btn {
+    background: #14291d;
+    border-color: #14532d;
+    color: #bbf7d0;
+}
+
+.h3lvm-upload-btn:hover {
+    background: #166534;
+    border-color: #22c55e;
+    color: #ffffff;
+}
+
+.h3lvm-upload-btn[hidden] {
+    display: none;
+}
+
+.h3lvm-file-input {
+    display: none;
+}
+
+/* Only the card area takes files, so only the card area lights up. */
+.h3lvm-drop-zone {
+    outline: 1px dashed transparent;
+    outline-offset: -3px;
+}
+
+.h3lvm-drop-in {
+    outline: 1px dashed #60a5fa;
+    outline-offset: -3px;
+    background: rgba(37, 99, 235, 0.10);
+}
+
+/* Reordering the video library by dragging a card. The dragged card fades and the gap it
+   would land in is marked with a blue edge on the neighbour, which is how the reference
+   loaders show it too. The .h3lvm-card prefix is not decoration: that rule sets a
+   box-shadow on hover, and an unprefixed class would lose to it. */
+.h3lvm-card.h3lvm-dragging {
+    opacity: .35;
+    border-style: dashed;
+    cursor: grabbing;
+}
+
+.h3lvm-card.h3lvm-drop-before {
+    box-shadow: -4px 0 0 0 #60a5fa;
+}
+
+.h3lvm-card.h3lvm-drop-after {
+    box-shadow: 4px 0 0 0 #60a5fa;
+}
+
+/* The whole card is the handle, so the pointer should say so - except over the buttons,
+   which stay clicks. */
+.h3lvm-card[draggable="true"] {
+    cursor: grab;
+}
+
+.h3lvm-card[draggable="true"] .h3lvm-play-btn,
+.h3lvm-card[draggable="true"] .h3-asset-delete {
+    cursor: pointer;
+}
+
+/* Upload cards carry the original file name, which is long and must not push the
+   card wider than the grid cell. */
+.h3lvm-seg-name {
+    font-size: 10px;
+    color: #cbd5e1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Index entry without its file: the card stays, but it says so. */
+.h3lvm-missing-badge {
+    position: absolute;
+    left: 4px;
+    bottom: 4px;
+    background: #7f1d1d;
+    border: 1px solid #b91c1c;
+    color: #fee2e2;
+    border-radius: 4px;
+    font-size: 10px;
+    padding: 1px 5px;
+}
+
+/* The mode row is fixed chrome; the deck keeps the flexible area. */
+.h3lvm-mode-row { flex: 0 0 auto; }

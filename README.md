@@ -112,7 +112,12 @@ Restart ComfyUI, hard-refresh browser (`Ctrl+F5`).
 > ```
 >
 > Without it the Manager, the Picker and the segment bin behave exactly as before; Smart
-> Split stops with an error that prints the same command for the running interpreter.
+> Split stops with an error that prints the same command for the running interpreter.>
+> **Uploaded videos need PyAV**: the Picker's **投放视频** (uploaded video) library decodes
+> with `av`, the same FFmpeg-inside-Python the Manager already uses, so no `ffmpeg` on
+> `PATH` is needed. It is not pinned in `requirements.txt` because a normal ComfyUI
+> install already ships it; if it is missing, the cut-bin mode keeps working and the
+> upload mode stops with an error that prints `pip install av`.
 
 
 ### Storage layout
@@ -127,6 +132,12 @@ ComfyUI/output/h3-lvm/<project_name>/
 ├── seg02/
 │   └── ...
 
+ComfyUI/output/h3-lvm-video-uploads/<project_name>/   # the Picker's 投放视频 library (its own root, never inside h3-lvm)
+├── h3lvm_upload_index.json   # cards: original filename, duration, size, fps, audio flag
+└── files/
+    ├── vid001.mp4            # the user's file, byte for byte — never re-encoded or trimmed
+    └── vid001_cover.jpg      # card cover (320 px max edge)
+
 ComfyUI/output/h3-lvm-image-refs/<project_name>/h3lvm_references.json   # image reference preset
 ComfyUI/output/h3-lvm-audio-refs/<project_name>/h3lvm_references.json   # audio reference preset
 ```
@@ -134,6 +145,9 @@ ComfyUI/output/h3-lvm-audio-refs/<project_name>/h3lvm_references.json   # audio 
 Disk use is frames × width × height × 3 × bytes-per-value: at 1280×720 that is
 5.5 MB per frame in fp16 and 2.8 MB in int8. Motion Context frames are stored
 again inside every segment, so a run writes more frames than the source has.
+The upload library is different on purpose: one original file per card and nothing else.
+Importing never writes a `.safetensors` and never keeps a decoded video in memory — the
+bytes are decoded when the node runs, one card at a time.
 
 ### Node parameters
 
@@ -232,16 +246,80 @@ detector cuts one shot into several tiny pieces.
 
 #### H3 Segment Picker
 
+One node, two libraries, the same four outputs. Two buttons above the project menu pick
+which library the node reads; the switch is explicit and nothing is guessed from what
+happens to be on disk.
+
 | Parameter | Default | Notes |
 |-----------|---------|-------|
-| `project_name` | H3_LVM | Which bin to read from. The panel shows a menu instead: every bin on disk is listed with its segment count, `＋ 新建项目…` creates an empty one, and `🗑 删除当前项目…` removes the whole bin after a confirm that repeats its name |
-| `segment_id` | 1 | Which segment to load |
+| `project_name` | H3_LVM | Which project to read — inside the library the current mode button points at. The panel shows a menu instead: every project of **that** library with its count, `＋ 新建项目…` creates an empty one, and `🗑 删除当前项目…` removes the whole project after a confirm that repeats its name |
+| `segment_id` | 1 | Which segment / card to load |
+| `source_mode` | `segments` | `segments` = 裁切片段 (the cut bin written by Manager / Smart Split), `uploads` = 投放视频 (whole videos brought into this node). Appended after the two old fields on purpose: a workflow saved before this field existed keeps its two values and keeps reading the cut bin |
+| `output_size` | `原始（不缩放）` | 投放视频 only — caps the long side of the frames this node decodes: `原始（不缩放）` / `最长边 3840` / `1920` / `1280` / `960` / `640` / `480` / `自定义（自己填最长边）`. Proportional, even-aligned, never upscaled, and the stored file is never transcoded, so changing it costs a decode and nothing else. A 4K frame is 8 MB of float32 and the H3 encoder downscales anyway, so 1920 or 1280 is the sane choice for 4K/2K material. Appended after `source_mode` for the same reason as that field: a workflow saved before it existed keeps its three values and decodes at the original size. 裁切片段 never uses it |
+| `custom_max_side` | 1920 | Read only when `output_size` is `自定义（自己填最长边）` — the long side in pixels, 16–8192. A typed number is clamped into that range rather than rejected, because a typed number is an intention; `scale_plan()` never grows a picture, so a cap above the source simply means no scaling. Ignored while a preset is selected. Appended after `output_size` for the same restore-by-position reason |
 
-**Panel layout** — three rows, top to bottom: ① a labelled project menu with the live
-segment count of the selected bin (`＋ 新建项目…` and `🗑 删除当前项目…` live inside that menu),
-② a tool row (refresh, card size 100%–400%, current selection), ③ the card deck, then a one-line
-legend. Card titles and status text are Chinese; the node parameter labels are shown in
-Chinese too (`label` is display-only — saved workflows keep `project_name` / `segment_id`).
+**Mode 1 · 裁切片段 (default, unchanged)** — reads the `.safetensors` bundle the Manager or
+Smart Split saved. Nothing is decoded again, and the four outputs are exactly what they
+were before this feature.
+
+**Mode 2 · 投放视频** — whole videos the user dropped into the node, stored as their own
+files under a separate root. Importing does not run the workflow and does not create a
+tensor: the file is kept byte for byte, probed for duration / size / fps / audio, and
+given a card cover. Only the selected card is decoded, and only when the workflow runs —
+frames are sampled to 24 fps (the H3 convention), audio is resampled to 44.1 kHz, and a
+clip without a sound track gets silent AUDIO of the matching length so downstream H3
+nodes never receive `None`. No trimming, no black-frame padding, no 17n+5 snapping:
+whatever the file is, that is what H3 judges. Limits: `.mp4 .m4v .mov .mkv .webm .avi
+`.ts .mts`, 2 GiB per file, 999 cards per project.
+
+**Output size is a decode-time cap, never a transcode** — `输出分辨率` caps the long side while
+frames are being decoded, which is what keeps a 4K upload from costing 8 MB of RAM per frame
+and from being refused by the memory guard (the estimate now uses the planned output size, and
+the Chinese error names the control). The plan is proportional, snapped to even numbers, and
+never upscales; the file on disk stays byte for byte, so switching back to `原始（不缩放）` loses
+nothing. The card list is planned with the same `scale_plan()` on the server, so a card
+advertises what a run will really produce — `源 3840×2160 → 输出 1920×1080（原文件不变）` — and in
+裁切片段 mode the widget label says `输出分辨率（裁切不用）` instead of hiding a control. The option
+list lives in `comfyui/video_decode.py::RESIZE_OPTIONS` so the widget, the cards and the tests
+cannot disagree about what is offered. The last entry, `自定义（自己填最长边）`, carries no number
+in its label and reads `custom_max_side` instead; the panel labels that field `（生效中）` when the
+combo points at it and `（选自定义后可用）` otherwise, so it is always clear whether a typed
+number is live — and it is never hidden, because a control that appears and disappears reads
+as broken and makes the node body jump.
+
+**Card order is the timeline order** — cards in the upload library can be dragged into a new
+order: where a card is dropped decides the order, the first card is `segment_id 1`, and the
+rest follow. A reorder rewrites the numbers in the index only; the video files and covers
+stay where they are because every read goes through the record, so reordering moves no
+bytes. A `segment_id` saved in a workflow therefore means "which position in the order",
+not "which upload came first" - which is what stitching several clips into one long video
+needs. The cut-segment deck stays numbered as Manager / Smart Split saved it and is not
+draggable.
+
+**Panel layout** — four rows, top to bottom: ① the two mode buttons (`🎬 裁切片段` /
+`📥 投放视频`), ② a labelled project menu with the live count of the current library
+(`＋ 新建项目…` and `🗑 删除当前项目…` live inside that menu), ③ a tool row (refresh, card
+size 100%–400%, current selection, plus `＋ 载入视频` in upload mode), ④ the card deck,
+then a one-line legend. Card titles and status text are Chinese; the node parameter
+labels are shown in Chinese too (`label` is display-only — saved workflows keep
+`project_name` / `segment_id` / `source_mode` / `output_size` / `custom_max_side`).
+
+**Two selections, both restored** — each mode keeps its own project + card in
+`node.properties["h3lvm_picker_modes"]`, so saving the workflow, reopening it, or
+restarting ComfyUI brings back what was selected in each mode; the graph is the source
+of truth on load, so a workflow saved before this feature still opens in 裁切片段.
+Dropping files on the deck uploads them (ComfyUI's automatic `LoadImage` node is
+suppressed for video files). An upload card shows the cover, the original filename,
+duration, resolution, source fps with a 输出按 24fps 采样 note when it differs, and
+whether it has audio; a card whose file was deleted outside ComfyUI stays visible with a
+文件已丢失 badge instead of vanishing. ▶ previews in the browser when the container is
+playable there (`.mkv` / `.avi` say why they are not), 🗑 deletes that card and its file.
+
+Thumbnails keep the shared card rules: landscape fills the frame (`object-fit: cover`),
+portrait (9:16) shows the whole frame (`object-fit: contain`) over a blurred copy of the
+same frame, and the card size is identical either way. Card zoom 100%–400% is the same
+control as on the Manager and Smart Split panels.
+
 
 #### H3 Image Reference Loader / H3 Audio Reference Loader
 
@@ -339,8 +417,8 @@ to about 3.2 to match the official default.
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /h3_lvm/projects?scope=segments\|image\|audio` | `{"projects": [...], "default": "H3_LVM"}` — `scope=segments` (default) is the video bins with their segment count (Picker/Manager); `scope=image` / `scope=audio` is that kind's own reference library with its card count (the two loaders) |
-| `POST /h3_lvm/project` | body `{"project": <typed name>, "scope": "segments"\|"image"\|"audio"}` → `{"name": <sanitized>, "created": true/false, "segments"\|"references": N}` — the scope picks which library the bin is created in |
+| `GET /h3_lvm/projects?scope=segments\|image\|audio\|uploads` | `{"projects": [...], "default": "H3_LVM"}` — `scope=segments` (default) is the video bins with their segment count (Picker/Manager); `scope=image` / `scope=audio` is that kind's own reference library with its card count (the two loaders) |
+| `POST /h3_lvm/project` | body `{"project": <typed name>, "scope": "segments"\|"image"\|"audio"\|"uploads"}` → `{"name": <sanitized>, "created": true/false, "segments"\|"references": N}` — the scope picks which library the bin is created in |
 | `POST /h3_lvm/project/delete` | body `{"project": <name>, "confirm": <same name>, "scope": ...}` → `{"name": ..., "deleted": true, ...}` — only that library is touched, never the video bin or the other kind |
 | `GET /h3_lvm/ref_presets?project=<name>&kind=image\|audio` | `{"project_name": <name>, "references": [...]}` — that kind's preset for one project, paths only; a Chinese 400 for a kind that is neither |
 | `POST /h3_lvm/ref_presets` | body `{"project": <name>, "kind": "image"\|"audio", "entries": <panel JSON>}` → `{"name": ..., "kind": ..., "saved": N}` — writes that kind's own library file only |
@@ -348,11 +426,20 @@ to about 3.2 to match the official default.
 | `GET /h3_lvm/ref_plan?w=&h=&mp=&upscale=0|1` | `{"width", "height", "actual_megapixels", "area_error", "ratio_error", "mode"}` — the 32-grid size the reference loader will really produce for that source, target and upscale setting; `mode` is `target_mp` or `grid_align` and is what puts the "not upscaled" note on the card |
 | `POST /h3_lvm/delete` | body `{"project": <name>, "segment_id": N}` → `{"deleted": N}` |
 | `POST /h3_lvm/merge` | body `{"project": <name>, "segment_ids": [3, 4, 5]}` → `{"project": ..., "merged_id": 3, "merged_from": [3, 4, 5], "dropped_overlap_frames": N, "renumbered": [{"from": 6, "to": 4}], "segment": {...}}` — joins consecutive segments; a Chinese 400 for a non-consecutive selection or mismatched fps/size |
+| `GET /h3_lvm/uploads?project=<name>&output_size=<option>&custom_max_side=<pixels>` | The upload library's cards: `{"project_name", "videos": [...]}` — each card carries `segment_id`, `storage_name`, `original_name`, `thumbnail`, `cover_url`, `video_url`, `width`, `height`, `source_fps`, `variable_fps`, `duration_sec`, `has_audio`, `out_fps`, `size_bytes`, `browser_preview`, plus `out_width` / `out_height` / `out_scaled` for the size the decode will really produce with that setting; a card whose file was deleted outside ComfyUI is listed with `missing_file: true` instead of disappearing |
+| `POST /h3_lvm/uploads/import` | multipart form with the `project` field **before** the `file` part; bytes are streamed into a `.upload_*` temp file and the card is only registered after the probe succeeds → the card record. Over 2 GiB is a 413, and a rejected or interrupted file leaves no index ghost and no leftover bytes |
+| `POST /h3_lvm/uploads/delete` | body `{"project": <name>, "segment_id": N}` → `{"deleted": N}` — that card, its file and its cover only; already gone is a Chinese 404 |
+| `POST /h3_lvm/uploads/reorder` | body `{"project": <name>, "order": [3, 1, 2]}` → `{"project": ..., "order": [1, 2, 3], "videos": N}` — renumbers the cards 1..N in the order given; the files and covers do not move. An order that does not match the current cards (missing, unknown, repeated, or not a list) is a Chinese 400 and the index stays as it was |
 
 **WebSocket event** — `h3_lvm/changed` is broadcast after a run saves segments
 (`{"project": <name>, "segments": [1, 2, ...]}`) and after a delete
 (`{"project": <name>, "deleted_id": N}`) and after a merge (`{"project": <name>, "merged_id": N}`). The `segments` list is what lets a Manager node show
 exactly the cards from its own run instead of guessing from the bin contents.
+
+`h3_lvm/uploads_changed` belongs to the upload library alone
+(`{"scope": "uploads", "project": <name>, "segment_id": N, "action": "import"|"delete"|"reorder"}`).
+Importing, deleting or reordering an uploaded video never refreshes cut-bin cards, and a cut-bin run
+never touches the upload deck — the two panels listen to different events.
 
 ### Project structure
 
@@ -380,7 +467,8 @@ H3-Long-Video-Manager/
 │   ├── nodes_v3_backup.py             # backup (pre-V3-API)
 │   ├── nodes_v4_backup.py             # backup (pre-V3-API, v4 attempt)
 │   ├── asset_paths.py                 # Asset path checks + versioned preview URLs
-│   ├── segment_store.py               # Storage layer (save/load/list/delete)
+│   ├── segment_store.py               # Storage layer (save/load/list/delete)│   ├── uploaded_video_store.py        # 投放视频库：原文件 + 独立索引（与裁切库不共用根目录）
+│   ├── video_decode.py                # PyAV probe + card cover + 24 fps decode → IMAGE/AUDIO
 │   └── server_api.py                  # HTTP API routes
 ├── core/
 │   ├── __init__.py                    # Layer A public API (dataclasses)
@@ -404,7 +492,7 @@ H3-Long-Video-Manager/
 │   ├── h3lvm_manager_panel.js         # Manager panel (project menu + card deck)
 │   ├── h3lvm_smart.js                 # Smart Split Chinese labels + panel
 │   ├── deck_panel.js                  # Card deck shared by Manager and Smart Split
-│   ├── project_menu.js                # Project switch/create/delete row (all panels)
+│   ├── project_menu.js                # Project switch/create/delete row (all panels)│   ├── picker_mode_state.js           # Picker two-mode state + card copy rules (pure, node --test)
 │   ├── preview_overlay.js             # MP4 preview modal (Picker + panels)
 │   ├── card_zoom.js                   # Card size 100%-400% (shared control)
 │   ├── thumb_fit.js                   # Card thumbnails: portrait frames shown whole
@@ -422,7 +510,12 @@ H3-Long-Video-Manager/
     ├── test_node_schema.py            # Node output order lock
     ├── test_person_crop.py            # Person crop tests
     ├── test_fixed_segments.py           # Fixed-length segmentation tests
-    ├── test_project_menu.py           # Project menu (list/create/delete) tests
+    ├── test_project_menu.py           # Project menu (list/create/delete) tests    ├── test_upload_store.py           # 投放视频库：两库隔离 / 稳定 ID / 索引损坏 / 路径安全
+    ├── test_upload_api.py             # Upload API: import, delete, scope, size cap
+    ├── test_video_decode.py           # Probe, 24 fps sampling, silent audio, covers
+    ├── test_picker_dual_mode.py       # Old graphs stay on the cut bin; uploads round-trip
+    ├── _media_clip.py                 # Test helper: a tiny generated clip
+    ├── _plugin_import.py              # Test helper: import the plugin with or without ComfyUI
     ├── test_smart_split_core.py         # Scene-cut → lossless shot segments tests
     ├── test_smart_split_node.py         # Smart Split node end-to-end tests
     ├── test_ref_size.py               # 32 px grid size planner tests
@@ -536,7 +629,11 @@ git clone https://github.com/AraneaQwQ/H3-Long-Video-Manager.git
 > ```
 >
 > 没有这个包，Manager、Picker 和素材库的行为完全不变；Smart Split 会停下并把同一个命令
-> 打印成错误信息，命令里的 python 就是当前运行的那个。
+> 打印成错误信息，命令里的 python 就是当前运行的那个。>
+> **投放视频需要 PyAV**：Picker 的**投放视频**库用 `av` 解码，和 Manager 用的是同一套
+> 「装在 Python 环境里的 FFmpeg」，不需要在 `PATH` 上另装 `ffmpeg`。它没有写进
+> `requirements.txt`，因为正常的 ComfyUI 环境本来就带这个包；真的缺了，裁切片段模式照常
+> 工作，投放视频模式会停下并打印 `pip install av`。
 
 
 ### 存储结构
@@ -551,12 +648,20 @@ ComfyUI/output/h3-lvm/<项目名>/
 ├── seg02/
 │   └── ...
 
+ComfyUI/output/h3-lvm-video-uploads/<项目名>/   # Picker 的投放视频库（独立根目录，绝不在 h3-lvm 里面）
+├── h3lvm_upload_index.json   # 卡片：原始文件名、时长、尺寸、帧率、有无音轨
+└── files/
+    ├── vid001.mp4            # 用户自己的文件，逐字节保存——不转码、不裁切
+    └── vid001_cover.jpg      # 卡片封面（最长边 320 px）
+
 ComfyUI/output/h3-lvm-image-refs/<项目名>/h3lvm_references.json   # 图片参考预设
 ComfyUI/output/h3-lvm-audio-refs/<项目名>/h3lvm_references.json   # 音频参考预设
 ```
 
 占用空间 = 帧数 × 宽 × 高 × 3 × 每个值的字节数：1280×720 下 fp16 每帧约 5.5 MB，int8 约 2.8 MB。
 Motion Context 的重叠帧会在每一段里再存一份，所以一次运行写出的帧数会比源视频多。
+投放视频库是另一种存法：一张卡片就是磁盘上的一个原文件，没有别的。导入不写
+`.safetensors`，也不把解码结果常驻在内存里——只有节点真正运行时才解码，一次只解一张卡片。
 
 ### 节点参数
 
@@ -619,12 +724,62 @@ Motion Context 的重叠帧会在每一段里再存一份，所以一次运行�
 
 #### H3 Segment Picker
 
+一个节点、两个素材库、四个输出不变。项目菜单上方有两个按钮决定节点读哪个库；切换是显式的，
+不会根据磁盘上有什么去猜。
+
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `project_name` | H3_LVM | 从哪个库读取。面板上是一个下拉菜单：列出磁盘上所有库并带片段数量，`＋ 新建项目…` 建一个空库，`🗑 删除当前项目…` 在确认行里重复库名后删除整个库 |
-| `segment_id` | 1 | 读取第几段 |
+| `project_name` | H3_LVM | 读哪个项目——范围是当前模式按钮指向的那个库。面板上是一个下拉菜单：列出**该库**里的所有项目并带数量，`＋ 新建项目…` 建一个空的，`🗑 删除当前项目…` 在确认行里重复名字后删除整个项目 |
+| `segment_id` | 1 | 读取第几段 / 第几张卡片 |
+| `source_mode` | `segments` | `segments` = 裁切片段（Manager / Smart Split 保存的切片库），`uploads` = 投放视频（在节点面板里拖入或载入的完整视频）。这个字段是追加在两个旧字段之后的：更早保存的工作流保留原来的两个值，继续读裁切库 |
+| `output_size` | `原始（不缩放）` | 只作用于投放视频：把执行时解码出来的画面等比缩小到该最长边——`原始（不缩放）` / `最长边 3840` / `1920` / `1280` / `960` / `640` / `480` / `自定义（自己填最长边）`。只缩放解码，磁盘上的原文件一个字节都不改，所以改这个设置只多一次解码，切回原始也没有任何损失。4K 一帧 float32 是 8 MB，而 H3 编码器本来还会再缩小，4K/2K 素材选 1920 或 1280 更稳。这个字段同样是追加在 `source_mode` 之后的：更早保存的工作流保留原来的三个值，按原始尺寸解码。裁切片段模式不用它 |
+| `custom_max_side` | 1920 | 只有当 `output_size` 选到 `自定义（自己填最长边）` 时才读取：最长边的像素数，范围 16–8192。填越界的数字会被夹到边界而不是当成无效直接不缩——因为人填的数字是意图，而 `scale_plan()` 从不放大画面，比源还大的上限本来就等于不缩放。选的是预设档位时这个值完全不读。同样是追加在 `output_size` 之后的，位置恢复才安全 |
 
-**面板布局** — 自上而下三行：① 带标签的项目菜单，右侧实时显示当前库的片段数量（`＋ 新建项目…` 与 `🗑 删除当前项目…` 都在这个菜单里）；② 工具行（刷新、卡片大小 100%–400%、当前选中）；③ 卡片网格，最下方一行操作图例。卡片标题与状态文字全部中文，节点参数名也显示为中文（`label` 只影响显示，保存的工作流仍然是 `project_name` / `segment_id`）。缩略图按画面方向自适应：横屏铺满（`object-fit: cover`），竖屏（9:16）整帧显示（`object-fit: contain`）并在后面垫一层同帧模糊副本，不会被压成一条窄带；缩略图区域和卡片尺寸在两种情况下完全一致。
+**模式一 · 裁切片段（默认，行为不变）** — 读取 Manager 或 Smart Split 保存的 `.safetensors`。
+不再解码任何东西，四个输出与这个功能之前完全一致。
+
+**模式二 · 投放视频** — 用户拖进节点的完整视频，按原文件存在另一个根目录里。导入不需要运行
+工作流，也不生成张量：文件逐字节保存，探测出时长 / 尺寸 / 帧率 / 有无音轨，并生成卡片封面。
+只有被选中的那张卡片会被解码，而且只在运行时——帧按 24fps 采样（H3 的约定），音频重采样到
+44.1 kHz，没有音轨的视频会得到时长一致的静音 AUDIO，下游 H3 节点不会收到 `None`。这里不裁切、
+不补黑帧、不做 17n+5 对齐：文件是什么样，H3 拿到的就是什么样。上限：`.mp4 .m4v .mov .mkv
+`.webm .avi .ts .mts`、单文件 2 GiB、每个项目 999 张卡片。
+
+**输出分辨率只作用于解码，不是转码** — `输出分辨率` 在解码时给最长边设上限：4K 一帧 float32 是 8 MB，
+这个上限就是让 4K 素材不至于吃掉整块内存，也不会被内存预估直接挡在门外（预估改用计划尺寸，
+报错文案会直接说「请在节点上把「输出分辨率」调小」）。缩放等比、对齐偶数、绝不放大；磁盘上的原文件
+逐字节不变，所以切回 `原始（不缩放）` 没有任何损失。卡片上的「输出」尺寸由服务端用同一个 `scale_plan()`
+算出，因此卡片说的就是运行时真正会得到什么（`源 3840×2160 → 输出 1920×1080（原文件不变）`）；裁切片段
+模式下这个控件的标签会写成 `输出分辨率（裁切不用）`，而不是把它藏起来。选项表只有一份，放在
+`comfyui/video_decode.py::RESIZE_OPTIONS`，节点控件、卡片文案和测试不可能各说一套。最后一档
+`自定义（自己填最长边）` 的标签里故意不带数字，它读的是 `custom_max_side`；面板会在选中它时把那个
+字段标成 `（生效中）`、否则标成 `（选自定义后可用）`，让「这个数字现在有没有生效」一眼可见——控件
+不会被藏起来，因为忽隐忽现的控件看起来像坏了，节点高度还会跟着跳。
+
+**卡片顺序就是时间轴顺序** — 投放视频库的卡片可以直接拖动换位：松手的位置决定新顺序，
+第一张卡片就是 `segment_id 1`，其余依次重排。重排只重写索引里的编号，磁盘上的视频和封面
+不动（读取一律走索引记录），所以一次排序不搬一个字节。工作流里保存的 `segment_id` 因此是
+「排在第几」，不是「当初上传的第几个」——这正是把几个视频按顺序接成长片时要的语义。裁切片段
+库的卡片仍按编号排列、不可拖动：那边的编号是 Manager / Smart Split 保存时写下的，不在这里改。
+
+**面板布局** — 自上而下四行：① 两个模式按钮（`🎬 裁切片段` / `📥 投放视频`）；② 带标签的项目
+菜单，右侧实时显示当前库的数量（`＋ 新建项目…` 与 `🗑 删除当前项目…` 都在这个菜单里）；
+③ 工具行（刷新、卡片大小 100%–400%、当前选中，投放模式下还有 `＋ 载入视频`）；④ 卡片网格，
+最下方一行操作图例。卡片标题与状态文字全部中文，节点参数名也显示为中文（`label` 只影响显示，
+保存的工作流仍然是 `project_name` / `segment_id` / `source_mode` / `output_size` / `custom_max_side`）。
+
+**两个模式各自的选中都会恢复** — 每个模式各自的项目 + 卡片存在
+`node.properties["h3lvm_picker_modes"]`：保存工作流、重新打开、甚至重启 ComfyUI 之后，两个模式
+各自选中的东西都会回来；读取时以工作流里的值为准，所以这个功能之前保存的工作流仍然打开在
+裁切片段。把文件拖到卡片区就是上传（视频文件不会让 ComfyUI 顺手生成 `LoadImage` 节点）。
+投放卡片显示封面、原始文件名、时长、分辨率、源帧率（与 24fps 不同时会标注「输出按 24fps 采样」）
+以及有无音轨；在 ComfyUI 外面删掉的文件不会让卡片消失，而是保留卡片并标注「文件已丢失」。
+▶ 在浏览器能播的封装里直接预览（`.mkv` / `.avi` 会说明为什么不能），🗑 删除这张卡片和它的文件。
+
+缩略图沿用其它可视化节点的规则：横屏铺满（`object-fit: cover`），竖屏（9:16）整帧显示
+（`object-fit: contain`）并在后面垫一层同帧模糊副本，不会被压成一条窄带；缩略图区域和卡片尺寸
+在两种情况下完全一致。卡片缩放 100%–400% 与 Manager、Smart Split 用的是同一个控件。
+
 
 #### H3 图片参考加载器 / H3 音频参考加载器
 
@@ -687,8 +842,8 @@ ref_audio_2`（`AUDIO`）。永远是九个 / 三个端口，顺序固定。
 
 | 接口 | 返回 |
 |------|------|
-| `GET /h3_lvm/projects?scope=segments\|image\|audio` | `{"projects": [...], "default": "H3_LVM"}` — `scope=segments`（默认）是视频素材库 + 片段数量（Picker/Manager 用）；`scope=image` / `scope=audio` 是那一类自己的参考库 + 卡片数（两个参考加载器用） |
-| `POST /h3_lvm/project` | 请求 `{"project": <用户输入的名字>, "scope": "segments"\|"image"\|"audio"}` → `{"name": <清洗后的名字>, "created": true/false, "segments"\|"references": N}` — scope 决定在哪个库里新建 |
+| `GET /h3_lvm/projects?scope=segments\|image\|audio\|uploads` | `{"projects": [...], "default": "H3_LVM"}` — `scope=segments`（默认）是视频素材库 + 片段数量（Picker/Manager 用）；`scope=image` / `scope=audio` 是那一类自己的参考库 + 卡片数（两个参考加载器用） |
+| `POST /h3_lvm/project` | 请求 `{"project": <用户输入的名字>, "scope": "segments"\|"image"\|"audio"\|"uploads"}` → `{"name": <清洗后的名字>, "created": true/false, "segments"\|"references": N}` — scope 决定在哪个库里新建 |
 | `POST /h3_lvm/project/delete` | 请求 `{"project": <库名>, "confirm": <同一个库名>, "scope": ...}` → `{"name": ..., "deleted": true, ...}` — 只动那一个库，不会碰视频素材库或另一类参考 |
 | `GET /h3_lvm/ref_presets?project=<项目名>&kind=image\|audio` | `{"project_name": <项目名>, "references": [...]}` — 那一类在该项目下的预设，只有路径；kind 不是 image/audio 时返回中文 400 |
 | `POST /h3_lvm/ref_presets` | 请求 `{"project": <项目名>, "kind": "image"\|"audio", "entries": <面板 JSON>}` → `{"name": ..., "kind": ..., "saved": N}` — 只写那一类自己的库文件 |
@@ -696,8 +851,16 @@ ref_audio_2`（`AUDIO`）。永远是九个 / 三个端口，顺序固定。
 | `GET /h3_lvm/ref_plan?w=&h=&mp=&upscale=0|1` | `{"width", "height", "actual_megapixels", "area_error", "ratio_error", "mode"}` — 参考图加载器对该源图、目标 MP 与放大开关实际会产出的 32 网格尺寸（卡片上的尺寸就来自这里）；`mode` 是 `target_mp` 或 `grid_align`，卡片上「未放大」的说明就由它决定 |
 | `POST /h3_lvm/delete` | 请求 `{"project": <库名>, "segment_id": N}` → `{"deleted": N}` |
 | `POST /h3_lvm/merge` | 请求 `{"project": <库名>, "segment_ids": [3, 4, 5]}` → `{"project": ..., "merged_id": 3, "merged_from": [3, 4, 5], "dropped_overlap_frames": N, "renumbered": [{"from": 6, "to": 4}], "segment": {...}}` — 只接受编号连续的片段；选择不连续或帧率/分辨率不一致会返回中文 400 |
+| `GET /h3_lvm/uploads?project=<项目名>&output_size=<选项>&custom_max_side=<像素>` | 投放视频库的卡片：`{"project_name", "videos": [...]}` — 每条带 `segment_id`、`storage_name`、`original_name`、`thumbnail`、`cover_url`、`video_url`、`width`、`height`、`source_fps`、`variable_fps`、`duration_sec`、`has_audio`、`out_fps`、`size_bytes`、`browser_preview`，并按这个设置附带 `out_width` / `out_height` / `out_scaled`（运行时真正会解码出的尺寸）；在 ComfyUI 外面被删掉的文件不会让卡片消失，而是带 `missing_file: true` |
+| `POST /h3_lvm/uploads/import` | multipart 表单，`project` 字段必须在 `file` **之前**；字节流式写入 `.upload_*` 临时文件，探测通过后才登记卡片 → 返回卡片记录。超过 2 GiB 返回 413；被拒绝或中断的上传不会留下索引幽灵，也不会留下半个文件 |
+| `POST /h3_lvm/uploads/delete` | 请求 `{"project": <项目名>, "segment_id": N}` → `{"deleted": N}` — 只删这张卡片、它的文件和封面；已经不在了返回中文 404 |
+| `POST /h3_lvm/uploads/reorder` | 请求 `{"project": <项目名>, "order": [3, 1, 2]}` → `{"project": ..., "order": [1, 2, 3], "videos": N}` — 按给出的顺序把卡片重编号为 1..N，视频与封面不动；顺序和当前卡片对不上（缺号、多号、重复、不是列表）返回中文 400，索引保持不变 |
 
 **WebSocket 事件** — 一次运行保存完片段后（`{"project": <库名>, "segments": [1, 2, ...]}`）和删除片段后（`{"project": <库名>, "deleted_id": N}`）和合并片段后（`{"project": <库名>, "merged_id": N}`）都会广播 `h3_lvm/changed`。`segments` 这个列表就是让 Manager 节点能准确显示自己这次运行的卡片，而不是从整库内容去猜。
+
+`h3_lvm/uploads_changed` 只属于投放视频库
+（`{"scope": "uploads", "project": <项目名>, "segment_id": N, "action": "import"|"delete"|"reorder"}`）。
+导入、删除或重排投放视频都不会刷新裁切库的卡片，裁切库运行也不会碰投放视频的卡片区——两边听不同的事件。
 
 ---
 

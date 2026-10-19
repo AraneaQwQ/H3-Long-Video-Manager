@@ -1,7 +1,9 @@
 // RAFOLIE 2026-02: one MP4 preview modal, shared by the Picker panel and the
 // Manager node's run strip. It closes with the panel that opened it.
 
-export function openPreview(seg, signal) {
+// infoText is optional: an uploaded video has no frame count, so its card supplies
+// its own caption instead of the segment one. Nothing else about the modal changes.
+export function openPreview(seg, signal, infoText) {
     const existing = document.getElementById("h3lvm-preview-overlay");
     if (existing) existing._h3Close?.();
 
@@ -22,7 +24,8 @@ export function openPreview(seg, signal) {
     const info = document.createElement("div");
     info.className = "h3lvm-preview-info";
     const seconds = seg.duration_sec != null ? seg.duration_sec.toFixed(1) + " 秒 · " : "";
-    info.textContent = `片段 ${seg.segment_id} · ${seg.frames} 帧 · ${seconds}${seg.width}×${seg.height}`;
+    info.textContent = infoText
+        || `片段 ${seg.segment_id} · ${seg.frames} 帧 · ${seconds}${seg.width}×${seg.height}`;
 
     const closeBtn = document.createElement("button");
     closeBtn.className = "h3lvm-modal-close";
