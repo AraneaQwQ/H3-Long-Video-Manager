@@ -8,10 +8,19 @@
 - `v1.0.0` → `305a5d7`（首个 tag）：定长切段（每段含 MC 重叠帧固定 ≤ 用户输入时长且对齐 17n+5）+ 末段零丢失不对齐、素材存盘 int8/fp16 开关、项目素材库选单（切换/新建/删除整库）、两个节点的中文可视面板与常开卡片区、竖屏卡片完整显示、卡片缩放 100%–400% 共用控件。已推送 `origin`（`git-push-github.ps1 -Tags` 只推 tag，分支要再跑一次不带 `-Tags`）。
 - `v1.1.0` → `0a1cdd4`（tag 对象 `5d7b5a3`）：新增 `H3 Smart Split` 节点（按镜头切点分段，长度交给 MiniMax H3 判断，无损覆盖全部帧）+ 两个产出节点共用的一套卡片区 `web/deck_panel.js`（常开、载入即出卡片、`本次` 角标、卡片缩放 100%–400%、点卡片写回输出片段编号）+ 卡片区合并模式（相邻多选、`✅ 确认合并`、新卡片沿用最小 id 且后续编号顺延、接缝去掉 MC 重叠帧并同步裁音频、packed int8/fp16 直拼、`POST /h3_lvm/merge`）。已推送 `origin/main`（远端 main = `0a1cdd4`）与 `v1.1.0`。
 - `v1.2.0` → `0b8d8b5`（tag 对象 `87c39ac`）：新增 `H3 图片参考加载器` / `H3 音频参考加载器`（官方 Autogrow 端口的数量与顺序不变，空槽输出真 `None`）+ 按比例缩放的目标 MP 与 32 像素网格、四种重采样滤镜、`放大小图` 开关（关闭时只做网格对齐，不施加目标面积）+ 卡片跳过/放回（状态存在 `media_files` 的 `skip`，活动卡片在前、已跳过在后）+ 卡片拖拽换序 + 音频卡片的时间窗（起始/时长）+ 参考预设按类型分开存（`<output>/h3-lvm-image-refs`、`<output>/h3-lvm-audio-refs`，与视频库 `h3-lvm/` 同级；预设只存路径 + 排序 + 跳过状态，旧共用文件 `h3lvm_references.json` 一次性按类各复制一份且原文件不动）+ `GET /h3_lvm/ref_plan`、项目接口的 `scope=segments|image|audio`、预设接口的 `kind=`、`POST /h3_lvm/ref_presets`。已推送 `origin/main`（远端 main = `0b8d8b5`）与 `v1.2.0`。
+- `v1.3.0` → `21f9eba`（tag 对象 `7e65ca2`）：`H3 Segment Picker` 双模式素材库——`裁切片段库`（原有行为与四个输出接口不变）与 `视频投放库`（拖入 MP4 → 卡片 → 直接输出 IMAGE/AUDIO），两套独立的实际存储路径与项目索引（`<output>/h3-lvm/` 与 `<output>/h3-lvm-uploads/`），保存工作流后可恢复；投放库支持导入/删除/卡片拖拽换序（重编号 1..N、文件与封面不改名、`next_id` 只增不减）与 `GET /h3_lvm/uploads`、`POST /h3_lvm/uploads/import`、`POST /h3_lvm/uploads/delete`、`POST /h3_lvm/uploads/reorder`；`comfyui/video_decode.py` 用 ffprobe/ffmpeg 按需探测与解码，输出分辨率只在解码时缩放（预设最长边 3840…480 + `自定义（自己填最长边）` 配 `custom_max_side`，夹到 16–8192、绝不放大、对齐偶数），上传文件永远逐字节保存、永不重编码；面板沿用既有设计语言（项目菜单新建/删除、卡片缩放 100%–400%、竖屏完整显示、全中文文案）。已推送 `origin/main`（含 `21f9eba` 与本次文档 commit）与 `v1.3.0`。
 
-## 2026-10-19 · `f8d2adc`（当前基线）
+## 2026-10-19 · `21f9eba`（当前基线）
 
-- 快照：`archive/2026-10-19-f8d2adc/`（68 个文件 / 814 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。开发副本 HEAD = `f8d2adc`（tag `v1.2.0` 之后的文档提交），已有 tags `v1.0.0`、`v1.1.0`、`v1.2.0`。本轮改动在分支 `feat/picker-dual-source` 上，**尚未 commit、尚未打 tag**（等用户明确「推送」）。
+- 快照：`archive/2026-10-19-21f9eba/`（77 个文件 / 1016 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。开发副本 `main` = `21f9eba`（`feat: picker dual-source library with uploaded video deck and output scaling`，18 文件 / +4433 −146），annotated tag `v1.3.0`（tag 对象 `7e65ca2`）；上一基线快照仍在 `archive/2026-10-19-f8d2adc/`。
+- 本基线包含第二十一至第二十四轮：`H3 Segment Picker` 双模式素材库（裁切片段库 / 视频投放库）、投放库的独立存储与上传 API、投放视频的按需解码与输出分辨率、输出分辨率的「自定义」档。逐轮细节见下一节 `f8d2adc` 的「本轮改动」条目，那里同时记着两轮环境坑（测试必须提权跑，否则一个用例都没真的跑；EOL 因文件而异）。
+- 测试（真实跑过）：推送前在 `21f9eba` 上复跑全套 `Ran 459 tests in 20.300s ... OK`（上一基线 328 → 459，日志 `C:\Users\az\Documents\Codex\2026-10-02\xia\work\t26_push.log`）；前端纯函数 `C:\Users\az\Documents\Codex\2026-10-02\xia\work\picker_mode_state.test.mjs` 全绿；`C:\Users\az\Documents\Codex\2026-10-02\xia\work\check_h3lvm_syntax.ps1` 对运行副本 49 个 `.py` 语法自检 0 错误。
+- 运行副本：`C:\Users\az\Documents\Codex\2026-10-02\xia\work\sync_h3lvm.ps1` 复制 9 个文件，全仓核对 77 文件 / 0 mismatch / 0 stale。这四轮都改了 Python + 前端 → 复测要**重启 ComfyUI**，不是只 `Ctrl+F5`。
+- 未验证（不宣称通过）：投放库在浏览器里的实测仍未确认——拖入 MP4 出卡片、点卡片输出对应视频、卡片拖拽换序后选中的 `segment_id` 跟着视频走、`输出分辨率` 选预设或自定义后卡片上的「源 → 输出」与运行结果一致、裁切片段模式完全不受影响。这些只有自动化测试覆盖，面板行为需要用户重启 ComfyUI 后实测。
+
+## 2026-10-19 · `f8d2adc`（上一基线）
+
+- 快照：`archive/2026-10-19-f8d2adc/`（68 个文件 / 814 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。开发副本 HEAD = `f8d2adc`（tag `v1.2.0` 之后的文档提交），已有 tags `v1.0.0`、`v1.1.0`、`v1.2.0`。这四轮改动已合并为一个提交 `21f9eba`（`main`）并打 annotated tag `v1.3.0`（tag 对象 `7e65ca2`），逐轮细节保留在本节。
 - 本轮改动（第二十四轮：输出分辨率的「自定义」档）：
   - 需求：预设档位（3840/1920/1280/960/640/480）不够用时，用户要能自己填最长边——例如只想压到 1440 或 1080，卡在两档之间。
   - `comfyui/video_decode.py`：`RESIZE_CUSTOM = "自定义（自己填最长边）"` 追加在 `RESIZE_OPTIONS` 末尾（**标签里故意不带数字**，数字来自另一个控件）；`CUSTOM_MAX_SIDE_DEFAULT = 1920`（打开自定义的人多半就是为了压 4K）；新增 `parse_custom_max_side()`：填的数字**夹到** `MIN_MAX_SIDE`–`MAX_MAX_SIDE` 而不是判为无效——人填 90000 是「能多小就多小」的意思，而 `scale_plan()` 从不放大，比源大的上限本来就等于不缩放；读不出数字（空、`abc`、`nan`、0、负数）才是 0 = 不缩放。`parse_max_side(value, custom_max_side=None)` 只在标签等于 `RESIZE_CUSTOM` 时读第二个参数，预设档位完全忽略它。`__all__` 补 `RESIZE_CUSTOM` / `CUSTOM_MAX_SIDE_DEFAULT` / `MIN_MAX_SIDE` / `MAX_MAX_SIDE` / `parse_custom_max_side`。
@@ -19,7 +28,7 @@
   - `comfyui/server_api.py`：`GET /h3_lvm/uploads` 多读一个 `custom_max_side` 查询参数，交给同一个 `parse_max_side()` + `scale_plan()`，卡片上的「输出」尺寸永远等于运行时真会发生的事。
   - `web/h3lvm_picker.js`：`customSizeWidget` 的中文 tooltip；`syncCustomSizeLabel()` 按状态改 label——裁切模式 `自定义最长边（裁切不用）`、投放模式选到自定义时 `自定义最长边（生效中）`、否则 `自定义最长边（选自定义后可用）`。**不隐藏控件**：忽隐忽现的字段看起来像坏了，节点高度还会跳，这是本仓库既有的做法（`输出分辨率（裁切不用）` 同理）。改档位或改数字都会重读卡片列表，因为卡片上的「源 → 输出」行跟着变。
   - 测试：`tests/test_video_decode.py` +7（`TestCustomMaxSide` 6：用填的数字、默认值可用、越界夹到边界、没有数字=不缩放、小数仍是像素数、预设档位忽略填的值；`TestDecodeScaled.test_a_typed_custom_size_decodes_at_that_size` 用不在预设里的 30 真解码一次 64×36 → 30×16）；`tests/test_upload_api.py` +4（自定义数字规划卡片、没有数字不缩放、预设忽略填的值、越界夹到 16px 下限且高度保持偶数）；`tests/test_node_schema.py` +1（`custom_max_side` 的 default/min/max 必须等于解码器的同一组常量），并把输入顺序锁成五项。顺带修掉一处会被新档位打穿的旧断言：`test_each_option_parses_to_the_number_it_shows` 原来假定每个档位标签里都有数字，现在改成「没有数字的那一项必须正好是 `RESIZE_CUSTOM`」，这样拼错也藏不住。全套 `Ran 459 tests in 19.027s ... OK`（447 → 459，日志 `work/t25_full.log`；定向 `work/t25_targeted.log`）。前端纯函数 `work/picker_mode_state.test.mjs` 仍全绿（卡片格式化逻辑本轮没改）。
-  - 快照说明：本轮与第二十一至二十三轮同处未提交分支，仍没有新的 commit 短 hash，因此不另建快照；推送时四轮一起打 tag（建议 `v1.3.0`）。
+  - 快照说明：本轮与第二十一至二十三轮同处未提交分支，仍没有新的 commit 短 hash，因此不另建快照；推送时四轮一起打 tag（建议 `v1.3.0`）——已按此执行：四轮合并为 `21f9eba`，tag `v1.3.0`。
   - 本轮**改了 Python + 前端**：复测要重启 ComfyUI，不是只 `Ctrl+F5`。真实面板尚未在本环境验证：选到「自定义」后标签变成 `（生效中）`、填 1440 后卡片出现 `源 … → 输出 …`、运行输出确实是那个尺寸、切回预设档位时填的数字不再影响结果。
 - 本轮改动（第二十三轮：投放视频的「输出分辨率」）：
   - 需求：用户要「投放 4K 视频交给 MiniMax 压力太大，加一个分辨率设置」。根因比显存更早：`_decode_frames()` 的内存预估用的是**源**尺寸，4K 会被 `MAX_DECODE_BYTES = 12 GiB` 在解码前直接拒掉，所以「4K 读不出来」其实是还没开始解码就被挡住。
