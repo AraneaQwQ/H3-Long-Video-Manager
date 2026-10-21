@@ -10,7 +10,24 @@
 - `v1.2.0` → `0b8d8b5`（tag 对象 `87c39ac`）：新增 `H3 图片参考加载器` / `H3 音频参考加载器`（官方 Autogrow 端口的数量与顺序不变，空槽输出真 `None`）+ 按比例缩放的目标 MP 与 32 像素网格、四种重采样滤镜、`放大小图` 开关（关闭时只做网格对齐，不施加目标面积）+ 卡片跳过/放回（状态存在 `media_files` 的 `skip`，活动卡片在前、已跳过在后）+ 卡片拖拽换序 + 音频卡片的时间窗（起始/时长）+ 参考预设按类型分开存（`<output>/h3-lvm-image-refs`、`<output>/h3-lvm-audio-refs`，与视频库 `h3-lvm/` 同级；预设只存路径 + 排序 + 跳过状态，旧共用文件 `h3lvm_references.json` 一次性按类各复制一份且原文件不动）+ `GET /h3_lvm/ref_plan`、项目接口的 `scope=segments|image|audio`、预设接口的 `kind=`、`POST /h3_lvm/ref_presets`。已推送 `origin/main`（远端 main = `0b8d8b5`）与 `v1.2.0`。
 - `v1.3.0` → `21f9eba`（tag 对象 `7e65ca2`）：`H3 Segment Picker` 双模式素材库——`裁切片段库`（原有行为与四个输出接口不变）与 `视频投放库`（拖入 MP4 → 卡片 → 直接输出 IMAGE/AUDIO），两套独立的实际存储路径与项目索引（`<output>/h3-lvm/` 与 `<output>/h3-lvm-uploads/`），保存工作流后可恢复；投放库支持导入/删除/卡片拖拽换序（重编号 1..N、文件与封面不改名、`next_id` 只增不减）与 `GET /h3_lvm/uploads`、`POST /h3_lvm/uploads/import`、`POST /h3_lvm/uploads/delete`、`POST /h3_lvm/uploads/reorder`；`comfyui/video_decode.py` 用 ffprobe/ffmpeg 按需探测与解码，输出分辨率只在解码时缩放（预设最长边 3840…480 + `自定义（自己填最长边）` 配 `custom_max_side`，夹到 16–8192、绝不放大、对齐偶数），上传文件永远逐字节保存、永不重编码；面板沿用既有设计语言（项目菜单新建/删除、卡片缩放 100%–400%、竖屏完整显示、全中文文案）。已推送 `origin/main`（含 `21f9eba` 与本次文档 commit）与 `v1.3.0`。
 
-## 2026-10-19 · `21f9eba`（当前基线）
+- `v1.3.1` → `1921477`（tag 对象 `482b118`）：投放视频库的卡片编号改为**就是卡片位置**，永远 1..N 连续无空号——导入追加到末尾、删除让后面的卡片顺延补位、拖拽按新顺序重排；`next_id` 语义收窄为存储序号（只生成 `vidNNN`，只增、名字永不复用，所以补位后不会覆盖别人的文件）；`MAX_SEGMENT_ID = 999` 从「编号上限」改为「卡片数上限」；面板删除后把选中项跟到新编号并写明「后面的编号已顺延」。已推送 `origin/main` 与 `v1.3.1`。
+
+## 2026-10-21 · `1921477`（当前基线）
+
+- 快照：改动前的状态就是 `21f9eba`，已在 `archive/2026-10-19-21f9eba/`，本轮不另建旧快照。提交后的快照在 `archive/2026-10-21-1921477/`（77 个文件，与 `git ls-files` 数量一致，由 `git archive 1921477` 解出，因此与提交内容逐字节相同）。
+- 需求（用户报告）：「拖拽视频进入库内后序号是 1，删掉它再放另一个视频，序号就变成 2」。原来的规则不一致——拖拽会按位置重编号，但删除保留稳定 id、`next_id` 只增不减，于是库里会出现空号，新导入的号越推越大。
+- 新规则（一条，用户视角）：**投放库的 `segment_id` 就是卡片位置，永远 1..N 连续无空号**。导入 = 追加到末尾（拿 `卡片数 + 1`）；删除 = 后面的卡片编号依次补位；拖拽 = 按新顺序重排（已有）。空库重新从 1 开始。
+- `next_id` 语义改为**存储序号**：只用于 `_storage_stem()` 生成 `vidNNN`，只增、名字永不复用。这是补位后的关键护栏——ids 1,2,3 删掉 1 后 `vid003.mp4` 坐到了 2 号，若新导入按卡片号拿 3 号就会 `os.replace` 覆盖它。JSON 字段名不变，不做 schema 迁移，靠 docstring 说明。
+- `MAX_SEGMENT_ID = 999` 从「编号上限」改为**卡片数上限**（`卡片数 + 1 > 999` 才拒绝），存储序号不设上限；报错文案改成「卡片已到 999 上限」。
+- `comfyui/uploaded_video_store.py`：新增 `_renumber(videos)`（**按传入顺序**发号，不在这里排序——在导入/删除路径由调用方先 `sorted(key=_order_key)`，拖拽路径直接传新顺序，否则重排会被这里的排序抵消）；`import_upload()` 卡片号 = `len(videos)+1`、存储名仍用 `next_id`；`delete_upload()` 删记录后补位，回滚快照改成逐记录拷贝（`_renumber` 原地改 `segment_id`，浅拷贝会让回滚拿到新号）；`resolve_upload()` 报错补一句「编号就是卡片顺序，删掉卡片后后面的会顺延」。
+- `web/picker_mode_state.js`：纯函数 `followCardAfterDelete(beforeIds, deletedId, selectedId)`——把被删的号从面板当前顺序里去掉再数一遍就是新号，不需要文件名也不需要服务端配合；非正整数（`null`/`0`/`"abc"`）一律返回 `null`。
+- `web/h3lvm_picker.js`：删除前先从 DOM 读 `deckIds()`（卡片顺序 = 当前编号），删除后选中项跟到新编号并在状态行写 `当前选中：视频 2（后面的编号已顺延）`；被删的正是选中项时仍落到第一张。裁切片段库不受影响（`loadDeck` 的 `beforeIds` 只走 uploads 分支）。
+- 测试：`tests/test_upload_store.py` 改 3 例（`test_the_numbers_are_the_card_order`、`test_the_card_cap_says_what_to_do` 用 999 条假卡片而不是真导入 999 次、`test_a_delete_already_closes_the_gap`），新增 4 例（删除后补位且 `resolve_upload` 读到正确视频、补位不复用文件名 `vid003`→新卡片拿 `vid004`、空库重新从 1 开始且存储名不复用、存储序号很高也不挡第一张卡片）；`work/picker_mode_state.test.mjs` +9 条 `followCardAfterDelete` 断言。定向 `tests.test_upload_store tests.test_upload_api` 全绿（日志 `work/t27b_uploads.log`），`check_h3lvm_syntax.ps1` 49 文件 0 错，前端 `node --check` 与纯函数测试全绿。
+- 测试（真实跑过）：推送前在 `1921477` 上复跑全套 `Ran 463 tests in 21.523s ... OK`，**0 skip**（日志 `C:\Users\az\Documents\Codex\2026-10-02\xia\work\t27_full2.log`）。
+- 环境坑（本轮新发现，重要）：在**开发副本**里跑全套必须设 `$env:COMFYUI_ROOT = 'E:\ai\ComfyUI-aki-v3\ComfyUI'`。不设时 `tests/test_node_schema.py::_comfy_roots()` 找不到 ComfyUI 根（它只认这个环境变量，或「仓库位于 `custom_nodes/` 下」），于是 62 个用例静默 skip，而 `tests/test_smart_split_node.py` 在模块级使用 `NODES.__package__`（此时 `NODES` 是 `None`）直接 `ImportError`——看起来只是「1 个 error」，实际整轮少测了 62 个。判据：`Ran N tests` 的 N 必须是 463，且日志里不得出现 `comfy_api unavailable`。
+- 本轮**改了 Python + 前端**：复测要**重启 ComfyUI**，不是只 `Ctrl+F5`。面板实测（用户已复测，通过）：导入→删除→再导入，卡片号仍是 1；删中间卡片后后面的卡片号顺延、点它们输出的是各自的视频；选中第 3 张删掉第 1 张，选中的是那张视频本身、状态行显示新号；拖拽换序仍照旧。
+
+## 2026-10-19 · `21f9eba`（上一基线）
 
 - 快照：`archive/2026-10-19-21f9eba/`（77 个文件 / 1016 KB，与 `git ls-files` 数量一致，排除 `.git`、`__pycache__`、`archive/`）。开发副本 `main` = `21f9eba`（`feat: picker dual-source library with uploaded video deck and output scaling`，18 文件 / +4433 −146），annotated tag `v1.3.0`（tag 对象 `7e65ca2`）；上一基线快照仍在 `archive/2026-10-19-f8d2adc/`。
 - 本基线包含第二十一至第二十四轮：`H3 Segment Picker` 双模式素材库（裁切片段库 / 视频投放库）、投放库的独立存储与上传 API、投放视频的按需解码与输出分辨率、输出分辨率的「自定义」档。逐轮细节见下一节 `f8d2adc` 的「本轮改动」条目，那里同时记着两轮环境坑（测试必须提权跑，否则一个用例都没真的跑；EOL 因文件而异）。
