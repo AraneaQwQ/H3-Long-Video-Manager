@@ -153,12 +153,14 @@ class TestImport(StoreFixture):
         self.assertTrue(os.path.isfile(os.path.join(get_files_dir("show"), "vid001.mp4")))
         self.assertTrue(os.path.isfile(os.path.join(get_files_dir("show"), "vid001_cover.jpg")))
 
-    def test_ids_are_stable_and_never_reused(self):
+    def test_the_numbers_are_the_card_order(self):
+        # The number is the card's place in the deck, so it is always 1..N with no gap:
+        # an import appends at the end and a delete moves the later cards up one.
         for _ in range(3):
             self.upload("ids", self.video())
         self.assertTrue(delete_upload("ids", 2))
-        self.assertEqual([v["segment_id"] for v in list_uploads("ids")["videos"]], [1, 3])
-        self.assertEqual(self.upload("ids", self.video())["segment_id"], 4)
+        self.assertEqual([v["segment_id"] for v in list_uploads("ids")["videos"]], [1, 2])
+        self.assertEqual(self.upload("ids", self.video())["segment_id"], 3)
 
     def test_the_same_file_name_twice_is_two_cards(self):
         source = self.video("dup.mp4")
@@ -190,16 +192,32 @@ class TestImport(StoreFixture):
         for suffix in (".mp4", ".mov", ".mkv", ".webm", ".avi"):
             self.assertIn(suffix, ALLOWED_SUFFIXES)
 
-    def test_the_id_cap_says_what_to_do(self):
+    def test_the_card_cap_says_what_to_do(self):
+        # The cap is on how many cards one project holds. Fake cards keep the test fast;
+        # the point is the count, not 999 real imports.
         create_upload_project("full")
         with open(index_path("full"), "r", encoding="utf-8") as stream:
             index = json.load(stream)
-        index["next_id"] = MAX_SEGMENT_ID + 1
+        index["videos"] = [{"segment_id": n, "storage_name": "vid%03d.mp4" % n}
+                           for n in range(1, MAX_SEGMENT_ID + 1)]
         with open(index_path("full"), "w", encoding="utf-8") as stream:
             json.dump(index, stream)
         with self.assertRaises(ValueError) as caught:
             self.upload("full", self.video())
         self.assertIn("上限", str(caught.exception))
+        self.assertEqual(count_uploads("full"), MAX_SEGMENT_ID)
+
+    def test_the_storage_counter_never_caps_a_card(self):
+        # next_id only names files, so a high one must not stop a first card.
+        create_upload_project("names")
+        with open(index_path("names"), "r", encoding="utf-8") as stream:
+            index = json.load(stream)
+        index["next_id"] = MAX_SEGMENT_ID + 7
+        with open(index_path("names"), "w", encoding="utf-8") as stream:
+            json.dump(index, stream)
+        record = self.upload("names", self.video())
+        self.assertEqual(record["segment_id"], 1)
+        self.assertEqual(record["storage_name"], "vid%d.mp4" % (MAX_SEGMENT_ID + 7))
 
     def test_a_damaged_index_is_reported_not_hidden(self):
         create_upload_project("hurt")
@@ -385,13 +403,46 @@ class TestCardOrder(StoreFixture):
         self.assertEqual(record["segment_id"], 4)
         self.assertEqual(self.names(), ["c.mp4", "b.mp4", "a.mp4", "d.mp4"])
 
-    def test_a_reorder_after_a_delete_closes_the_gap(self):
+    def test_a_delete_already_closes_the_gap(self):
         self.three()
         self.assertTrue(delete_upload("story", 2))
-        self.assertEqual(self.listed(), [1, 3])
-        reorder_uploads("story", [3, 1])
+        self.assertEqual(self.listed(), [1, 2])
+        self.assertEqual(self.names(), ["a.mp4", "c.mp4"])
+        reorder_uploads("story", [2, 1])
         self.assertEqual(self.listed(), [1, 2])
         self.assertEqual(self.names(), ["c.mp4", "a.mp4"])
+
+    def test_a_delete_moves_the_later_cards_up(self):
+        self.three()
+        self.assertTrue(delete_upload("story", 1))
+        self.assertEqual(self.listed(), [1, 2])
+        self.assertEqual(self.names(), ["b.mp4", "c.mp4"])
+        # The node reads the number it has, so the number has to reach the right video.
+        _, record = resolve_upload("story", 1)
+        self.assertEqual(record["original_name"], "b.mp4")
+
+    def test_closing_a_gap_never_reuses_a_file_name(self):
+        # ids 1,2,3 minus card 1 leaves the old vid003 sitting at number 2; a new import
+        # must not be handed the number 3 file name and overwrite it.
+        self.three()
+        self.assertTrue(delete_upload("story", 1))
+        moved = find_upload("story", 2)
+        self.assertEqual((moved["original_name"], moved["storage_name"]),
+                         ("c.mp4", "vid003.mp4"))
+        added = self.upload("story", self.video("d.mp4"), original_name="d.mp4")
+        self.assertEqual((added["segment_id"], added["storage_name"]), (3, "vid004.mp4"))
+        self.assertEqual(self.names(), ["b.mp4", "c.mp4", "d.mp4"])
+        for name in ("vid003.mp4", "vid004.mp4"):
+            self.assertTrue(os.path.isfile(os.path.join(get_files_dir("story"), name)))
+
+    def test_an_empty_library_starts_at_one_again(self):
+        # The reported case: one card, delete it, the next upload is 视频 1 again.
+        first = self.upload("story", self.video("a.mp4"), original_name="a.mp4")
+        self.assertTrue(delete_upload("story", first["segment_id"]))
+        second = self.upload("story", self.video("b.mp4"), original_name="b.mp4")
+        self.assertEqual(second["segment_id"], 1)
+        self.assertEqual(self.names(), ["b.mp4"])
+        self.assertEqual(second["storage_name"], "vid002.mp4")
 
     def test_a_hand_shuffled_index_still_lists_in_number_order(self):
         self.three()

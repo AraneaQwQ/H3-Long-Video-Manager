@@ -19,8 +19,11 @@ Why an opaque storage name: two uploads called shot.mp4 stay two cards, and a us
 filename can never carry a path traversal into the filesystem. original_name keeps what
 the card shows.
 
-Why next_id instead of "highest id + 1": ids are stable. Deleting the last card must not
-hand its number to the next upload, because a saved workflow may still point at it.
+Two counters, on purpose. segment_id is the card's position: a project's cards always
+number 1..N, so an import appends at the end and a delete moves the cards after it up one.
+That is the rule a user reads off the panel, and it is why a gap never appears. next_id is
+only the storage counter: it hands out the next vidNNN file name and never reuses one,
+because the number a delete freed may now belong to a different card that moved into it.
 
 Why reordering renumbers: the card number is how a workflow picks a card, so the order
 arranged in the panel has to be the order the ids count in. The files keep the opaque
@@ -52,8 +55,9 @@ COVER_SUFFIX = "_cover.jpg"
 PARTIAL_PREFIX = ".upload_"
 SCHEMA_VERSION = 1
 
-# The Picker's segment_id widget is an INT with max 999, so an upload id above that could
-# never be selected. Refusing is better than handing out an id the node cannot reach.
+# The Picker's segment_id widget is an INT with max 999, so a card above that could never
+# be selected. The cap is on how many cards one project holds - the storage names keep
+# counting up on their own. Refusing beats handing out a number the node cannot reach.
 MAX_SEGMENT_ID = 999
 
 # The containers we are willing to hand to FFmpeg, and the subset a browser can play from
@@ -145,6 +149,20 @@ def _order_key(record: Dict[str, Any]) -> Tuple[int, int]:
     if isinstance(value, bool) or not isinstance(value, int):
         return (1, 0)
     return (0, value)
+
+
+def _renumber(videos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Hand out fresh card numbers in the order given: the first card becomes 1.
+
+    Import, delete and drag all end here, so the numbering has exactly one rule - the
+    card's place in the deck - and a gap left by a delete closes by itself. The caller
+    decides the order (by the old numbers, or by a drag), because re-sorting here would
+    undo the drag. Records keep the storage_name they were given at import, so this
+    writes one index and moves no bytes.
+    """
+    for position, record in enumerate(videos, start=1):
+        record["segment_id"] = position
+    return videos
 
 
 def _write_index(project: str, idx: Dict[str, Any]) -> None:
@@ -300,7 +318,7 @@ def checked_upload_file(project: str, storage_name: Any) -> str:
 
 
 def find_upload(project: Any, segment_id: Any) -> Optional[Dict[str, Any]]:
-    """The index record for one stable id, or None."""
+    """The index record for one card number, or None."""
     if isinstance(segment_id, bool) or not isinstance(segment_id, int) or segment_id < 1:
         raise ValueError("segment_id 必须是正整数。")
     name = sanitize_project_name(project)
@@ -321,6 +339,7 @@ def resolve_upload(project: Any, segment_id: Any) -> Tuple[str, Dict[str, Any]]:
         available = [v.get("segment_id") for v in load_upload_index(name).get("videos", [])]
         raise ValueError(
             "投放视频库「%s」里没有编号 %s 的视频。可用编号：%s。"
+            "（编号就是卡片顺序：删掉一张卡片后，后面的卡片会顺延补位。）"
             % (name, segment_id, available if available else "(空)")
         )
     path = checked_upload_file(name, record.get("storage_name", ""))
@@ -413,14 +432,15 @@ def import_upload(project: Any, partial_path: str, original_name: Any) -> Dict[s
     with _project_lock(name):
         idx = load_upload_index(name)
         videos = idx.get("videos", [])
-        next_id = int(idx.get("next_id") or 1)
-        if next_id > MAX_SEGMENT_ID:
+        # The card number is the next position in the deck; next_id only names the file.
+        storage_id = int(idx.get("next_id") or 1)
+        if len(videos) + 1 > MAX_SEGMENT_ID:
             _remove_quietly(partial_path)
             raise ValueError(
-                "投放视频库「%s」的编号已到 %d 上限，无法再新增视频。请新建一个项目，或删除不再需要的卡片。"
+                "投放视频库「%s」的卡片已到 %d 上限，无法再新增视频。请新建一个项目，或删除不再需要的卡片。"
                 % (name, MAX_SEGMENT_ID)
             )
-        stem = _storage_stem(next_id)
+        stem = _storage_stem(storage_id)
         storage = stem + suffix
         cover = stem + COVER_SUFFIX
         files_dir = get_files_dir(name)
@@ -429,7 +449,7 @@ def import_upload(project: Any, partial_path: str, original_name: Any) -> Dict[s
         try:
             write_cover(final, os.path.join(files_dir, cover))
             record = {
-                "segment_id": next_id,
+                "segment_id": len(videos) + 1,
                 "storage_name": storage,
                 "original_name": os.path.basename(str(original_name or storage))[:160],
                 "thumbnail": cover,
@@ -446,8 +466,10 @@ def import_upload(project: Any, partial_path: str, original_name: Any) -> Dict[s
                 "size_bytes": os.path.getsize(final),
                 "created_at": datetime.now().isoformat(timespec="seconds"),
             }
-            idx["videos"] = videos + [record]
-            idx["next_id"] = next_id + 1
+            # Renumbering the whole deck keeps "the numbers are 1..N in card order" true
+            # even for a hand-edited index, and leaves the new card last.
+            idx["videos"] = _renumber(sorted(videos + [record], key=_order_key))
+            idx["next_id"] = storage_id + 1
             idx["schema_version"] = SCHEMA_VERSION
             idx["project_name"] = name
             idx["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -458,7 +480,7 @@ def import_upload(project: Any, partial_path: str, original_name: Any) -> Dict[s
             raise
 
     logger.info("[H3 LVM Uploads] Imported '%s' #%s into '%s' (%dx%d, %s fps, %s bytes)",
-                record["original_name"], next_id, name, record["width"], record["height"],
+                record["original_name"], record["segment_id"], name, record["width"], record["height"],
                 record["source_fps"], record["size_bytes"])
     return record
 
@@ -470,6 +492,10 @@ def delete_upload(project: Any, segment_id: Any) -> bool:
     The index is rewritten first and rolled back if the files refuse to go (a preview
     still open in the browser on Windows), so a failed delete never loses the record of a
     file that is still on disk.
+
+    The cards after it move up one number: the deck is always numbered 1..N, which is what
+    the user sees and what a saved workflow reads. The files keep their storage_name, so
+    closing the gap writes one index and moves no bytes.
     """
     name = sanitize_project_name(project)
     if isinstance(segment_id, bool) or not isinstance(segment_id, int) or segment_id < 1:
@@ -481,8 +507,12 @@ def delete_upload(project: Any, segment_id: Any) -> bool:
     files_dir = get_files_dir(name, create=False)
     paths = [os.path.join(files_dir, record.get("storage_name", "")),
              os.path.join(files_dir, record.get("thumbnail", ""))]
+    # A per-record copy: _renumber() edits the records in place, and the rollback has to
+    # hold the numbers as they were before the gap closed.
     previous = dict(idx)
-    idx["videos"] = [v for v in idx.get("videos", []) if v.get("segment_id") != segment_id]
+    previous["videos"] = [dict(v) for v in idx.get("videos", [])]
+    kept = [v for v in idx.get("videos", []) if v.get("segment_id") != segment_id]
+    idx["videos"] = _renumber(sorted(kept, key=_order_key))
     _write_index(name, idx)
     try:
         for path in paths:
@@ -531,13 +561,9 @@ def reorder_uploads(project: Any, ordered_ids: Any) -> Dict[str, Any]:
         # Nothing moved: no write, so the index does not look changed in a diff.
         return {"project": name, "order": current, "videos": len(current)}
     by_id = {int(v["segment_id"]): v for v in videos}
-    ordered = []
-    for position, asset_id in enumerate(wanted, start=1):
-        record = by_id[asset_id]
-        record["segment_id"] = position
-        ordered.append(record)
-    # next_id stays where it is: it only ever moves up, so the next upload still cannot
-    # be handed a number one of these cards already holds.
+    ordered = _renumber([by_id[asset_id] for asset_id in wanted])
+    # next_id is the storage counter, not a card number: it only ever moves up, so a file
+    # name is never reused even after a delete closed a gap.
     idx["videos"] = ordered
     idx["project_name"] = name
     idx["schema_version"] = SCHEMA_VERSION

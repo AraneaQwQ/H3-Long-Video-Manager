@@ -287,14 +287,20 @@ combo points at it and `（选自定义后可用）` otherwise, so it is always 
 number is live — and it is never hidden, because a control that appears and disappears reads
 as broken and makes the node body jump.
 
-**Card order is the timeline order** — cards in the upload library can be dragged into a new
+**The numbers are the card order** — cards in the upload library can be dragged into a new
 order: where a card is dropped decides the order, the first card is `segment_id 1`, and the
-rest follow. A reorder rewrites the numbers in the index only; the video files and covers
-stay where they are because every read goes through the record, so reordering moves no
-bytes. A `segment_id` saved in a workflow therefore means "which position in the order",
-not "which upload came first" - which is what stitching several clips into one long video
-needs. The cut-segment deck stays numbered as Manager / Smart Split saved it and is not
-draggable.
+rest follow. Import and delete follow the same rule: a new video is appended at the end, and
+deleting a card moves the later ones up, so a library is always numbered 1..N with no holes.
+That is the number the panel shows and the number 输出片段编号 reads. After a delete the
+panel follows the selection to its new number and says so
+(`当前选中：视频 2（后面的编号已顺延）`). Renumbering rewrites the index only; the video
+files and covers stay where they are because every read goes through the record, so neither
+a drag nor a delete moves bytes. Files keep the opaque name they were given at import —
+`next_id` in the index is that storage counter and never hands a name out twice — so a
+number freed by a delete can never overwrite another card's file. A `segment_id` saved in a
+workflow therefore means "which position in the order", not "which upload came first",
+which is what stitching several clips into one long video needs. The cut-segment deck stays
+numbered as Manager / Smart Split saved it and is not draggable.
 
 **Panel layout** — four rows, top to bottom: ① the two mode buttons (`🎬 裁切片段` /
 `📥 投放视频`), ② a labelled project menu with the live count of the current library
@@ -428,7 +434,7 @@ to about 3.2 to match the official default.
 | `POST /h3_lvm/merge` | body `{"project": <name>, "segment_ids": [3, 4, 5]}` → `{"project": ..., "merged_id": 3, "merged_from": [3, 4, 5], "dropped_overlap_frames": N, "renumbered": [{"from": 6, "to": 4}], "segment": {...}}` — joins consecutive segments; a Chinese 400 for a non-consecutive selection or mismatched fps/size |
 | `GET /h3_lvm/uploads?project=<name>&output_size=<option>&custom_max_side=<pixels>` | The upload library's cards: `{"project_name", "videos": [...]}` — each card carries `segment_id`, `storage_name`, `original_name`, `thumbnail`, `cover_url`, `video_url`, `width`, `height`, `source_fps`, `variable_fps`, `duration_sec`, `has_audio`, `out_fps`, `size_bytes`, `browser_preview`, plus `out_width` / `out_height` / `out_scaled` for the size the decode will really produce with that setting; a card whose file was deleted outside ComfyUI is listed with `missing_file: true` instead of disappearing |
 | `POST /h3_lvm/uploads/import` | multipart form with the `project` field **before** the `file` part; bytes are streamed into a `.upload_*` temp file and the card is only registered after the probe succeeds → the card record. Over 2 GiB is a 413, and a rejected or interrupted file leaves no index ghost and no leftover bytes |
-| `POST /h3_lvm/uploads/delete` | body `{"project": <name>, "segment_id": N}` → `{"deleted": N}` — that card, its file and its cover only; already gone is a Chinese 404 |
+| `POST /h3_lvm/uploads/delete` | body `{"project": <name>, "segment_id": N}` → `{"deleted": N}` — that card, its file and its cover only; the cards after it move up one number, so the library stays 1..N; already gone is a Chinese 404 |
 | `POST /h3_lvm/uploads/reorder` | body `{"project": <name>, "order": [3, 1, 2]}` → `{"project": ..., "order": [1, 2, 3], "videos": N}` — renumbers the cards 1..N in the order given; the files and covers do not move. An order that does not match the current cards (missing, unknown, repeated, or not a list) is a Chinese 400 and the index stays as it was |
 
 **WebSocket event** — `h3_lvm/changed` is broadcast after a run saves segments
@@ -756,11 +762,16 @@ Motion Context 的重叠帧会在每一段里再存一份，所以一次运行�
 字段标成 `（生效中）`、否则标成 `（选自定义后可用）`，让「这个数字现在有没有生效」一眼可见——控件
 不会被藏起来，因为忽隐忽现的控件看起来像坏了，节点高度还会跟着跳。
 
-**卡片顺序就是时间轴顺序** — 投放视频库的卡片可以直接拖动换位：松手的位置决定新顺序，
-第一张卡片就是 `segment_id 1`，其余依次重排。重排只重写索引里的编号，磁盘上的视频和封面
-不动（读取一律走索引记录），所以一次排序不搬一个字节。工作流里保存的 `segment_id` 因此是
-「排在第几」，不是「当初上传的第几个」——这正是把几个视频按顺序接成长片时要的语义。裁切片段
-库的卡片仍按编号排列、不可拖动：那边的编号是 Manager / Smart Split 保存时写下的，不在这里改。
+**编号就是卡片顺序** — 投放视频库的卡片可以直接拖动换位：松手的位置决定新顺序，第一张卡片
+就是 `segment_id 1`，其余依次重排。导入和删除走的是同一条规则：新视频排在最后，删掉一张
+卡片后后面的卡片依次补位，所以一个库永远是 1..N 连续编号、不会有空号——这就是面板上显示的
+号，也是「输出片段编号」读的号。删除后如果选中的卡片还在，面板会把选中跟到它的新编号，并在
+状态行写清楚（`当前选中：视频 2（后面的编号已顺延）`）。重编号只重写索引，磁盘上的视频和
+封面不动（读取一律走索引记录），所以无论拖动还是删除都不搬一个字节。文件沿用导入时拿到的
+不透明名字（索引里的 `next_id` 只是这个存储序号，同一个名字永不复用），因此删除腾出来的
+编号不会盖掉另一张卡片的文件。工作流里保存的 `segment_id` 因此是「排在第几」，不是「当初
+上传的第几个」——这正是把几个视频按顺序接成长片时要的语义。裁切片段库的卡片仍按编号排列、
+不可拖动：那边的编号是 Manager / Smart Split 保存时写下的，不在这里改。
 
 **面板布局** — 自上而下四行：① 两个模式按钮（`🎬 裁切片段` / `📥 投放视频`）；② 带标签的项目
 菜单，右侧实时显示当前库的数量（`＋ 新建项目…` 与 `🗑 删除当前项目…` 都在这个菜单里）；
@@ -853,7 +864,7 @@ ref_audio_2`（`AUDIO`）。永远是九个 / 三个端口，顺序固定。
 | `POST /h3_lvm/merge` | 请求 `{"project": <库名>, "segment_ids": [3, 4, 5]}` → `{"project": ..., "merged_id": 3, "merged_from": [3, 4, 5], "dropped_overlap_frames": N, "renumbered": [{"from": 6, "to": 4}], "segment": {...}}` — 只接受编号连续的片段；选择不连续或帧率/分辨率不一致会返回中文 400 |
 | `GET /h3_lvm/uploads?project=<项目名>&output_size=<选项>&custom_max_side=<像素>` | 投放视频库的卡片：`{"project_name", "videos": [...]}` — 每条带 `segment_id`、`storage_name`、`original_name`、`thumbnail`、`cover_url`、`video_url`、`width`、`height`、`source_fps`、`variable_fps`、`duration_sec`、`has_audio`、`out_fps`、`size_bytes`、`browser_preview`，并按这个设置附带 `out_width` / `out_height` / `out_scaled`（运行时真正会解码出的尺寸）；在 ComfyUI 外面被删掉的文件不会让卡片消失，而是带 `missing_file: true` |
 | `POST /h3_lvm/uploads/import` | multipart 表单，`project` 字段必须在 `file` **之前**；字节流式写入 `.upload_*` 临时文件，探测通过后才登记卡片 → 返回卡片记录。超过 2 GiB 返回 413；被拒绝或中断的上传不会留下索引幽灵，也不会留下半个文件 |
-| `POST /h3_lvm/uploads/delete` | 请求 `{"project": <项目名>, "segment_id": N}` → `{"deleted": N}` — 只删这张卡片、它的文件和封面；已经不在了返回中文 404 |
+| `POST /h3_lvm/uploads/delete` | 请求 `{"project": <项目名>, "segment_id": N}` → `{"deleted": N}` — 只删这张卡片、它的文件和封面；后面的卡片编号依次顺延，库保持 1..N 连续；已经不在了返回中文 404 |
 | `POST /h3_lvm/uploads/reorder` | 请求 `{"project": <项目名>, "order": [3, 1, 2]}` → `{"project": ..., "order": [1, 2, 3], "videos": N}` — 按给出的顺序把卡片重编号为 1..N，视频与封面不动；顺序和当前卡片对不上（缺号、多号、重复、不是列表）返回中文 400，索引保持不变 |
 
 **WebSocket 事件** — 一次运行保存完片段后（`{"project": <库名>, "segments": [1, 2, ...]}`）和删除片段后（`{"project": <库名>, "deleted_id": N}`）和合并片段后（`{"project": <库名>, "merged_id": N}`）都会广播 `h3_lvm/changed`。`segments` 这个列表就是让 Manager 节点能准确显示自己这次运行的卡片，而不是从整库内容去猜。

@@ -34,6 +34,7 @@ import {
     browserPreviewHint,
     canBrowserPreview,
     entryForMode,
+    followCardAfterDelete,
     formatDuration,
     modeFromValue,
     moveIds,
@@ -368,7 +369,9 @@ function setupPickerUI(node) {
     }
 
     // --- Load the current mode's cards ---
-    async function loadDeck(deletedId = null) {
+    // beforeIds is the upload deck's order before a delete; only the upload library
+    // renumbers its cards, so the cut-segment path ignores it.
+    async function loadDeck(deletedId = null, beforeIds = null) {
         if (signal.aborted) return;
         const request = ++generation;
         const mode = builtMode;
@@ -376,7 +379,7 @@ function setupPickerUI(node) {
         if (isStale(request, mode, currentProject())) return;
         const project = currentProject();
         if (mode === MODE_UPLOADS) {
-            await loadUploads(request, mode, project, deletedId);
+            await loadUploads(request, mode, project, deletedId, beforeIds);
         } else {
             await loadSegments(request, mode, project, deletedId);
         }
@@ -502,7 +505,7 @@ function setupPickerUI(node) {
         }
     }
     // --- Uploaded videos (the second library) ---
-    async function loadUploads(request, mode, project, deletedId = null) {
+    async function loadUploads(request, mode, project, deletedId = null, beforeIds = null) {
         statusText.textContent = `当前选中：视频 ${segmentWidget?.value || 1}`;
         projectCount.textContent = "读取中…";
 
@@ -522,10 +525,20 @@ function setupPickerUI(node) {
             const videos = Array.isArray(data.videos) ? data.videos : [];
             projectCount.textContent = videos.length ? `共 ${videos.length} 个视频` : "空视频库";
 
-            if (deletedId != null && Number(segmentWidget?.value) === Number(deletedId)) {
-                segmentWidget.value = videos[0]?.segment_id || 1;
-                statusText.textContent = videos.length ? `当前选中：视频 ${segmentWidget.value}` : "该视频库暂无视频";
-                node.setDirtyCanvas?.(true, true);
+            if (deletedId != null) {
+                // Deleting closes the gap: the cards after it move up one number, so the
+                // selection follows the card it was pointing at. Only a deleted selection
+                // falls back to the first card.
+                const followed = followCardAfterDelete(beforeIds, deletedId, segmentWidget?.value);
+                if (followed != null && videos.some((v) => Number(v.segment_id) === followed)) {
+                    segmentWidget.value = followed;
+                    statusText.textContent = `${'当前选中：视频 '}${followed}${'（后面的编号已顺延）'}`;
+                    node.setDirtyCanvas?.(true, true);
+                } else if (Number(segmentWidget?.value) === Number(deletedId)) {
+                    segmentWidget.value = videos[0]?.segment_id || 1;
+                    statusText.textContent = videos.length ? `${'当前选中：视频 '}${segmentWidget.value}` : "该视频库暂无视频";
+                    node.setDirtyCanvas?.(true, true);
+                }
             }
             if (videos.length && !videos.some(v => Number(v.segment_id) === Number(segmentWidget?.value))) {
                 statusText.textContent = `视频 ${segmentWidget?.value} 已不存在，请重新选择`;
@@ -554,6 +567,14 @@ function setupPickerUI(node) {
             projectCount.textContent = "读取失败";
             deck.innerHTML = `<div class="h3lvm-empty">读取失败：${e.message}</div>`;
         }
+    }
+
+    // The deck as the user sees it, in card order. The numbers are the positions, so this
+    // list is also how the library is numbered at that moment.
+    function deckIds() {
+        return Array.from(deck.querySelectorAll(".h3lvm-card"))
+            .map((card) => Number(card.dataset.uploadId))
+            .filter(Number.isFinite);
     }
 
     function renderUploadCard(video, project, currentSel, orderIndex) {
@@ -634,7 +655,9 @@ function setupPickerUI(node) {
                     throw new Error(error.error || `删除失败 (${response.status})；请确认已重启 ComfyUI。`);
                 }
                 if (!signal.aborted && builtMode === MODE_UPLOADS && currentProject() === project) {
-                    await loadDeck(video.segment_id);
+                    // Read the deck order before the delete: that is what tells the panel
+                    // which number the selected card moved to.
+                    await loadDeck(video.segment_id, deckIds());
                 }
             },
         });

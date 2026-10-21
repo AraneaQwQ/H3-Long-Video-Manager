@@ -161,9 +161,13 @@ export function browserPreviewHint(record) {
 // --- Card order in the upload library (pure, so it is testable without a browser) ---
 //
 // The panel sends the ids in the order the user arranged them and the store renumbers
-// the cards to match, because segment_id is how a workflow picks a card. These two
-// helpers only compute: moveIds() turns a drag into that id list, and renumberedId()
-// says which number the dragged video ends up with so the panel can follow it.
+// the cards to match, because segment_id is how a workflow picks a card. These helpers
+// only compute: moveIds() turns a drag into that id list, renumberedId() says which
+// number the dragged video ends up with, and followCardAfterDelete() says where the
+// selection lands once a delete has closed the gap.
+//
+// The rule all three lean on: the numbers are the card order, always 1..N. Import adds
+// a card at the end, a delete moves the later cards up one, a drag renumbers the deck.
 /** The same ids with the one at `from` moved to `to`; null when nothing would move. */
 export function moveIds(ids, from, to) {
     const list = Array.isArray(ids) ? ids.map((value) => Number(value)).filter(Number.isFinite) : [];
@@ -181,5 +185,22 @@ export function moveIds(ids, from, to) {
 export function renumberedId(order, assetId) {
     if (!Array.isArray(order)) return null;
     const at = order.findIndex((value) => Number(value) === Number(assetId));
+    return at < 0 ? null : at + 1;
+}
+
+/**
+ * Where the selected card lands after a delete renumbered the deck; null when it is gone.
+ *
+ * beforeIds is the deck order as the panel showed it, so dropping the deleted card and
+ * counting again is the whole rule - no file names, no server round trip.
+ */
+export function followCardAfterDelete(beforeIds, deletedId, selectedId) {
+    const list = Array.isArray(beforeIds) ? beforeIds.map((value) => Number(value)).filter(Number.isFinite) : [];
+    const gone = Number(deletedId);
+    const wanted = Number(selectedId);
+    // Card numbers start at 1, so anything else (null, 0, "abc") means nothing to follow.
+    if (!Number.isInteger(gone) || gone < 1 || !Number.isInteger(wanted) || wanted < 1) return null;
+    if (gone === wanted) return null;
+    const at = list.filter((value) => value !== gone).indexOf(wanted);
     return at < 0 ? null : at + 1;
 }
