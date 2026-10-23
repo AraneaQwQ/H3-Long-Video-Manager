@@ -35,6 +35,10 @@ from .video_decode import (CUSTOM_MAX_SIDE_DEFAULT, DEFAULT_RESIZE, MAX_MAX_SIDE
 # RAFOLIE 2026-10-10: the two reference loaders live in their own module; they share
 # only core/ helpers with this file, so the node list is assembled here.
 from .ref_nodes import H3AudioReferenceLoader, H3ImageReferenceLoader
+# RAFOLIE 2026-10-22: the Guide Timeline node is its own module too - it is the only
+# thing that touches the native Add Guide node, so a ComfyUI without it fails there
+# and nowhere else.
+from .guide_nodes import H3GuideTimeline
 
 logger = logging.getLogger(__name__)
 CORE_AVAILABLE = True
@@ -795,7 +799,7 @@ class H3SmartSplit(io.ComfyNode):
 
 NODE_LIST = [
     H3LongVideoManager, H3SmartSplit, H3SegmentPicker,
-    H3ImageReferenceLoader, H3AudioReferenceLoader,
+    H3ImageReferenceLoader, H3AudioReferenceLoader, H3GuideTimeline,
 ]
 
 

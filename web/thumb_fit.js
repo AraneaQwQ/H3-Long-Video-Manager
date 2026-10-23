@@ -16,7 +16,7 @@ export function portraitFromMeta(seg) {
     return h > w;
 }
 
-function markPortrait(thumbWrap, img) {
+function markPortrait(thumbWrap, img, dragSource) {
     if (thumbWrap.classList.contains("is-portrait")) return;
     thumbWrap.classList.add("is-portrait");
     img.classList.add("is-portrait");
@@ -26,11 +26,16 @@ function markPortrait(thumbWrap, img) {
     bg.src = img.src;
     bg.alt = "";
     bg.draggable = false;
+    bg.draggable = Boolean(dragSource);
     bg.setAttribute("aria-hidden", "true");
     thumbWrap.insertBefore(bg, img);
 }
 
-export function appendThumbnail(thumbWrap, seg) {
+// dragSource: false (the default) keeps the picture out of the drag, because on a draggable
+// card the browser would use the small picture as the drag ghost instead of the card. A panel
+// whose card is NOT draggable - the Guide pool, where only the media area may start a drag -
+// passes true, otherwise the picture itself would swallow the gesture.
+export function appendThumbnail(thumbWrap, seg, { dragSource = false } = {}) {
     if (!seg?.thumbnail_url) {
         thumbWrap.innerHTML = '<div class="h3lvm-thumb-placeholder">🎬</div>';
         return null;
@@ -40,18 +45,16 @@ export function appendThumbnail(thumbWrap, seg) {
     img.className = "h3lvm-thumb";
     img.src = seg.thumbnail_url;
     img.loading = "lazy";
-    // The picture must not become the drag source: on a draggable card that
-    // turns the drag ghost into a small thumbnail, and the card is what moves.
-    img.draggable = false;
+    img.draggable = Boolean(dragSource);
     thumbWrap.appendChild(img);
 
     const portrait = portraitFromMeta(seg);
     if (portrait === true) {
-        markPortrait(thumbWrap, img);
+        markPortrait(thumbWrap, img, dragSource);
     } else if (portrait === null) {
         // Index entries without width/height: fall back to the image itself.
         img.addEventListener("load", () => {
-            if (img.naturalHeight > img.naturalWidth) markPortrait(thumbWrap, img);
+            if (img.naturalHeight > img.naturalWidth) markPortrait(thumbWrap, img, dragSource);
         }, { once: true });
     }
     return img;

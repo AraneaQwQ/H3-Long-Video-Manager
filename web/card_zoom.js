@@ -4,10 +4,12 @@
 // thumbnail box read them, so nothing here touches the node size - ComfyUI owns that.
 
 const ZOOM_STEPS = [1, 1.5, 2, 3, 4]; // 100%, 150%, 200%, 300%, 400%
-const BASE_CARD_MIN = 130; // px
+const BASE_CARD_MIN = 130; // px, the picker default
 const BASE_THUMB_H = 75;   // px
+// A guide card carries two number fields and a row of buttons, so it starts bigger.
+// The caller passes its own base; the steps and the control stay the same everywhere.
 
-export function createCardZoom({ container, node }) {
+export function createCardZoom({ container, node, baseCardMin = BASE_CARD_MIN, baseThumbH = BASE_THUMB_H }) {
     let stepIndex = 0;
 
     const sep = document.createElement("span");
@@ -32,8 +34,8 @@ export function createCardZoom({ container, node }) {
 
     function apply() {
         const zoom = ZOOM_STEPS[stepIndex];
-        container.style.setProperty("--card-min", Math.round(BASE_CARD_MIN * zoom) + "px");
-        container.style.setProperty("--thumb-h", Math.round(BASE_THUMB_H * zoom) + "px");
+        container.style.setProperty("--card-min", Math.round(baseCardMin * zoom) + "px");
+        container.style.setProperty("--thumb-h", Math.round(baseThumbH * zoom) + "px");
         percent.textContent = Math.round(zoom * 100) + "%";
         zoomOut.disabled = stepIndex === 0;
         zoomIn.disabled = stepIndex === ZOOM_STEPS.length - 1;

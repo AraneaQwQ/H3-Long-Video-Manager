@@ -260,6 +260,11 @@
     border-color: #f59e0b;
     color: #fed7aa;
 }
+.h3lvm-merge-btn.on:hover {
+    background: #9a3412;
+    border-color: #fbbf24;
+    color: #ffedd5;
+}
 
 .h3lvm-merge-ok:not(:disabled) {
     background: #14532d;
@@ -559,6 +564,10 @@
     color: #ffffff;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
+.h3lvm-mode-btn.active:hover {
+    background: #2563eb;
+    border-color: #93c5fd;
+}
 
 /* One line of context per mode, in the same quiet tone as the footer hint. */
 .h3lvm-mode-hint {
@@ -656,3 +665,72 @@
 
 /* The mode row is fixed chrome; the deck keeps the flexible area. */
 .h3lvm-mode-row { flex: 0 0 auto; }
+
+/* --- Interaction states, one place for every button in this plugin ---
+   Three sheets grew three different hover recipes and two of them were no-ops, which is why
+   some buttons looked flat (the Guide editor's open button had no border at all: its colours
+   came from tokens scoped to the floating panel). These rules only add feedback - hover,
+   pressed, keyboard focus and the on-state of a toggle. Nothing here changes a box size,
+   which is the rule that keeps node cards from drifting when a control is clicked. */
+.h3lvm-primary {
+    background: #1e293b;
+    border: 1px solid #60a5fa;
+    color: #e2e8f0;
+}
+
+.h3lvm-primary:hover {
+    background: #334155;
+    border-color: #93c5fd;
+    color: #ffffff;
+}
+
+/* The editor is open: the button must say so, not just brighten. */
+.h3lvm-primary.on {
+    background: #14532d;
+    border-color: #10b981;
+    color: #d1fae5;
+}
+/* A state class and a :hover rule have the same specificity, so whichever comes last wins.
+   Every on/active state below is written after its :hover rule, which silently switched hover
+   off for exactly the controls a user is most likely to point at again. Each rule brightens
+   the selected colour instead of falling back to the neutral hover. */
+
+.h3lvm-primary.on:hover {
+    background: #166534;
+    border-color: #34d399;
+    color: #ecfdf5;
+}
+
+.h3lvm-refresh-btn:active,
+.h3lvm-primary:active,
+.h3lvm-danger-btn:active,
+.h3lvm-mode-btn:active,
+.h3lvm-merge-btn:active,
+.h3lvm-upload-btn:active,
+.h3lvm-modal-close:active,
+.h3lvm-play-btn:active { transform: scale(.97); }
+.h3lvm-meta > .h3-asset-delete:active { transform: scale(.97); }
+
+.h3lvm-refresh-btn:focus-visible,
+.h3lvm-primary:focus-visible,
+.h3lvm-danger-btn:focus-visible,
+.h3lvm-mode-btn:focus-visible,
+.h3lvm-merge-btn:focus-visible,
+.h3lvm-upload-btn:focus-visible,
+.h3lvm-modal-close:focus-visible,
+.h3lvm-play-btn:focus-visible,
+.h3lvm-project:focus-visible {
+    outline: 2px solid #60a5fa;
+    outline-offset: 2px;
+}
+
+.h3lvm-project:hover {
+    border-color: #60a5fa;
+    background: #14202f;
+}
+/* A select must not scale when pressed - it would move the whole project row. The
+   pressed state is a darker fill instead, which is the same signal the buttons give. */
+.h3lvm-project:active {
+    background: #1e293b;
+    border-color: #93c5fd;
+}

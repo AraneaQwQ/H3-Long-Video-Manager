@@ -142,6 +142,17 @@
 .h3ref-num:disabled {
     opacity: .35;
 }
+/* The trim fields are the only inputs in this node, and they were the one control
+   with no feedback at all - every other field in the plugin lights up its border on
+   focus. Border colour only: the box never changes size. */
+.h3ref-num:hover {
+    border-color: #52525b;
+}
+
+.h3ref-num:focus {
+    outline: none;
+    border-color: #60a5fa;
+}
 
 /* The clear-trim button sits in the number row, so it must keep a square button size
    instead of stretching like the buttons in .h3ref-acts. */
@@ -251,3 +262,12 @@
     flex: 0 0 auto;
 }
 
+/* --- Same interaction feedback as the shared sheet --- */
+.h3ref-act:active,
+.h3ref-play:active { transform: scale(.97); }
+
+.h3ref-act:focus-visible,
+.h3ref-play:focus-visible {
+    outline: 2px solid #60a5fa;
+    outline-offset: 2px;
+}

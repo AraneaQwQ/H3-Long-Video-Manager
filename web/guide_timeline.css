@@ -1,0 +1,893 @@
+/* H3 Guide Timeline - only what the other panels do not already provide.
+   The node strip, the card grid, the cards, the thumbnails and the tool row are the
+   shared .h3lvm-* styling from h3lvm_picker.css on purpose: two copies of that
+   styling is how two panels start looking like different products, and the user asked
+   for one design language across the visual nodes.
+   What is new here is only the floating editor shell, the two timeline lanes, the
+   markers/clips, the tabs, the detail fields and the validation footer.
+   CSS prefix: .h3guide-* */
+
+/* --- One palette for this feature ---
+   Every colour below comes from these tokens, and each token prefers a ComfyUI theme variable
+   when the host defines one, so the panel follows the user's theme instead of a fixed dark.
+   They are scoped to the two containers this feature owns - the floating editor and the
+   optional strip inside the node - and nothing here is global. */
+.h3guide-root,
+.h3guide-strip {
+    --h3g-panel: var(--comfy-menu-bg, #1e1e1e);
+    --h3g-bar: #232323;
+    --h3g-card: #262626;
+    --h3g-card-foot: #202020;
+    --h3g-lane: var(--comfy-input-bg, #16171a);
+    --h3g-input: #2b2b2b;
+    --h3g-input-line: #3f3f46;
+    --h3g-thumb: #111111;
+    --h3g-line: #333333;
+    --h3g-edge: #3a3a3a;
+    --h3g-text: #e2e8f0;
+    --h3g-dim: #cbd5e1;
+    --h3g-muted: #94a3b8;
+    --h3g-faint: #64748b;
+    --h3g-hint: #475569;
+    --h3g-accent: #60a5fa;
+    --h3g-info: #93c5fd;
+    --h3g-hover: #1e293b;
+    --h3g-ok: #10b981;
+    --h3g-ok-bg: #142823;
+    --h3g-ok-deep: #14532d;
+    --h3g-ok-text: #d1fae5;
+    --h3g-warn: #ef4444;
+    --h3g-warn-bg: #451a1a;
+    --h3g-warn-deep: #7f1d1d;
+    --h3g-warn-text: #fecaca;
+    --h3g-pending: #fcd34d;
+    --h3g-mark: #f59e0b;
+    --h3g-mark-text: #241a09;
+    --h3g-off-bg: #1c1c1c;
+    --h3g-off-text: #8b8b93;
+    --h3g-pan: var(--h3g-pan);
+    --h3g-clip: var(--h3g-clip);
+    --h3g-clip-edge: var(--h3g-clip-edge);
+}
+
+/* --- The floating editor ---
+   It lives on document.body, not in the node, so nothing in here can change the node
+   size. resize:both needs an overflow that is not visible; the same overflow:auto is
+   what scrolls the sections vertically. */
+/* The dialog grows with the window up to a cap: the extra space shows more cards,
+   it does not scale every element, and the user can still drag it larger. */
+.h3guide-root {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 10000;
+    width: min(1240px, calc(100vw - 48px));
+    height: min(840px, calc(100vh - 48px));
+    min-width: 420px;
+    min-height: 320px;
+    box-sizing: border-box;
+overflow-x: hidden;
+    overflow-y: auto;
+    resize: both;
+    display: flex;
+    flex-direction: column;
+    background: var(--h3g-panel);
+    border: 1px solid var(--h3g-edge);
+    border-radius: 10px;
+    color: var(--h3g-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, .55);
+    user-select: none;
+}
+
+.h3guide-root *,
+.h3guide-root *::before,
+.h3guide-root *::after { box-sizing: border-box; }
+.h3guide-root button,
+.h3guide-root input { font: inherit; color: inherit; }
+.h3guide-root img { max-width: 100%; }
+
+/* --- Bars: the editor has one bar per section, like the deck panels have rows --- */
+.h3guide-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 9px 14px;
+    background: var(--h3g-bar);
+    border-bottom: 1px solid var(--h3g-line);
+    flex: 0 0 auto;
+}
+
+.h3guide-bar strong { font-size: 13px; font-weight: 600; }
+.h3guide-sub { font-size: 11px; color: var(--h3g-muted); overflow-wrap: anywhere; }
+.h3guide-spacer { flex: 1 1 auto; }
+
+.h3guide-primary {
+    padding: 4px 10px;
+    background: var(--h3g-hover);
+    border: 1px solid var(--h3g-accent);
+    border-radius: 5px;
+    color: var(--h3g-text);
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+/* The base background is --h3g-hover, so a hover that sets it again is no feedback at all.
+   This is the rule the rest of the plugin follows: brighter background, brighter edge. */
+.h3guide-primary:hover { background: #334155; border-color: var(--h3g-info); color: #ffffff; }
+.h3guide-primary.on { background: #14532d; border-color: var(--h3g-ok); color: #d1fae5; }
+/* A state class and a :hover rule have the same specificity, so whichever comes last wins.
+   Every on/active state below is written after its :hover rule, which silently switched hover
+   off for exactly the controls a user is most likely to point at again. Each rule brightens
+   the selected colour instead of falling back to the neutral hover. */
+
+.h3guide-primary.on:hover { background: #166534; border-color: #34d399; color: #ecfdf5; }
+.h3guide-primary:disabled { opacity: .35; cursor: default; }
+
+.h3guide-tab.active { background: #334155; border-color: var(--h3g-accent); color: #fff; }
+
+/* --- The two lanes: one row = a label column + a track that fills the rest ---
+   The track is the coordinate system. Markers and clips are placed inside it with
+   frameToPx(frame) - scroll, so the ruler, both lanes and every marker agree. */
+.h3guide-timeline {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--h3g-line);
+    flex: 0 0 auto;
+}
+
+.h3guide-row {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.h3guide-row:last-child { margin-bottom: 0; }
+
+.h3guide-lane-label {
+    flex: 0 0 52px;
+    width: 52px;
+    display: flex;
+    align-items: center;
+    font-size: 11px;
+    color: var(--h3g-muted);
+}
+
+.h3guide-ruler,
+.h3guide-track {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.h3guide-ruler { height: 20px; }
+
+/* A lane is a fixed design height, not a viewport percentage: the plan is explicit that
+   resizing the window must not scale the timeline, and the node's lanes override this with
+   height:100% so they follow the panel the user dragged. Never make either of them
+   self-sizing - that is how node drift starts. Image lane 112px holds an 88px square marker
+   (squareMarkerPlan caps it); the audio lane is a bar, so 72px is enough. */
+.h3guide-track {
+    height: 112px;
+    background: var(--h3g-lane);
+    border: 1px solid var(--h3g-line);
+    border-radius: 6px;
+    overflow: hidden;
+    touch-action: none;
+}
+
+.h3guide-track-audio { height: 72px; }
+
+/* --- the pan slider (the fourth row) ---
+   Zooming makes the content wider than the panel, and a lane clips what does not fit:
+   neither resizing the panel nor scrolling the page can reach the rest. This row is the
+   explicit way to move the view, and it lines up with the three rows above it because it
+   uses the same label column. It hides itself while the whole video fits. */
+.h3guide-pan {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 14px;
+    background: var(--h3g-lane);
+    border: 1px solid var(--h3g-line);
+    border-radius: 6px;
+    touch-action: none;
+}
+
+.h3guide-pan.h3guide-pan-off { display: none; }
+
+.h3guide-pan-thumb {
+    position: absolute;
+    top: 1px;
+    bottom: 1px;
+    left: 0;
+    width: 28px;
+    background: var(--h3g-pan);
+    border: 1px solid var(--h3g-accent);
+    border-radius: 5px;
+    cursor: grab;
+    touch-action: none;
+}
+
+.h3guide-pan-thumb.dragging { cursor: grabbing; background: var(--h3g-hover); }
+
+/* Dragging empty lane space pans the view, so it says so. Cards keep their own cursor. */
+.h3guide-ruler.h3guide-panning,
+.h3guide-track.h3guide-panning { cursor: grabbing; }
+
+.h3guide-tick {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1px solid var(--h3g-pan);
+    pointer-events: none;
+}
+
+.h3guide-tick span {
+    position: absolute;
+    left: 4px;
+    top: 0;
+    font-size: 11px;
+    color: var(--h3g-faint);
+    white-space: nowrap;
+}
+
+.h3guide-gridline {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: rgba(255, 255, 255, .05);
+    pointer-events: none;
+}
+
+/* The 定位 line follows the selected card. It is a reading aid for placing guides,
+   not a video playhead, and it is only labelled in the ruler row. */
+.h3guide-playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1px dashed var(--h3g-mark);
+    pointer-events: none;
+    z-index: 5;
+}
+
+.h3guide-playhead.cap::before {
+    content: "定位";
+    position: absolute;
+    left: 4px;
+    top: 0;
+    font-size: 10px;
+    color: var(--h3g-mark);
+    white-space: nowrap;
+}
+
+/* --- Image markers and audio clips ---
+   A marker is a square, never a sliver: its side comes from --h3guide-marker-side, which
+   the renderer measures from the lane's own height (squareMarkerPlan in guide_state.js).
+   Half of that side has to stay inside the scale padding or the frame-0 and last-frame
+   markers get cut off, so the padding is derived from the same number instead of being
+   fixed at 28px. box-sizing is stated because the node strip is outside .h3guide-root. */
+.h3guide-marker {
+    position: absolute;
+    top: 50%;
+    width: var(--h3guide-marker-side, 104px);
+    height: var(--h3guide-marker-side, 104px);
+    padding: 2px;
+    box-sizing: border-box;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    background: var(--h3g-card);
+    border: 2px solid var(--h3g-edge);
+    border-radius: 5px;
+    text-align: center;
+    cursor: grab;
+    touch-action: none;
+    z-index: 2;
+}
+
+.h3guide-marker:hover { border-color: var(--h3g-accent); }
+.h3guide-marker.selected { border-color: var(--h3g-ok); background: #142823; box-shadow: 0 0 10px rgba(16, 185, 129, .4); }
+.h3guide-marker.invalid { border-color: var(--h3g-warn); }
+.h3guide-marker.dragging { cursor: grabbing; opacity: .85; }
+
+.h3guide-marker-thumb {
+    display: block;
+    width: 100%;
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    object-fit: contain;
+    border-radius: 3px;
+    background: var(--h3g-thumb);
+}
+
+.h3guide-marker-cap {
+    flex: 0 0 auto;
+    display: block;
+    font-size: 10px;
+    line-height: 1.3;
+    color: var(--h3g-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.h3guide-clip {
+    position: absolute;
+    top: 6px;
+    bottom: 6px;
+    height: auto;
+    min-width: 34px;
+    padding: 3px 6px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    background: var(--h3g-clip);
+    border: 1px solid var(--h3g-clip-edge);
+    border-radius: 5px;
+    overflow: hidden;
+    cursor: grab;
+    touch-action: none;
+    z-index: 2;
+}
+
+.h3guide-clip.selected { border-color: var(--h3g-ok); background: #142823; }
+.h3guide-clip.invalid { border-color: var(--h3g-warn); }
+.h3guide-clip.dragging { cursor: grabbing; opacity: .85; }
+
+.h3guide-clip-cap {
+    flex: 0 0 auto;
+    display: block;
+    font-size: 10px;
+    color: var(--h3g-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.h3guide-clip-wave {
+    display: block;
+    width: 100%;
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 10px;
+    margin-top: 2px;
+}
+
+.h3guide-lane-hint {
+    position: absolute;
+    left: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 11px;
+    color: var(--h3g-hint);
+    pointer-events: none;
+}
+
+/* A card from the pool is held over this lane: the outline says "this lane will take it" and
+   the ghost says the exact frame. Same accent as the deck's own drop hint. */
+.h3guide-track.h3guide-lane-drop { outline: 1px dashed var(--h3g-accent); outline-offset: -1px; background: rgba(96, 165, 250, .08); }
+.h3guide-drop-ghost {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    width: var(--h3guide-marker-side, 40px);
+    border: 1px dashed var(--h3g-accent);
+    border-radius: 4px;
+    background: rgba(96, 165, 250, .22);
+    color: var(--h3g-text);
+    font-size: 10px;
+    line-height: 1.2;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 6;
+}
+
+/* The card under the pointer while it is held: a small fixed preview, never a second copy of
+   the card. pointer-events:none is not decoration - the drop target is decided with
+   document.elementFromPoint, so a preview that could be hit would hide the lane. */
+.h3guide-drag-preview {
+    position: fixed;
+    z-index: 40;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border: 1px solid var(--h3g-accent);
+    border-radius: 6px;
+    background: var(--h3g-card);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+    color: var(--h3g-text);
+    font-size: 11px;
+    line-height: 1.3;
+    max-width: 260px;
+}
+.h3guide-drag-shot {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 auto;
+    object-fit: cover;
+    border: 1px solid var(--h3g-line);
+    border-radius: 4px;
+    background: var(--h3g-thumb);
+    color: var(--h3g-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+}
+.h3guide-drag-label { font-weight: 600; }
+.h3guide-drag-note { color: var(--h3g-info); }
+
+/* --- The card pool ---
+   The deck is the shared .h3lvm-deck grid, so the 卡片大小 control (100%-400%) and the
+   wrapping grid behave like the picker and the reference loaders. Two things differ here: a
+   guide card is wider because it carries two number fields and a row of buttons, and the pool
+   is the section that grows with the panel - extra panel height shows more cards instead of
+   making every element bigger. Columns are a fixed width, so a handful of cards is never
+   stretched across the whole row. */
+.h3guide-pool {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--h3g-line);
+    flex: 1 1 auto;
+    min-height: 210px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.h3guide-pool .h3lvm-deck {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--card-min, 240px)), var(--card-min, 240px)));
+    justify-content: start;
+}
+.h3guide-pool .h3lvm-deck.h3guide-drop { outline: 1px dashed var(--h3g-accent); background: rgba(96, 165, 250, .08); border-radius: 6px; }
+.h3guide-file-input { display: none; }
+
+/* A card that is not on the timeline yet is dashed and says so; a disabled card is
+   greyed. Both keep the card size, so the grid never reflows. */
+.h3lvm-card.h3guide-off { border-color: var(--h3g-input-line); background: #1c1c1c; }
+.h3lvm-card.h3guide-off .h3lvm-thumb-wrap { filter: grayscale(.7) brightness(.7); }
+.h3lvm-card.h3guide-off .h3lvm-seg-label { color: var(--h3g-off-text); }
+.h3lvm-card.h3guide-unplaced { border-style: dashed; }
+
+/* The card's own time row. The plan is explicit that time editing must not live only
+   in the detail area, so every card carries the two fields. */
+.h3guide-time {
+    display: flex;
+    gap: 4px;
+    padding: 4px 6px;
+    background: var(--h3g-card-foot);
+    border-top: 1px solid var(--h3g-line);
+}
+
+.h3guide-time-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 0;
+    min-width: 0;
+    font-size: 10px;
+    color: var(--h3g-muted);
+}
+
+.h3guide-num {
+    width: 100%;
+    padding: 2px 3px;
+    background: var(--h3g-input);
+    border: 1px solid var(--h3g-input-line);
+    border-radius: 4px;
+    color: var(--h3g-text);
+    font-size: 11px;
+}
+
+.h3guide-num:focus { outline: none; border-color: var(--h3g-accent); }
+.h3guide-num:disabled { opacity: .35; }
+
+.h3guide-acts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px 6px 6px;
+    background: var(--h3g-card-foot);
+    border-top: 1px solid var(--h3g-line);
+}
+
+.h3guide-act {
+    flex: 1 1 auto;
+    /* A button keeps its whole word: 停用 must never be cut to 「停…」。The row wraps
+       instead, and 放置 is hidden on placed cards, so the row normally stays on one line. */
+    min-width: max-content;
+    padding: 3px 4px;
+    background: var(--h3g-input);
+    border: 1px solid var(--h3g-input-line);
+    border-radius: 4px;
+    color: var(--h3g-dim);
+    font-size: 11px;
+    line-height: 1.3;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.h3guide-act[hidden] { display: none; }
+
+.h3guide-act:hover { border-color: var(--h3g-accent); background: var(--h3g-hover); color: var(--h3g-text); }
+.h3guide-act:disabled { opacity: .35; cursor: default; }
+.h3guide-act.warn { color: var(--h3g-warn-text); }
+.h3guide-act.warn:hover { border-color: var(--h3g-warn); background: #451a1a; }
+
+/* Reordering cards by dragging: same look as the picker and the reference loaders. */
+.h3lvm-card.h3guide-dragging { opacity: .35; border-style: dashed; cursor: grabbing; }
+.h3lvm-card.h3guide-drop-before { box-shadow: -4px 0 0 0 var(--h3g-accent); }
+.h3lvm-card.h3guide-drop-after { box-shadow: 4px 0 0 0 var(--h3g-accent); }
+
+/* Scoped to this feature on purpose: .h3lvm-card is shared with the picker and the manager,
+   and an unscoped rule here would change how those panels behave. Only the media area is a
+   handle here, so the grab cursor belongs to it - not to the fields and buttons below it. */
+.h3guide-root .h3lvm-card .h3lvm-thumb-wrap { cursor: grab; }
+.h3guide-root .h3lvm-card .h3lvm-thumb-wrap:active { cursor: grabbing; }
+.h3guide-root .h3lvm-card .h3guide-act,
+.h3guide-root .h3lvm-card .h3guide-play { cursor: pointer; }
+.h3guide-root .h3lvm-card .h3guide-num { cursor: text; }
+
+/* Audio card: a real waveform in the same thumbnail slot, plus a play button that
+   only plays the trimmed window. Same card size as an image card. */
+.h3guide-wave { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.h3guide-play {
+    position: absolute;
+    left: 4px;
+    top: 4px;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    background: rgba(17, 17, 17, .8);
+    border: 1px solid var(--h3g-input-line);
+    border-radius: 4px;
+    color: var(--h3g-text);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.h3guide-play:hover { border-color: var(--h3g-accent); background: var(--h3g-hover); }
+
+/* --- Selected item detail ---
+   Labelled rows in a grid that wraps. One long flex line is how IMG-02 got split in half and
+   a button got cut to 「停…」. The card keeps the two time fields; this area holds the full
+   field set and the derived numbers, with room for the labels. */
+.h3guide-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 14px;
+    background: var(--h3g-bar);
+    border-bottom: 1px solid var(--h3g-line);
+    flex: 0 0 auto;
+}
+
+.h3guide-detail-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+.h3guide-detail-id { font-size: 13px; white-space: nowrap; }
+.h3guide-note { font-size: 11px; color: var(--h3g-muted); overflow-wrap: anywhere; }
+
+.h3guide-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px 14px;
+}
+
+.h3guide-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--h3g-muted);
+}
+
+/* A label never wraps, and a value never breaks a number such as IMG-02 over two lines. */
+.h3guide-flabel,
+.h3guide-fvalue { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h3guide-fvalue { color: var(--h3g-text); }
+
+.h3guide-detail .h3guide-field .h3guide-num { width: 100%; max-width: 150px; padding: 4px 6px; font-size: 12px; }
+
+/* --- Validation footer --- */
+.h3guide-foot {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 14px;
+    font-size: 11px;
+    color: var(--h3g-info);
+    flex: 0 0 auto;
+    overflow-wrap: anywhere;
+}
+
+.h3guide-foot.ok { color: var(--h3g-muted); }
+
+.h3guide-error {
+    text-align: left;
+    padding: 4px 8px;
+    background: var(--h3g-warn-bg);
+    border: 1px solid var(--h3g-warn);
+    border-radius: 5px;
+    color: var(--h3g-warn-text);
+    font-size: 11px;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.h3guide-error:hover { background: var(--h3g-warn-deep); }
+
+/* --- The timeline inside the node ---
+   The same renderer as the editor's, on a second surface: it only appears once the
+   user drags the node taller, and .h3guide-strip-off hides it again before it could
+   push anything. Nothing here writes the node size. The lanes are the editor's lanes:
+   applyStripHeights() writes their height from stripLaneHeights(), which takes the
+   document's lane heights and clamps them to the room the panel really has. Never
+   self-sizing - that is how node drift starts - and the row follows the lane, not the
+   other way round, so the - / + buttons and the readout always describe one number. */
+.h3guide-strip {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    margin-top: 8px;
+    padding: 8px 10px 4px;
+    background: var(--h3g-lane);
+    border: 1px solid var(--h3g-line);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.h3guide-strip.h3guide-strip-off { display: none; }
+
+.h3guide-strip-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    flex: 0 0 auto;
+    margin-bottom: 6px;
+    font-size: 11px;
+    color: var(--h3g-muted);
+}
+
+.h3guide-strip-title { color: var(--h3g-dim); margin-right: 2px; }
+.h3guide-strip-hint { margin-left: auto; color: var(--h3g-faint); }
+
+/* The lane height control inside the node: the same quiet button as the editor's
+   secondary actions, and the same monospace readout. Amber means the panel clamped it. */
+.h3guide-strip-head .h3guide-secondary { padding: 1px 6px; }
+.h3guide-strip-head .h3guide-lane-px { min-width: 38px; }
+.h3guide-lane-px-clamped { color: #fbbf24; }
+
+/* The ruler row keeps its own height; the two lane rows are exactly as tall as the lanes
+   they contain. The renderer sizes every card from the lane height, so this is the control
+   that makes a 9:16 frame readable without dragging the whole panel. */
+.h3guide-strip-row { flex: 0 0 auto; margin-bottom: 6px; }
+.h3guide-strip-row-track { flex: 0 0 auto; }
+
+.h3guide-strip-row .h3guide-lane-label {
+    flex: 0 0 40px;
+    width: 40px;
+    font-size: 10px;
+}
+
+.h3guide-strip .h3guide-ruler { height: 18px; }
+
+/* In a narrow lane the markers overlap; the one being pointed at stays on top. */
+.h3guide-strip .h3guide-marker:hover,
+.h3guide-strip .h3guide-clip:hover,
+.h3guide-strip .h3guide-marker.selected,
+.h3guide-strip .h3guide-clip.selected { z-index: 6; }
+
+/* --- The audio card says what it actually has ---
+   A waveform is only drawn from real peaks, so the state has to be readable as text instead
+   of a flat dashed line pretending to be audio. A failed read gets a retry, not a spinner. */
+.h3guide-wave-none .h3guide-wave,
+.h3guide-wave-none .h3guide-clip-wave { opacity: 0; }
+
+.h3guide-wave-note {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 8px;
+    font-size: 10px;
+    line-height: 1.4;
+    color: var(--h3g-muted);
+    text-align: center;
+    pointer-events: none;
+    overflow-wrap: anywhere;
+}
+
+/* Inside a lane clip the note is part of the column, not an overlay on the caption. */
+.h3guide-clip .h3guide-wave-note { position: static; flex: 1 1 auto; }
+
+.h3guide-retry {
+    position: absolute;
+    left: 50%;
+    bottom: 4px;
+    transform: translateX(-50%);
+    padding: 2px 6px;
+    background: var(--h3g-input);
+    border: 1px solid var(--h3g-warn);
+    border-radius: 4px;
+    color: var(--h3g-warn-text);
+    font-size: 10px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+/* --- The true anchor of a marker that had to move aside ---
+   declutterMarkers shifts a card in display space only. The tick stays at the real frame and
+   the connector points at the card, so which frame it is stays readable at any zoom. */
+.h3guide-anchor-tick {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1px solid rgba(245, 158, 11, .5);
+    pointer-events: none;
+    z-index: 1;
+}
+
+.h3guide-anchor-link {
+    position: absolute;
+    top: 50%;
+    height: 0;
+    border-top: 1px dashed rgba(245, 158, 11, .45);
+    pointer-events: none;
+    z-index: 1;
+}
+
+/* Several cards can share one visible square at this zoom. The badge says so instead of
+   stacking them and hoping the user finds the one behind. */
+.h3guide-group {
+    position: absolute;
+    right: -3px;
+    top: -3px;
+    min-width: 16px;
+    padding: 0 3px;
+    border-radius: 8px;
+    background: var(--h3g-mark);
+    color: var(--h3g-mark-text);
+    font-size: 10px;
+    line-height: 15px;
+    text-align: center;
+    pointer-events: none;
+}
+
+/* --- The crop editor on the audio card ---
+   The crop belongs to the material, so it is editable next to the card that owns it. The
+   detail area shows the same two fields; both write the same sample points. */
+.h3guide-crop {
+    display: flex;
+    gap: 4px;
+    padding: 4px 6px;
+    background: var(--h3g-hover);
+    border-top: 1px solid var(--h3g-line);
+}
+
+.h3guide-crop[hidden] { display: none; }
+.h3guide-crop .h3guide-field { flex: 1 1 0; min-width: 0; font-size: 9px; color: var(--h3g-muted); }
+.h3guide-crop .h3guide-num { width: 100%; padding: 2px 3px; font-size: 11px; }
+.h3guide-crop-btn.on { background: var(--h3g-hover); border-color: var(--h3g-accent); color: var(--h3g-text); }
+.h3guide-crop-btn.on:hover { background: #334155; border-color: var(--h3g-info); color: #f8fafc; }
+
+/* Metadata is still being read: the derived checks could not run, so this is neither an
+   error nor 校验通过. */
+.h3guide-foot.pending { color: var(--h3g-pending); }
+
+/* --- Lane headers: the lane is the section, and adding material belongs to it ---
+   The two tabs and the two add buttons used to sit in one row above the card pool, so
+   "图片卡片" and "＋ 添加图片" looked like the same kind of control. Each lane now owns a
+   header: the lane name is the tab that decides what the pool below shows, adding material
+   is a secondary button under it, and the height control sits on the same line. The header
+   is indented past the 52px label column so it starts where the track starts. */
+.h3guide-lane-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 0 4px 60px;
+}
+
+.h3guide-lane-tab {
+    padding: 3px 10px;
+    background: var(--h3g-card);
+    border: 1px solid var(--h3g-edge);
+    border-radius: 5px;
+    color: var(--h3g-dim);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all .2s ease;
+}
+
+.h3guide-lane-tab:hover { background: #334155; border-color: var(--h3g-info); color: #ffffff; }
+.h3guide-lane-tab.active { background: #1d4ed8; border-color: var(--h3g-info); color: #ffffff; }
+.h3guide-lane-tab.active:hover { background: #2563eb; border-color: #93c5fd; }
+.h3guide-lane-tab:active { transform: scale(.97); }
+.h3guide-lane-tab:focus-visible { outline: 2px solid var(--h3g-accent); outline-offset: 2px; }
+
+.h3guide-lane-count { font-size: 11px; color: var(--h3g-muted); white-space: nowrap; }
+.h3guide-lane-px { font-family: ui-monospace, Consolas, monospace; min-width: 44px; text-align: right; }
+
+/* The secondary action under a lane: deliberately quieter than the lane tab above it. */
+.h3guide-secondary {
+    padding: 2px 8px;
+    background: transparent;
+    border: 1px dashed var(--h3g-hint);
+    border-radius: 4px;
+    color: var(--h3g-muted);
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all .2s ease;
+}
+
+.h3guide-secondary:hover {
+    border-style: solid;
+    border-color: var(--h3g-ok);
+    background: #14291d;
+    color: #bbf7d0;
+}
+
+.h3guide-secondary:active { transform: scale(.97); }
+.h3guide-secondary:focus-visible { outline: 2px solid var(--h3g-accent); outline-offset: 2px; }
+.h3guide-secondary:disabled { opacity: .35; cursor: default; }
+
+/* Vertical resize: a grip under the lane, plus the same step the header offers. The lane
+   height is what sizes the cards (squareMarkerPlan), so this is the control that makes a
+   9:16 frame readable without dragging the whole panel. */
+.h3guide-lane-resize {
+    height: 7px;
+    margin: 3px 0 6px 60px;
+    border-radius: 4px;
+    background: repeating-linear-gradient(90deg, var(--h3g-hint) 0 6px, transparent 6px 12px);
+    opacity: .4;
+    cursor: ns-resize;
+    touch-action: none;
+}
+
+.h3guide-lane-resize:hover,
+.h3guide-lane-resize.dragging {
+    opacity: 1;
+    background: repeating-linear-gradient(90deg, var(--h3g-accent) 0 6px, transparent 6px 12px);
+}
+
+/* --- Same interaction feedback as the shared sheet, for this sheet's own controls --- */
+.h3guide-primary:active,
+.h3guide-act:active,
+.h3guide-play:active,
+.h3guide-retry:active,
+.h3guide-error:active { transform: scale(.97); }
+
+.h3guide-primary:focus-visible,
+.h3guide-act:focus-visible,
+.h3guide-play:focus-visible,
+.h3guide-retry:focus-visible,
+.h3guide-error:focus-visible {
+    outline: 2px solid var(--h3g-accent);
+    outline-offset: 2px;
+}
+
+.h3guide-retry:hover { background: var(--h3g-warn-deep); border-color: var(--h3g-warn); color: #fff; }

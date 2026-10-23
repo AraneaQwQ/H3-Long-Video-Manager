@@ -26,6 +26,7 @@ Cut any long video into H3-compatible segments (each satisfying the `17n + 5` fr
 | **H3 Smart Split** | Input: video + audio → PySceneDetect finds the real shot cuts → every shot saved to the SAME bin + selected shot live → `IMAGE`, `AUDIO`, `frame_count`, `total_segments` |
 
 | **H3 Segment Picker** | Input: project name + segment ID → `IMAGE`, `AUDIO`, `frame_count`, `segment_id` (feeds H3 directly) |
+| **H3 Guide Timeline** | Input: `positive` + H3 AV latent + both VAEs + one guide list → image/audio guides placed on a two-lane timeline → `positive` (equal to a hand-wired chain of native Add Guide nodes) |
 
 ### Key features
 
@@ -42,6 +43,8 @@ Cut any long video into H3-compatible segments (each satisfying the `17n + 5` fr
 - **Portrait frames shown whole** — a 9:16 thumbnail is displayed in full inside the same card: the side space is filled with a blurred copy of the frame instead of black bars. Landscape frames keep filling the box as before, and the card size is identical either way
 - **The deck is always open** — the Manager node keeps its card grid visible, and reopening a workflow shows the cards by itself: no expand button, no 刷新 to click
 - **No extra dependency for the fixed-length path** — `torch` + `safetensors` only (both already in ComfyUI). Smart Split additionally uses `scenedetect>=0.6.4,<0.8`; if that package is missing the plugin still loads and only Smart Split prints the exact pip command to run
+- **One node instead of an Add Guide chain** - `H3 Guide Timeline` keeps one guide list and calls the native node once per guide in frame order: same conditioning structure, same frame positions, no four-node wiring
+- **Two-lane timeline editor** - real thumbnails, real waveforms, drag a marker or clip frame by frame, audition only the trimmed range, and every conflict is a clickable line in the footer
 
 
 ### How it works
@@ -419,6 +422,86 @@ instead of breaking the panel, and switching project re-reads it.
 (short side ≤ 2048, ≈ 3.2 MP for a 16:9 frame), while a `LoadImage` + resize chain with a
 512 long edge lands near 0.15 MP. These nodes default to 0.25 MP; set `target_megapixels`
 to about 3.2 to match the official default.
+#### H3 Guide Timeline
+
+One node instead of a chain of native `MiniMaxH3AddGuide` nodes. The native node anchors exactly
+one image or one audio per node, so three pose images plus one voice line is four nodes wired by
+hand and the frame numbers only exist inside each widget. This node keeps the native semantics and
+replaces the chain with one list: wire `positive`, the MiniMax H3 AV latent and both VAEs once, then
+place guides on a two-lane timeline.
+
+| Parameter | Default | Shown as | Description |
+|-----------|---------|----------|-------------|
+| `positive` | - | positive | The conditioning to guide. Returned unchanged when nothing is both enabled and placed |
+| `latent` | - | latent | The MiniMax H3 AV latent. The real total frame count comes from it (the `1+4+4+4+4...` token grid), and the editor ruler uses that number |
+| `length_seconds` | 0.0 | ⏱ 视频时长（秒） | Ruler only, and in seconds like `segment_duration` elsewhere in this plugin: the panel converts it with `round(seconds × 24)` and aligns up to 17n+5, then says the arithmetic out loud (10 秒 → 240 → 243 帧). 0 means not set. It never changes execution or the output |
+| `vae` | optional | vae | Video VAE. Required when at least one enabled+placed image guide exists; may stay empty otherwise |
+| `audio_vae` | optional | audio_vae | Audio VAE. Required when at least one enabled+placed audio guide exists |
+| `guides` | `{"schema_version":1,"fps":24,"guides":[]}` | 🎬 Guide 列表 (JSON) | The whole document the panel reads and writes: the guide list plus `view_state` and `resolved_frame_count`. Written by the editor, editable by hand |
+
+**Output** - one `positive` (Conditioning). There is no `ref_images` / `ref_audios` output: a guide is
+a time anchor, not a reference slot - that is what the two loader nodes are for.
+
+**Run time** - parse the list -> drop disabled and unplaced items -> if nothing is left, pass
+`positive` through unchanged -> read the real frame count from the latent -> validate everything
+*before* encoding anything -> sort by `(frame_index, image before audio, original list order)` -> call
+the native `MiniMaxH3AddGuide.execute` once per guide, each result feeding the next -> return the last
+`positive`. That is exactly a hand-wired chain: the native node appends keyframe entries in call order
+and `PackedLayout` packs them in list order, so sorting by frame before encoding is what makes
+"same guides, same frames" equal. Two VAEs are always connected on purpose - there is no lazy loading,
+but the audio encoder is not called when no audio guide runs, and the video encoder not when no image
+guide runs.
+
+**Rules** - one table of rules lives in `core/guide_timeline.py` and is mirrored by
+`web/guide_state.js`, so a card can never disagree with the node. `frame_index` is the authority and
+seconds are only an input and a label; audio trim stays in sample points
+(`source_start_sample` / `source_end_sample`) and its length is samples / sample rate / fps. Audio
+ranges are half-open `[start, end)`, so two guides that touch do not overlap. Quotas: at most 16
+enabled image guides, 16 audio, 32 total - a first-version product limit, not an official model limit;
+disabled and unplaced guides are kept but do not count. Every failure is a readable Chinese error:
+missing VAE, frame out of range, overlapping audio, two images on the same frame, an audio window that
+leaves no samples, a missing media file, over quota. Shortening the video only marks guides out of
+range - nothing is silently moved or rescaled.
+
+**Panel** - the node body is a fixed-height summary strip (`启用 图片 N · 音频 M · 不执行 K · 24 FPS ·
+帧数/时长`) with `🎬 打开 Guide 编辑器` and `🔄 刷新`; nothing on it resizes the node. The editor is a
+floating panel (drag its bar to move it, drag its corner to resize it) in the same visual language as
+the other panels here: `时间尺` + `图片轨` + `音频轨` share one coordinate transform, then the shared
+`.h3lvm-deck` card grid with the shared 100%-400% card zoom and portrait-aware thumbnails. Real
+thumbnails, real waveforms (blue is the part that will be used), and `▶` auditions the trimmed range
+only. Each card carries its own `秒` / `帧` inputs and `启用/停用` - `放置` - `替换` - `复制` - `删除`;
+dragging a card reorders the list, dragging a file into the grid uploads it through ComfyUI's own
+`/upload/image`. Dragging a marker or clip moves only that element and updates its numbers live; the
+write happens once on release, and the drag is limited to the valid range while a typed out-of-range
+number is kept and reported. `←` / `→` nudge the selected guide by one frame (`Shift` = one second).
+The footer lists every current problem and each line is a button that selects and scrolls to it.
+
+**Timeline inside the node** - `addPanel` hands this panel every pixel the user drags the node taller,
+so the summary bar is not the end of the story: below it the node renders the **same renderer on a
+second surface** - `时间尺` + `图片轨` + `音频轨` fit to the node width, with real thumbnails, labels
+and waveforms, and the markers and audio clips are draggable there too. Card width scales with the
+lane height (40-72 px) and the scale padding follows it, so the first and last card are never cut off.
+There are no zoom controls here (the whole video fits the width); zoom and the card pool stay in the
+editor. When both are open they stay in sync. It never changes the node size: if the panel is shorter
+than 160 px it hides itself, which is why it is not visible at the default node height - drag the node
+taller and it appears.
+
+**Persistence** - everything lives in the `guides` widget, so saving a workflow, refreshing, reopening,
+copying the node and running two of them side by side are all isolated. Media is stored as
+`{filename, subfolder, type}` inside ComfyUI's own folders - never a Blob URL, never base64. Closing
+the editor or deleting the node never deletes media, because another workflow may reference it; a
+missing file stays as a card with an error until `替换` re-links it. `resolved_frame_count` is written
+back after a run so the ruler keeps the real length. Before the first run, type the target duration in
+the `length_seconds` box - seconds, because that is how a person plans a shot - and the panel converts
+it with `round(seconds × 24)` aligned up to 17n+5, showing its work (10 秒 → 240 → 243 帧). With nothing
+typed it estimates from the upstream generator's `length` widget (which really is frames) and says so
+instead of pretending.
+
+**Not here** - no `guide_list` socket (nothing in this plugin produces one yet; the merge point stays
+internal in `core.guide_timeline.merge_guides`), no snapping to 17n+5 or Motion Context (the native
+node does not snap), no dialogue/TTS, no final mix, no keyframe tweening, no multi-shot orchestration,
+and no upload of your media to any external service. If the running ComfyUI has no native
+`MiniMaxH3AddGuide`, only this node reports it; the rest of the plugin loads normally.
 ### API endpoints
 
 | Endpoint | Returns |
@@ -460,6 +543,7 @@ H3-Long-Video-Manager/
 ├── V3_MIGRATION.md                # ComfyUI V3 / Nodes 2.0 migration notes
 ├── SEGMENT_ID_OUTPUT.md           # segment_id: original vs re-gen alignment
 ├── SMART_SPLIT_AUDIT.md             # Source audit behind H3 Smart Split
+├── GUIDE_TIMELINE.md                # Native Add Guide audit + this node's contract
 ├── requirements.txt                 # Optional: scenedetect, Smart Split only
 
 ├── __init__.py                    # Entry: ComfyExtension + routes + web
@@ -468,6 +552,7 @@ H3-Long-Video-Manager/
 │   ├── nodes.py                       # Manager (V3) + Picker nodes
 │   ├── ref_nodes.py                   # 图片/音频参考加载器（固定编号槽位）
 │   ├── ref_presets.py                 # 参考库：图片/音频各一套（只存路径，不复制媒体）
+│   ├── guide_nodes.py                 # H3 Guide 时间轴（逐条调用原生 Add Guide）
 │   ├── nodes_v1.py                    # backup (pre-audio)
 │   ├── nodes_v2.py                    # backup (pre-save-bin)
 │   ├── nodes_v3_backup.py             # backup (pre-V3-API)
@@ -490,6 +575,7 @@ H3-Long-Video-Manager/
 │   ├── person_crop.py                 # Person detection + edge crop
 │   ├── ref_size.py                    # Target MP / grid-align size planner + resampling options
 │   ├── ref_media.py                   # Media list parsing, path safety, cache keys
+│   ├── guide_timeline.py              # Guide 列表规范化、校验、排序、执行摘要
 │   └── extraction.py                  # Frame range extraction (PyAV)
 ├── web/
 │   ├── h3lvm_picker.js                # Card gallery frontend
@@ -507,6 +593,9 @@ H3-Long-Video-Manager/
 │   ├── ref_loader.js                  # Reference loader card panel (image/audio)
 │   ├── ref_state.js                   # Media list rules (pure, node --test)
 │   ├── ref_loader.css                 # Reference panel extras only
+│   ├── guide_timeline.css             # 时间轴与编辑器外壳（卡片区沿用 h3lvm_picker.css）
+│   ├── guide_state.js                 # Guide 列表与时间轴几何规则（pure, node --test）
+│   ├── guide_timeline.js              # Guide 时间轴编辑器（两轨 + 卡片区）
 │   └── extension.js                   # (placeholder, intentionally empty)
 └── tests/
     ├── __init__.py
@@ -528,6 +617,8 @@ H3-Long-Video-Manager/
     ├── test_ref_media.py              # Media list / path safety tests
     ├── test_ref_nodes.py              # Slot order, None slots, dtype tests
     ├── test_ref_presets.py            # 参考库：两类互不可见 / 旧共用文件迁移 / 预设读写与损坏
+    ├── test_guide_nodes.py          # Guide 节点与原生链等价 tests
+    ├── test_guide_timeline_core.py  # Guide 规范化 / 校验 / 排序 / 配额 tests
 
     └── test_segment_store.py          # Storage round-trip tests
 ```
@@ -549,6 +640,7 @@ H3-Long-Video-Manager/
 | **H3 Smart Split** | 接入视频 → PySceneDetect 找出真实镜头切点 → 每个镜头全部存进**同一个库** → 实时输出选中段 → 输出 `IMAGE`、`AUDIO`、`frame_count`、`total_segments` |
 
 | **H3 Segment Picker** | 从库中读取 → 输出 `IMAGE`、`AUDIO`、`frame_count`、`segment_id`（前两项直接喂 H3） |
+| **H3 Guide 时间轴** | 输入：`positive` + H3 AV latent + 两个 VAE + 一个 Guide 列表 → 在双轨时间轴上放图片/音频 Guide → 输出 `positive`（与手动串联原生 Add Guide 等价） |
 
 ### 核心特性
 
@@ -565,6 +657,8 @@ H3-Long-Video-Manager/
 - **竖屏画面完整显示** — 9:16 的缩略图在同一张卡片里整帧可见，左右两侧用同一帧的模糊副本填充而不是黑边；横屏画面照旧铺满，两种情况的卡片尺寸完全一致
 - **素材库常开** — Manager 节点的卡片区一直展开，重新打开工作流卡片直接出现，没有展开按钮，也不用点刷新
 - **固定时长这条路径零额外依赖** — 只需要 `torch` + `safetensors`（ComfyUI 自带）。Smart Split 另外用到 `scenedetect>=0.6.4,<0.8`；这个包不在的时候插件照常加载，只有 Smart Split 会打印出该执行的安装命令
+- **一个节点替代一串原生 Add Guide** - `H3 Guide 时间轴` 只维护一个 Guide 列表，按帧顺序逐条调用原生节点：条件结构相同、帧位置相同，不用手接四个节点
+- **双轨时间轴编辑器** - 真实缩略图与真实波形、标记和音频条可以一帧一帧拖、试听只播裁切后的那一段，所有冲突在底栏列成可点击的一行
 
 
 ### 工作流程
@@ -849,6 +943,66 @@ ref_audio_2`（`AUDIO`）。永远是九个 / 三个端口，顺序固定。
 **与官方节点的默认值差异** — 官方 `ref_image_size` 是 `match`/`max`（短边 ≤ 2048，16:9 画面约
 3.2 MP），而 `LoadImage` + 缩放到长边 512 的旧链路大约只有 0.15 MP。这两个节点默认 0.25 MP；
 想要官方默认量级就把 `target_megapixels` 设到 3.2 左右。
+#### H3 Guide 时间轴
+
+一个节点替代一串原生 `MiniMaxH3AddGuide`。原生节点一个只能锚定一张图或一段音频，所以「三张姿态图 +
+一条配音」就是四个节点手动串联，而且帧号只存在于每个控件里。这个节点保留原生的语义，把那一串换成一个
+列表：`positive`、MiniMax H3 的 AV latent 和两个 VAE 各接一次，然后在双轨时间轴上放 Guide。
+
+| 参数 | 默认值 | 节点上显示为 | 说明 |
+|------|--------|--------------|------|
+| `positive` | - | positive | 要被引导的条件。没有任何「启用且已放置」的 Guide 时原样透传 |
+| `latent` | - | latent | MiniMax H3 的 AV latent。视频真实总帧数由它算出（`1+4+4+4+4...` 的 token 网格），编辑器的时间尺用的就是这个数 |
+| `length_seconds` | 0.0 | ⏱ 视频时长（秒） | 只给编辑器的时间尺用，单位是秒（和本插件 `segment_duration` 同一套习惯）：面板按 `秒 × 24` 换算成帧并向上对齐 17n+5，还把算式写出来（10 秒 → 240 → 243 帧）。0 = 不设置。它不参与执行，也不改变输出 |
+| `vae` | 可选 | vae | 视频 VAE。只要有「启用且已放置」的图片 Guide 就必须接；没有图片 Guide 时可以留空 |
+| `audio_vae` | 可选 | audio_vae | 音频 VAE。只要有「启用且已放置」的音频 Guide 就必须接 |
+| `guides` | `{"schema_version":1,"fps":24,"guides":[]}` | 🎬 Guide 列表 (JSON) | 面板读写的完整文档：Guide 列表 + `view_state` + `resolved_frame_count`。由编辑器写入，也可以直接手改 |
+
+**输出端口** — 只有 `positive`（Conditioning）。没有 `ref_images` / `ref_audios`：Guide 是时间锚点，不是参考槽位，
+那是两个参考加载器的职责。
+
+**执行流程** — 解析列表 → 过滤停用与待放置 → 一条都没有就把 `positive` 原样返回 → 从 latent 读出真实总帧数 →
+**先把全部校验跑完再开始编码** → 按 `(frame_index, 图片优先, 原列表次序)` 排序 → 逐条调用原生
+`MiniMaxH3AddGuide.execute`，上一条的结果作为下一条的输入 → 返回最后那个 `positive`。这就是手动串联的等价：
+原生节点按调用顺序追加关键帧条目，`PackedLayout` 按列表顺序打包，所以「编码前先按帧排序」才是「同样的
+Guide、同样的帧位置」等价的原因。两个 VAE 是刻意常连的（不做惰性加载），但没有音频 Guide 时不会调用音频编码，
+没有图片 Guide 时不会调用视频编码。
+
+**规则** — 规则只有一份，写在 `core/guide_timeline.py`，`web/guide_state.js` 是它的镜像，所以卡片不可能和节点
+说法不一致。`frame_index` 是权威时间位置，秒数只是输入和显示；音频裁切始终用采样点边界
+（`source_start_sample` / `source_end_sample`），时长 = 样本数 / 采样率 / 帧率。音频区间是半开区间 `[start, end)`，
+首尾相接不算重叠。配额：启用的图片最多 16、音频最多 16、合计最多 32——这是首版的产品限制，不是官方模型限制；
+停用与待放置的条目保留在列表里但不占配额。所有失败都是可读的中文错误：缺 VAE、帧位置越界、音频重叠、
+同一帧放了两张图片、裁完没有样本、素材文件丢失、超过配额。视频变短只会把 Guide 标成越界，不会悄悄按比例挪位置。
+
+**面板** — 节点本体是一条固定高度的摘要条（`启用 图片 N · 音频 M · 不执行 K · 24 FPS · 帧数/时长`）加
+`🎬 打开 Guide 编辑器` 和 `🔄 刷新`，上面的任何按钮都不会改变节点尺寸。编辑器是浮在画布上的面板（拖标题栏移动、
+拖右下角改大小），视觉语言与本插件其他面板一致：`时间尺` + `图片轨` + `音频轨` 共用同一个坐标变换，下面是共用的
+`.h3lvm-deck` 卡片区和共用的 `卡片大小` 100%–400%、竖屏整帧显示的缩略图。缩略图是真的、波形是真的（蓝色就是会被
+使用的部分），`▶` 只试听裁切后的那一段。每张卡片自带 `秒` / `帧` 两个输入和 `启用/停用` · `放置` · `替换` · `复制` ·
+`删除`；拖动卡片就是给列表换序。把文件拖进**卡片池**（整段都接受，包括带 `卡片大小` 的标题栏）会通过 ComfyUI 自带的
+`/upload/image` 上传；图片还是音频由文件自己的扩展名决定，投进当前没显示的那一格时面板会自动切过去并写明「已切到音频卡片」，
+同名素材第二次投放会被去重并在提示里说明。在时间轴上拖动标记或
+音频条只会移动那一个元素并实时更新它的数字，松手才写一次；拖动被限制在有效范围内，而手填的越界数值会被保留并
+明确报错。`←` / `→` 让选中项移动一帧（`Shift` = 一秒）。底栏列出当前所有问题，每一行都是按钮，点了就选中并滚到那张卡片。
+
+**节点内的时间轴** — `addPanel` 会把用户拉高节点多出来的空间全交给这个面板，所以摘要条不是全部：它下面渲染的是**同一个
+渲染器的第二 surface**——`时间尺` + `图片轨` + `音频轨` 按节点宽度铺满，缩略图、名称与波形都是真的，marker 和音频条
+在这里**同样可以拖动**，拖完卡片上的数字与编辑器一起更新。卡片宽度随轨道高度自适应（40–72px），刻度 padding 与它成契约，
+首尾卡片不会被裁。这里没有缩放控件（整段视频按宽度铺满），缩放和卡片池仍在编辑器里；两处同时显示时互相同步。它也绝不改变节点尺寸：
+面板可用高度不足 160px 时它自己消失——所以默认节点高度下看不到它，把节点拉高就会出现。
+
+**保存与恢复** — 所有状态都在 `guides` 这个控件里，所以保存工作流、刷新页面、重新打开、复制节点、两个节点同时打开，
+彼此都不会串数据。素材只存 `{filename, subfolder, type}`，文件永远在 ComfyUI 自己的目录里——绝不存 Blob URL，也不存
+base64。关闭编辑器或删除节点都不会删除素材，因为别的工作流可能还在引用；素材丢失时卡片保留并报错，用 `替换` 重新关联。
+`resolved_frame_count` 在运行后写回，时间尺因此保持真实长度。第一次运行前可以直接填 `length_seconds`（秒，
+人就是这么规划一条镜头的）：面板按 `秒 × 24` 换算并向上对齐 17n+5，并把算式写出来（10 秒 → 240 → 243 帧）。
+什么都没填时才会用上游 generator 的 `length` 控件（那个本来就是帧）估算，并且会说明这是估算，不会假装知道。
+
+**这里没有的东西** — 没有 `guide_list` 插口（本插件还没有生产它的节点，合并点先留在内部
+`core.guide_timeline.merge_guides`）、不把时间吸附到 17n+5 或 Motion Context（原生节点也不吸附）、不生成台词/TTS、
+不做最终混音、不做关键帧补间、不做多 Shot 编排，也不会把你的素材上传到任何外部服务。如果当前 ComfyUI 没有原生
+`MiniMaxH3AddGuide`，只有这个节点会报错说明，本插件的其他节点照常加载使用。
 ### API 接口
 
 | 接口 | 返回 |
