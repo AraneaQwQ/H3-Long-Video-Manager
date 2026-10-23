@@ -12,9 +12,11 @@
 
 - `v1.3.1` → `1921477`（tag 对象 `482b118`）：投放视频库的卡片编号改为**就是卡片位置**，永远 1..N 连续无空号——导入追加到末尾、删除让后面的卡片顺延补位、拖拽按新顺序重排；`next_id` 语义收窄为存储序号（只生成 `vidNNN`，只增、名字永不复用，所以补位后不会覆盖别人的文件）；`MAX_SEGMENT_ID = 999` 从「编号上限」改为「卡片数上限」；面板删除后把选中项跟到新编号并写明「后面的编号已顺延」。已推送 `origin/main` 与 `v1.3.1`。
 
-## 2026-10-22 · 未提交（当前基线，等待用户实测）
+- `v1.4.0` → `3d7a75e`（tag 对象 `ebba9af`）：新增 `H3 Guide Timeline` 节点（`comfyui/guide_nodes.py` + `core/guide_timeline.py`）——一个节点替代串联的原生 `MiniMaxH3AddGuide`：Guide 文档存在 `guides` widget，锚点按真实 latent 帧数解析，没有任何启用且已放置的 Guide 时 positive 原样透传，宿主缺 `MiniMaxH3AddGuide` 时只有本节点报中文错。`web/guide_timeline.js` 的 Guide 编排弹窗：图片轨/音频轨 + 素材池 + pointer 拖动（放置、轨道内移动、拖回素材池排序）、裁切与试听、缩放平移、卡片可禁用也可移除、`length_seconds` 直接按秒数给时长。节点内也画同一条时间轴（`📈 显示节点时间轴`），**轨道高度是唯一尺寸控件、编辑器与节点内共用同一份 `view_state.lane_heights`**，卡片边长 = 实际生效轨道高度 − `MARKER_INSET*2`；面板不够高时按比例夹住并把读数标琥珀，完全放不下时自动隐藏，**绝不写 `node.size`**。文档 `GUIDE_TIMELINE.md`（本机 ComfyUI `0.42.4` / 前端 `1.55.18` 的源码核对）+ README 一节。测试：`tests/test_guide_timeline_core.py`、`tests/test_guide_nodes.py`（含与显式串联原生 Add Guide 的张量等价）、`work/guide_state.test.mjs` 89 条。已推送 `origin/main`（远端 main = `3d7a75e`）与 `v1.4.0`。
 
-- 快照：改动前的状态就是 `1921477`，已在 `archive/2026-10-21-1921477/`，本轮不另建旧快照。用户实测通过并 commit 后再打 `v1.4.0` 并补快照。
+## 2026-10-23 · `v1.4.0`（当前基线）
+
+- 快照：改动前的状态就是 `1921477`，已在 `archive/2026-10-21-1921477/`，本轮不另建旧快照。提交后的快照在 `archive/2026-10-23-3d7a75e/`（85 个文件，与 `git ls-files` 数量一致，由 `git archive v1.4.0` 解出，因此与提交内容逐字节相同）。
 - 需求（用户给的任务书）：`H3-Guide-Timeline-Plan-v1` —— 新增**一个**集成节点 `H3 Guide Timeline`，用双轨时间轴替代手动串联的原生 `MiniMaxH3AddGuide`。验收以任务书第 8 章 A/B/C/D 为准，第 9 章「明确不做」一条都不做（不改内核、不改现有节点接口、不做 17n+5/MC 吸附、不做 TTS/混音/补间/多 Shot 编排、不把素材上传外部服务）。
 - P0 开工调查先做完：`GUIDE_TIMELINE.md` 是对本机实际源码的核对记录（ComfyUI `0.42.4`、前端 `1.55.18`）。关键结论：原生 `MiniMaxH3AddGuide.execute(positive, latent, frame_idx, vae, audio_vae, image, audio)`；总帧数 = `sum(FRAME_PER_TOKEN[k % 5])`，`FRAME_PER_TOKEN = (1,4,4,4,4)`；音频只裁**尾部**（`max_rt = floor(audio_total_rt - 5/3 * frame_idx)`），所以**源音频的起止必须调用方自己在编码前切**；`conditioning_set_values` 是浅拷贝会写回输入 conditioning，所以本节点先深拷贝一层再接链。
 - 等价性的根据不是「复刻内核」而是「按调用顺序累积」：原生把关键帧条目 append 进 `minimax_keyframes`，`PackedLayout` 按**列表顺序**打包，时间位置由 `cond_t = cursor + 5/3 * frame_idx` 决定 → 所以「编码前先按 `(frame_index, 图片优先, 原列表次序)` 排序，再逐条串联」就是等价；这条在 `tests/test_guide_nodes.py` 里用张量比较直接测，不是靠肉眼。
@@ -45,7 +47,8 @@
 - 为什么不加第二个「卡片大小」控件：卡片是正方形，边长就是轨道内高——两套控件只会互相打架（放大就重叠）。所以读数直接显示那个数字，用户看得见卡片随谁变。
 - 前端：节点内时间轴的头部加 `图片轨 − px ＋` / `音频轨 − px ＋`（复用 `.h3guide-secondary` 与 `.h3guide-lane-px`，与编辑器同一设计语言）；读数显示**实际生效**的高度，被面板夹住时变琥珀色并把原因写进 title（`面板只放得下 96px（想要 112px）`）；`applyStripHeights()` 写内联高度，CSS 去掉那两条让轨道自己长高的规则；`setLaneHeight()` 不再要求编辑器是打开的，两个 surface 一起 `syncMarkerSide()`；strip 的 − / ＋ 以「当前画出来的高度」为基准，被夹住时 − 立刻有效、＋ 不会偷偷把编辑器要的数往下改。
 - 测试：`work/guide_state.test.mjs` 86 → **89 passed, 0 failed**（新增 `stripRoom` / `stripLaneHeights` 的 196/195 边界、按比例缩到面板、不越下限、floor 后超量回退、`stripMarkerPlan` 的新上限，以及「一条卡片时轨道高度就是控件、12 条时宽度预算才是限制」）；`work/check_plugin_web.ps1` `syntax failures: 0`；`work/check_guide_imports.mjs` 无缺失/未使用导入。本轮只改前端 → 复测只需 `Ctrl+F5`，Python 未动。
-- **尚未实测**：浏览器探针 `work/guide_strip_size.mjs`（T1–T20：真实鼠标点节点内的 − / ＋，断言轨道高度与 `--h3guide-marker-side` 同步变化、`node.size` 全程不变、面板不够高时夹住并标琥珀、完全放不下时自动隐藏、保存重开后 `lane_heights` 与 `strip_open` 仍在）**已写好但一次都没跑过**——本轮写探针时 ComfyUI 没在运行（8188 无监听）。用户实测项：节点内点 − / ＋ 卡片真的变小变大、竖屏素材能看清、编辑器与节点内改的是同一个数字。
+- **实测状态（区分清楚）**：本轮的验收来自**用户在真实 ComfyUI 里的手动实测**（节点加载、Guide 编排、节点内 − / ＋ 改变轨道与卡片大小、竖屏素材可读），用户据此明确授权推送与打 tag。自动化浏览器探针 `work/guide_strip_size.mjs`（T1–T20：真实鼠标点节点内的 − / ＋，断言轨道高度与 `--h3guide-marker-side` 同步变化、`node.size` 全程不变、面板不够高时夹住并标琥珀、完全放不下时自动隐藏、保存重开后 `lane_heights` 与 `strip_open` 仍在）**已写好但一次都没跑过**——写探针时 ComfyUI 没在运行（8188 无监听），之后用户手动测过就没有补跑。下一轮再动这块尺寸逻辑，先把它跑一次再说「通过」。
+- 运行副本陷阱（本轮「缺失节点」的根因，记录在案）：`E:\ai\ComfyUI-aki-v3\ComfyUI\custom_nodes\H3-Long-Video-Manager` 是 GitHub 的 git 检出，秋叶启动器的「更新」执行 `git reset` 到已推送 commit（reflog：`reset: moving to beafc17`），**未推送的运行时改动会被整批回退**——本轮被回退的是 `comfyui/nodes.py`（Guide 注册）等 8 个文件，而未跟踪的新文件（`comfyui/guide_nodes.py`、`web/guide_*.js/css`）留着，于是插件能加载、节点类型却没注册，前端报「缺失节点」。规则：开发期间不要用启动器更新这个插件；推送完成后再跑一次 `work/sync_h3lvm.ps1`（提权，判据是 `mismatch: 0`），让运行副本与远端一致。
 
 ## 2026-10-21 · `1921477`（上一基线）
 
