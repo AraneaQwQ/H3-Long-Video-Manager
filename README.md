@@ -27,6 +27,7 @@ Cut any long video into H3-compatible segments (each satisfying the `17n + 5` fr
 
 | **H3 Segment Picker** | Input: project name + segment ID → `IMAGE`, `AUDIO`, `frame_count`, `segment_id` (feeds H3 directly) |
 | **H3 Guide Timeline** | Input: `positive` + H3 AV latent + both VAEs + one guide list → image/audio guides placed on a two-lane timeline → `positive` (equal to a hand-wired chain of native Add Guide nodes) |
+| **H3 Guide Timeline v2** | Same timeline and the same single `positive` output, plus a per-image guide strength (0.00-1.00, default 1.00; `0.00` keeps the card but leaves the conditioning); audio keeps native behaviour |
 
 ### Key features
 
@@ -434,7 +435,7 @@ place guides on a two-lane timeline.
 |-----------|---------|----------|-------------|
 | `positive` | - | positive | The conditioning to guide. Returned unchanged when nothing is both enabled and placed |
 | `latent` | - | latent | The MiniMax H3 AV latent. The real total frame count comes from it (the `1+4+4+4+4...` token grid), and the editor ruler uses that number |
-| `length_seconds` | 0.0 | ⏱ 视频时长（秒） | Ruler only, and in seconds like `segment_duration` elsewhere in this plugin: the panel converts it with `round(seconds × 24)` and aligns up to 17n+5, then says the arithmetic out loud (10 秒 → 240 → 243 帧). 0 means not set. It never changes execution or the output |
+| `length_seconds` | 0.0 | ⏱ 时间轴长度（秒） | Ruler only, and in seconds like `segment_duration` elsewhere in this plugin: the panel converts it with `round(seconds × 24)` and aligns up to 17n+5, then says the arithmetic out loud (10 秒 → 240 → 243 帧). 0 means not set. It never changes execution or the output |
 | `vae` | optional | vae | Video VAE. Required when at least one enabled+placed image guide exists; may stay empty otherwise |
 | `audio_vae` | optional | audio_vae | Audio VAE. Required when at least one enabled+placed audio guide exists |
 | `guides` | `{"schema_version":1,"fps":24,"guides":[]}` | 🎬 Guide 列表 (JSON) | The whole document the panel reads and writes: the guide list plus `view_state` and `resolved_frame_count`. Written by the editor, editable by hand |
@@ -479,12 +480,15 @@ The footer lists every current problem and each line is a button that selects an
 **Timeline inside the node** - `addPanel` hands this panel every pixel the user drags the node taller,
 so the summary bar is not the end of the story: below it the node renders the **same renderer on a
 second surface** - `时间尺` + `图片轨` + `音频轨` fit to the node width, with real thumbnails, labels
-and waveforms, and the markers and audio clips are draggable there too. Card width scales with the
-lane height (40-72 px) and the scale padding follows it, so the first and last card are never cut off.
+and waveforms, and the markers and audio clips are draggable there too. `卡片 − / ＋` gives the image
+cards an independent 40-320 px side: once set, lane height, node width and card count no longer resize
+them. An untouched workflow keeps the legacy automatic size. The scale padding follows either size,
+so the first and last card are never cut off.
 There are no zoom controls here (the whole video fits the width); zoom and the card pool stay in the
 editor. When both are open they stay in sync. It never changes the node size: if the panel is shorter
 than 160 px it hides itself, which is why it is not visible at the default node height - drag the node
-taller and it appears.
+taller and it appears. A large independent card may overlay the neighbouring lane, but it never
+stretches either lane; the outer panel still clips at the node's real bounds.
 
 **Persistence** - everything lives in the `guides` widget, so saving a workflow, refreshing, reopening,
 copying the node and running two of them side by side are all isolated. Media is stored as
@@ -502,6 +506,33 @@ internal in `core.guide_timeline.merge_guides`), no snapping to 17n+5 or Motion 
 node does not snap), no dialogue/TTS, no final mix, no keyframe tweening, no multi-shot orchestration,
 and no upload of your media to any external service. If the running ComfyUI has no native
 `MiniMaxH3AddGuide`, only this node reports it; the rest of the plugin loads normally.
+
+#### H3 Guide Timeline v2
+
+The same timeline with one extra field: every image card carries a **guide strength** (引导强度),
+default `1.00`, range `0.00-1.00`, step `0.05`. This is a second node (`H3 Guide Timeline v2`), not a
+rename - the stable node, its document format, its cache behaviour and its saved workflows are
+untouched, and both nodes can sit in the same ComfyUI.
+
+- `1.00` runs the native Add Guide chain exactly as before; nothing in the model is rewritten.
+- Below `1.00` that one image condition is noise-augmented harder, and its latent is blended toward
+  noise with the same coefficient (`strength x VISUAL_COND_TIMESTEP`), so the finished picture is less
+  locked to that reference and the motion has more room. It is not a "percent of pixels kept".
+- `0.00` keeps the card, its time position and its value in the document, but that image is never VAE-encoded,
+  never joins the conditioning and adds no keyframe. Both VAE inputs stay wired exactly as before - the node calls
+  whichever one a run actually needs, so a run whose image cards are all `0.00` does not ask for a video VAE, and
+  a run with nothing effective passes `positive` through unchanged.
+- Only keyframes this node created in this run are marked. First/last frames, guides that came from
+  upstream, ordinary reference images and every audio condition keep native parameters.
+- The value is shown on the image card and editable in the detail panel; both read one field. Copying
+  a card copies the strength, replacing its media keeps it, dragging and sorting never change it.
+- Audio has no strength. The strength is part of the v2 execution digest and cache key, so changing it
+  re-encodes; selecting a card, zooming or scrolling the timeline does not.
+- If the model adaptation cannot be installed on the running ComfyUI (the kernel implementation moved,
+  or another plugin already rewrote the same model methods), a v2 run with a strength between `0.05` and `0.95`
+  stops with a Chinese error instead of quietly falling back to the global strength. The stable node, a v2 run at
+  1.00 and a v2 run at 0.00 keep working - neither touches the model.
+
 ### API endpoints
 
 | Endpoint | Returns |
@@ -552,7 +583,8 @@ H3-Long-Video-Manager/
 │   ├── nodes.py                       # Manager (V3) + Picker nodes
 │   ├── ref_nodes.py                   # 图片/音频参考加载器（固定编号槽位）
 │   ├── ref_presets.py                 # 参考库：图片/音频各一套（只存路径，不复制媒体）
-│   ├── guide_nodes.py                 # H3 Guide 时间轴（逐条调用原生 Add Guide）
+│   ├── guide_nodes.py                 # H3 Guide 时间轴 + v2（逐条调用原生 Add Guide）
+│   ├── h3_strength_patch.py       # v2 逐图引导强度的模型适配（只改 H3 的加噪与时间标签）
 │   ├── nodes_v1.py                    # backup (pre-audio)
 │   ├── nodes_v2.py                    # backup (pre-save-bin)
 │   ├── nodes_v3_backup.py             # backup (pre-V3-API)
@@ -619,6 +651,7 @@ H3-Long-Video-Manager/
     ├── test_ref_presets.py            # 参考库：两类互不可见 / 旧共用文件迁移 / 预设读写与损坏
     ├── test_guide_nodes.py          # Guide 节点与原生链等价 tests
     ├── test_guide_timeline_core.py  # Guide 规范化 / 校验 / 排序 / 配额 tests
+    ├── test_h3_strength_patch.py    # 逐图强度适配：安装条件 / 拒绝路径 / 时间标签自检
 
     └── test_segment_store.py          # Storage round-trip tests
 ```
@@ -641,6 +674,7 @@ H3-Long-Video-Manager/
 
 | **H3 Segment Picker** | 从库中读取 → 输出 `IMAGE`、`AUDIO`、`frame_count`、`segment_id`（前两项直接喂 H3） |
 | **H3 Guide 时间轴** | 输入：`positive` + H3 AV latent + 两个 VAE + 一个 Guide 列表 → 在双轨时间轴上放图片/音频 Guide → 输出 `positive`（与手动串联原生 Add Guide 等价） |
+| **H3 Guide 时间轴 v2** | 与「H3 Guide 时间轴」同样的时间轴和同样的单个 `positive` 输出，另外每张图片可单独设置引导强度（0.00-1.00，默认 1.00；`0.00` 保留卡片但不加入 conditioning）；音频保持原生行为 |
 
 ### 核心特性
 
@@ -953,7 +987,7 @@ ref_audio_2`（`AUDIO`）。永远是九个 / 三个端口，顺序固定。
 |------|--------|--------------|------|
 | `positive` | - | positive | 要被引导的条件。没有任何「启用且已放置」的 Guide 时原样透传 |
 | `latent` | - | latent | MiniMax H3 的 AV latent。视频真实总帧数由它算出（`1+4+4+4+4...` 的 token 网格），编辑器的时间尺用的就是这个数 |
-| `length_seconds` | 0.0 | ⏱ 视频时长（秒） | 只给编辑器的时间尺用，单位是秒（和本插件 `segment_duration` 同一套习惯）：面板按 `秒 × 24` 换算成帧并向上对齐 17n+5，还把算式写出来（10 秒 → 240 → 243 帧）。0 = 不设置。它不参与执行，也不改变输出 |
+| `length_seconds` | 0.0 | ⏱ 时间轴长度（秒） | 只给编辑器的时间尺用，单位是秒（和本插件 `segment_duration` 同一套习惯）：面板按 `秒 × 24` 换算成帧并向上对齐 17n+5，还把算式写出来（10 秒 → 240 → 243 帧）。0 = 不设置。它不参与执行，也不改变输出 |
 | `vae` | 可选 | vae | 视频 VAE。只要有「启用且已放置」的图片 Guide 就必须接；没有图片 Guide 时可以留空 |
 | `audio_vae` | 可选 | audio_vae | 音频 VAE。只要有「启用且已放置」的音频 Guide 就必须接 |
 | `guides` | `{"schema_version":1,"fps":24,"guides":[]}` | 🎬 Guide 列表 (JSON) | 面板读写的完整文档：Guide 列表 + `view_state` + `resolved_frame_count`。由编辑器写入，也可以直接手改 |
@@ -988,9 +1022,11 @@ Guide、同样的帧位置」等价的原因。两个 VAE 是刻意常连的（�
 
 **节点内的时间轴** — `addPanel` 会把用户拉高节点多出来的空间全交给这个面板，所以摘要条不是全部：它下面渲染的是**同一个
 渲染器的第二 surface**——`时间尺` + `图片轨` + `音频轨` 按节点宽度铺满，缩略图、名称与波形都是真的，marker 和音频条
-在这里**同样可以拖动**，拖完卡片上的数字与编辑器一起更新。卡片宽度随轨道高度自适应（40–72px），刻度 padding 与它成契约，
+在这里**同样可以拖动**，拖完卡片上的数字与编辑器一起更新。节点头部的「卡片 − / ＋」可单独设置图片卡片边长（40–320px），
+设置后不再随轨道高度、节点宽度或卡片数量变化；未设置时保留旧的自动尺寸。刻度 padding 与卡片边长成契约，
 首尾卡片不会被裁。这里没有缩放控件（整段视频按宽度铺满），缩放和卡片池仍在编辑器里；两处同时显示时互相同步。它也绝不改变节点尺寸：
-面板可用高度不足 160px 时它自己消失——所以默认节点高度下看不到它，把节点拉高就会出现。
+面板可用高度不足 160px 时轨道会隐藏——所以默认节点高度下看不到它，把节点拉高就会出现。大卡片可以超出图片轨层叠显示，
+但不会撑高轨道；最外层面板仍按节点真实边界裁切。
 
 **保存与恢复** — 所有状态都在 `guides` 这个控件里，所以保存工作流、刷新页面、重新打开、复制节点、两个节点同时打开，
 彼此都不会串数据。素材只存 `{filename, subfolder, type}`，文件永远在 ComfyUI 自己的目录里——绝不存 Blob URL，也不存
@@ -1003,6 +1039,26 @@ base64。关闭编辑器或删除节点都不会删除素材，因为别的工�
 `core.guide_timeline.merge_guides`）、不把时间吸附到 17n+5 或 Motion Context（原生节点也不吸附）、不生成台词/TTS、
 不做最终混音、不做关键帧补间、不做多 Shot 编排，也不会把你的素材上传到任何外部服务。如果当前 ComfyUI 没有原生
 `MiniMaxH3AddGuide`，只有这个节点会报错说明，本插件的其他节点照常加载使用。
+
+#### H3 Guide 时间轴 v2
+
+同一条时间轴，只多一个字段：每张图片卡片带一个**引导强度**，默认 `1.00`，范围 `0.00-1.00`，步进 `0.05`。
+它是第二个节点（`H3 Guide Timeline v2`），不是把旧节点改名——旧节点、它的数据格式、缓存行为和已保存的工作流都不变，
+两个节点可以同时出现在 ComfyUI 里。
+
+- `1.00` 走原生 Add Guide 原路径，模型侧什么都不改写。
+- 低于 `1.00` 时只有这一张图片条件被更强地加噪，并且它的 latent 用同一个系数（`strength x VISUAL_COND_TIMESTEP`）
+  向噪声混合：这张图对画面的约束变弱，动作与场景衔接的自由度变大。它不是「保留多少像素」的百分比。
+- `0.00`：卡片、时间位置和强度值都照常保存在文档里，但这张图片不做 VAE 编码、不进入 conditioning、不新增 keyframe。
+  两个 VAE 端口和接线方式不变，可以一直连着：执行时按实际生效的素材决定调用哪一个，所以图片全是 `0.00` 时不会
+  要求连接视频 VAE；这次没有任何生效 Guide 时，positive 原样透传。
+- 只标记本节点这次新建的 keyframe。首尾帧、上游已有的 Guide、普通参考图和全部音频条件都保持原生参数。
+- 强度显示在图片卡片上，也能在选中卡片的详情区修改，两处是同一份数据。复制卡片继承强度，替换素材保留强度，
+  拖动和排序不会改变它。
+- 音频没有强度项。强度计入 v2 的执行摘要与缓存指纹：改强度会重新编码，选中卡片、缩放或滚动时间轴不会。
+- 当前 ComfyUI 装不上这个模型适配时（内核实现变了，或别的插件已经改写过同一批模型方法），v2 低于 1.00 的运行会用
+  中文报错停下，不会静默退回全局强度。旧节点、v2 的 1.00 路径和 v2 的 0.00 路径照常运行——两者都不碰模型。
+
 ### API 接口
 
 | 接口 | 返回 |

@@ -45,6 +45,29 @@ MAX_GUIDE_IMAGES = 16
 MAX_GUIDE_AUDIOS = 16
 MAX_GUIDE_TOTAL = 32
 
+# --- v2 only: per-image guide strength (H3 Guide Timeline v2) ---
+# The old node has no strength field at all, so every function that could touch one
+# is gated by an explicit with_strength flag and the v2_* wrappers below. A v1
+# document never gains a strength key, and a v1 execution never reads one.
+#
+# What the number means: it is the flow-matching blend coefficient for that one
+# image condition (a*z + (1-a)*noise) plus the matching row timestep label, so a
+# lower value makes the frame a looser hint and leaves more room for motion and
+# scene continuity. It is NOT a pixel-preservation percentage.
+#
+# Three bands, and the card badge reads them in exactly these words:
+#   1.00          the native Add Guide path, nothing is patched;
+#   0.05 - 0.95   the per-image adaptation for that one keyframe only;
+#   0.00          the card is kept (asset, position and value stay in the document)
+#                 but the image is never decoded, never VAE-encoded and never joins
+#                 the conditioning. That is not the same as 已停用: a muted card is
+#                 still on the timeline with a strength the user can raise again.
+STRENGTH_DEFAULT = 1.0
+STRENGTH_MIN = 0.0
+STRENGTH_OFF = 0.0
+STRENGTH_MAX = 1.0
+STRENGTH_STEP = 0.05
+
 # comfy/ldm/minimax/model.py:30 - how many pixel frames one video latent token
 # stands for. Mirrored here so the range can be checked without torch; the node
 # reads the real table from ComfyUI and passes it in, so the two cannot drift.
@@ -206,7 +229,7 @@ def _clean_sample(value, index: int, field: str) -> int:
     return int(round(number))
 
 
-def _clean_guide(item, index: int, seen_ids: set) -> dict:
+def _clean_guide(item, index: int, seen_ids: set, with_strength: bool = False) -> dict:
     if not isinstance(item, dict):
         raise ValueError(f"guide {index} is not an object")
     kind = str(item.get("kind") or "").strip().lower()
@@ -239,10 +262,39 @@ def _clean_guide(item, index: int, seen_ids: set) -> dict:
         guide["source_end_sample"] = _clean_sample(item.get("source_end_sample"), index, "source_end_sample")
         rate = item.get("sample_rate")
         guide["sample_rate"] = int(rate) if rate else 0
+    elif with_strength:
+        # Audio guides keep the native behaviour on purpose: v2 has no audio strength.
+        guide["strength"] = normalize_strength(item.get("strength"))
     return guide
 
 
-def parse_guides(raw, max_total: int = MAX_GUIDE_TOTAL) -> list:
+def normalize_strength(value) -> float:
+    """v2 only: a usable strength for one image guide.
+
+    Missing is the default, not an error - a v2 document written before the field
+    existed must still run. Out of range is clamped rather than refused, the same
+    choice as the panel's lane-height clamp: the widget already offers 0.00-1.00 in
+    0.05 steps, and a hand-edited -0.4 should run as 0.00 instead of failing a whole
+    prompt. The snap to the step grid keeps 0.0 + 0.05*n from drifting in binary.
+    """
+    if value is None or value == "":
+        return STRENGTH_DEFAULT
+    if isinstance(value, bool):
+        raise ValueError(f"strength must be a number, got {value!r}")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"strength must be a number, got {value!r}")
+    if not math.isfinite(number):
+        raise ValueError(f"strength must be a finite number, got {value!r}")
+    number = min(STRENGTH_MAX, max(STRENGTH_MIN, number))
+    # Half-up, not banker's rounding: web/guide_state.js snaps the same typed value the
+    # same way, and a card badge must never show a step the node then executed as another.
+    steps = int((number - STRENGTH_MIN) / STRENGTH_STEP + 0.5)
+    return round(STRENGTH_MIN + steps * STRENGTH_STEP, 2)
+
+
+def parse_guides(raw, max_total: int = MAX_GUIDE_TOTAL, with_strength: bool = False) -> list:
     """Return an ordered list of normalised guides.
 
     Accepts the JSON the panel writes ({"guides": [...]} or a bare list), a plain
@@ -275,7 +327,8 @@ def parse_guides(raw, max_total: int = MAX_GUIDE_TOTAL) -> list:
         raise ValueError("guides must be a JSON list of guide objects")
 
     seen_ids: set = set()
-    guides = [_clean_guide(item, index, seen_ids) for index, item in enumerate(data)]
+    guides = [_clean_guide(item, index, seen_ids, with_strength=with_strength)
+              for index, item in enumerate(data)]
     ensure_labels(guides)
 
     running = {IMAGE_KIND: 0, AUDIO_KIND: 0}
@@ -325,7 +378,7 @@ def ensure_labels(guides: list) -> list:
 
 
 
-def serialize_guides(guides: list, extra: dict | None = None) -> str:
+def serialize_guides(guides: list, extra: dict | None = None, with_strength: bool = False) -> str:
     """The widget value. Key order is fixed so an unchanged list is not a diff."""
     document = {"schema_version": SCHEMA_VERSION, "fps": DEFAULT_FPS, "guides": []}
     for guide in guides:
@@ -345,6 +398,8 @@ def serialize_guides(guides: list, extra: dict | None = None) -> str:
             entry["source_start_sample"] = int(guide.get("source_start_sample") or 0)
             entry["source_end_sample"] = int(guide.get("source_end_sample") or 0)
             entry["sample_rate"] = int(guide.get("sample_rate") or 0)
+        elif with_strength:
+            entry["strength"] = normalize_strength(guide.get("strength"))
         document["guides"].append(entry)
     for key, value in (extra or {}).items():
         if key not in document:
@@ -352,7 +407,20 @@ def serialize_guides(guides: list, extra: dict | None = None) -> str:
     return json.dumps(document, ensure_ascii=False, separators=(",", ":"), sort_keys=False)
 
 
-def execution_digest(guides: list) -> str:
+def _strength_row(row: str, guide: dict, with_strength: bool) -> str:
+    """v2 only: append the strength segment to one digest row.
+
+    The v1 row is left byte-for-byte as it was, so an existing workflow's cache key and
+    panel digest do not move just because this plugin gained a v2 node. Only a v2 call
+    adds the segment, which is what makes a strength change re-run instead of replaying
+    the previous encode.
+    """
+    if not with_strength:
+        return row
+    return row + "|{strength}".format(strength=normalize_strength(guide.get("strength")))
+
+
+def execution_digest(guides: list, with_strength: bool = False) -> str:
     """What the run depends on: order, media, placement, trim, enabled.
 
     Deliberately not the whole widget value - selecting a card or changing the
@@ -360,18 +428,17 @@ def execution_digest(guides: list) -> str:
     """
     digest = hashlib.sha256()
     for guide in guides:
-        digest.update(
-            "|{kind}|{enabled}|{frame}|{type}|{subfolder}|{filename}|{start}|{end}".format(
-                kind=guide["kind"],
-                enabled=int(bool(guide.get("enabled", True))),
-                frame=guide.get("frame_index"),
-                type=guide["asset"].get("type", "input"),
-                subfolder=guide["asset"].get("subfolder", ""),
-                filename=guide["asset"]["filename"],
-                start=guide.get("source_start_sample", 0),
-                end=guide.get("source_end_sample", 0),
-            ).encode("utf-8")
+        row = "|{kind}|{enabled}|{frame}|{type}|{subfolder}|{filename}|{start}|{end}".format(
+            kind=guide["kind"],
+            enabled=int(bool(guide.get("enabled", True))),
+            frame=guide.get("frame_index"),
+            type=guide["asset"].get("type", "input"),
+            subfolder=guide["asset"].get("subfolder", ""),
+            filename=guide["asset"]["filename"],
+            start=guide.get("source_start_sample", 0),
+            end=guide.get("source_end_sample", 0),
         )
+        digest.update(_strength_row(row, guide, with_strength).encode("utf-8"))
     return digest.hexdigest()
 
 
@@ -540,7 +607,7 @@ def guide_paths(guides: list) -> list:
     return [dict(guide["asset"]) for guide in guides if guide.get("asset")]
 
 
-def guide_fingerprint(guides: list, roots: dict) -> str:
+def guide_fingerprint(guides: list, roots: dict, with_strength: bool = False) -> str:
     """Cache key: the guide list plus the real bytes behind each asset.
 
     Replacing a file under the same name changes mtime/size, so the node re-runs
@@ -550,18 +617,17 @@ def guide_fingerprint(guides: list, roots: dict) -> str:
     digest = hashlib.sha256()
     for guide in guides:
         asset = guide["asset"]
-        digest.update(
-            "|{kind}|{enabled}|{frame}|{type}|{subfolder}|{filename}|{start}|{end}".format(
-                kind=guide["kind"],
-                enabled=int(bool(guide.get("enabled", True))),
-                frame=guide.get("frame_index"),
-                type=asset.get("type", "input"),
-                subfolder=asset.get("subfolder", ""),
-                filename=asset["filename"],
-                start=guide.get("source_start_sample", 0),
-                end=guide.get("source_end_sample", 0),
-            ).encode("utf-8")
+        row = "|{kind}|{enabled}|{frame}|{type}|{subfolder}|{filename}|{start}|{end}".format(
+            kind=guide["kind"],
+            enabled=int(bool(guide.get("enabled", True))),
+            frame=guide.get("frame_index"),
+            type=asset.get("type", "input"),
+            subfolder=asset.get("subfolder", ""),
+            filename=asset["filename"],
+            start=guide.get("source_start_sample", 0),
+            end=guide.get("source_end_sample", 0),
         )
+        digest.update(_strength_row(row, guide, with_strength).encode("utf-8"))
         try:
             from .ref_media import resolve_media_path  # local import: keeps this module torch-free
 
@@ -571,3 +637,80 @@ def guide_fingerprint(guides: list, roots: dict) -> str:
             # A missing file is reported by validate_inputs; the cache key must not crash first.
             digest.update(b"|missing")
     return digest.hexdigest()
+
+# --- v2 entry points (H3 Guide Timeline v2) ---
+# Version-explicit wrappers, so the stable node keeps calling the functions above
+# with their original signatures and a v1 document never grows a strength key. The
+# document schema version stays 1 on purpose: the presence of a strength key IS the
+# v2 marker, and a second version number could only disagree with the panel.
+def parse_guides_v2(raw, max_total: int = MAX_GUIDE_TOTAL) -> list:
+    """Parse a v2 document: image guides carry a normalised strength."""
+    return parse_guides(raw, max_total=max_total, with_strength=True)
+
+
+def serialize_guides_v2(guides: list, extra: dict | None = None) -> str:
+    return serialize_guides(guides, extra=extra, with_strength=True)
+
+
+def execution_digest_v2(guides: list) -> str:
+    """v2 digest: strength is part of what a run depends on."""
+    return execution_digest(guides, with_strength=True)
+
+
+def guide_fingerprint_v2(guides: list, roots: dict) -> str:
+    """v2 cache key: changing one card's strength re-runs the node."""
+    return guide_fingerprint(guides, roots, with_strength=True)
+
+
+def is_muted_image(guide) -> bool:
+    """v2 only: an image card whose strength is 0.00.
+
+    Kept, not deleted: the asset, the frame position and the value all stay in the
+    document and in the cache key, but nothing is decoded for it and no keyframe is
+    created for it. The node asks this once per card, in one place, so the pass-1
+    header read, the VAE requirement and the encode loop cannot disagree about
+    whether the card runs.
+    """
+    return (guide.get("kind") == IMAGE_KIND
+            and normalize_strength(guide.get("strength")) <= STRENGTH_OFF)
+
+
+def has_reduced_strength(guides: list) -> bool:
+    """True when a guide that will actually run asks for a lowered strength.
+
+    Only runnable cards count: a parked or disabled card is never encoded, so it must
+    not pull the whole run onto the per-image strength path. A 0.00 card does not
+    count either - it never reaches the model, so it needs no adaptation at all.
+    """
+    for guide in guides:
+        if guide.get("kind") != IMAGE_KIND or not is_runnable(guide):
+            continue
+        if STRENGTH_OFF < normalize_strength(guide.get("strength")) < STRENGTH_MAX:
+            return True
+    return False
+
+
+def runnable_guides_v2(guides: list) -> list:
+    """v2 runnable set: enabled, placed, and not muted by a 0.00 strength."""
+    return [guide for guide in runnable_guides(guides) if not is_muted_image(guide)]
+
+
+def sort_for_execution_v2(guides: list) -> list:
+    """v2 run order: the v1 order with the 0.00 image cards left out.
+
+    The remaining cards keep their exact v1 order, so raising one card to 0.00
+    removes that keyframe and changes nothing else about the run.
+    """
+    return sort_for_execution(runnable_guides_v2(guides))
+
+
+def validate_guides_v2(guides: list, frame_count: int, spans: dict | None = None,
+                       image_frames: dict | None = None, fps: int = DEFAULT_FPS) -> list:
+    """v2 validation: a card that never runs cannot break the run.
+
+    Same checks as validate_guides, minus the 0.00 cards - an off-the-end placement or
+    a shared frame involving a muted card is not a problem the user has to fix, and
+    refusing the prompt for it would be.
+    """
+    return validate_guides([guide for guide in guides if not is_muted_image(guide)],
+                           frame_count, spans=spans, image_frames=image_frames, fps=fps)

@@ -32,6 +32,45 @@ export const KINDS = [IMAGE_KIND, AUDIO_KIND];
 
 export const ALLOWED_MEDIA_TYPES = ["input", "output", "temp"];
 
+// Per-image guide strength, mirrored from core/guide_timeline.py. Only the v2 node shows
+// and writes it: a v1 document has no strength key at all, which is what keeps an old
+// saved workflow byte-identical. 1.00 means "the native Add Guide path, unchanged";
+// 0.05 - 0.95 loosens that one image; 0.00 keeps the card but never joins the
+// conditioning. Same three bands as core/guide_timeline.py, one constant per band.
+export const STRENGTH_DEFAULT = 1.0;
+export const STRENGTH_MIN = 0.0;
+export const STRENGTH_OFF = 0.0;
+export const STRENGTH_MAX = 1.0;
+export const STRENGTH_STEP = 0.05;
+
+export function normalizeStrength(value) {
+    if (value === undefined || value === null || value === "") return STRENGTH_DEFAULT;
+    if (typeof value === "boolean") throw new Error("guide strength must be a number");
+    const number = Number(value);
+    if (!Number.isFinite(number)) throw new Error(`guide strength is not a number: ${value}`);
+    const clamped = Math.min(STRENGTH_MAX, Math.max(STRENGTH_MIN, number));
+    // Half-up, exactly like core/guide_timeline.py: one typed value must snap to one step.
+    const steps = Math.floor((clamped - STRENGTH_MIN) / STRENGTH_STEP + 0.5);
+    return Math.round((STRENGTH_MIN + steps * STRENGTH_STEP) * 100) / 100;
+}
+
+// What a card means when it carries no strength key: the native strength. One answer here
+// keeps the card badge, the detail field and the node from disagreeing.
+export function strengthOf(guide) {
+    return normalizeStrength(guide?.strength);
+}
+
+// A 0.00 image card is kept on the timeline but never encoded. One answer here keeps
+// the card badge, the detail row, the counts and the node from disagreeing about what
+// actually runs. Mirrors core/guide_timeline.is_muted_image.
+export function isMutedImage(guide) {
+    return guide?.kind === IMAGE_KIND && strengthOf(guide) <= STRENGTH_OFF;
+}
+
+export function hasStrength(guide) {
+    return guide?.strength !== undefined && guide?.strength !== null && guide?.strength !== "";
+}
+
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const AUDIO_EXT = /\.(wav|mp3|m4a|aac|ogg|oga|flac|opus|webm)$/i;
 const IMAGE_EXT = /\.(png|jpe?g|jfif|webp|bmp|gif|tif|tiff)$/i;
@@ -162,6 +201,12 @@ export function normalizeGuide(item, index, seenIds) {
         frame_index: frame,
         asset: cleanAsset(item.asset === undefined ? item.filename : item.asset, index),
     };
+    // Only a document that already carries the key keeps it. That single rule is the whole
+    // v1/v2 difference in the store: a v1 list round-trips without a strength key, and a
+    // v2 list keeps what the user set. Audio never gets one.
+    if (kind === IMAGE_KIND && item.strength !== undefined && item.strength !== null && item.strength !== "") {
+        guide.strength = normalizeStrength(item.strength);
+    }
     if (kind === AUDIO_KIND) {
         guide.source_start_sample = cleanSample(item.source_start_sample, index, "source_start_sample");
         guide.source_end_sample = cleanSample(item.source_end_sample, index, "source_end_sample");
@@ -285,6 +330,7 @@ export function parseDocument(raw) {
     view.scroll = Number(view.scroll) || 0;
     view.strip_open = view.strip_open === true;
     view.lane_heights = laneHeights(view);
+    view.strip_marker_side = hasStripMarkerSide(view) ? stripMarkerSide(view) : null;
 
     return {
         schema_version: SCHEMA_VERSION,
@@ -323,6 +369,9 @@ export function serializeDocument(doc) {
                 type: guide.asset.type || "input",
             },
         };
+        if (guide.kind === IMAGE_KIND && hasStrength(guide)) {
+            entry.strength = normalizeStrength(guide.strength);
+        }
         if (guide.kind === AUDIO_KIND) {
             entry.source_start_sample = Math.trunc(Number(guide.source_start_sample) || 0);
             entry.source_end_sample = Math.trunc(Number(guide.source_end_sample) || 0);
@@ -335,7 +384,8 @@ export function serializeDocument(doc) {
     const view = doc.view_state || {};
     const heights = laneHeights(view);
     const heightsChanged = laneHeightsDiffer(heights);
-    if (view.selected_id || view.active_tab || (Number(view.zoom) || 1) !== 1 || (Number(view.scroll) || 0) !== 0 || view.strip_open === true || heightsChanged) {
+    const markerSideSet = hasStripMarkerSide(view);
+    if (view.selected_id || view.active_tab || (Number(view.zoom) || 1) !== 1 || (Number(view.scroll) || 0) !== 0 || view.strip_open === true || heightsChanged || markerSideSet) {
         document.view_state = {
             selected_id: view.selected_id ?? null,
             active_tab: KINDS.includes(view.active_tab) ? view.active_tab : IMAGE_KIND,
@@ -344,6 +394,7 @@ export function serializeDocument(doc) {
             strip_open: view.strip_open === true,
         };
         if (heightsChanged) document.view_state.lane_heights = heights;
+        if (markerSideSet) document.view_state.strip_marker_side = stripMarkerSide(view);
     }
     return JSON.stringify(document);
 }
@@ -365,6 +416,13 @@ export function countRunnable(guides) {
     const counts = { [IMAGE_KIND]: 0, [AUDIO_KIND]: 0 };
     for (const guide of runnableGuides(guides)) counts[guide.kind] += 1;
     return counts;
+}
+
+// v2 runnable set: enabled, placed, and not muted by a 0.00 strength. The panel uses
+// this only for "what will run" counts; the quota checks keep counting the document,
+// which is what core/guide_timeline.parse_guides checks.
+export function countRunnableV2(guides) {
+    return countRunnable((guides || []).filter((guide) => !isMutedImage(guide)));
 }
 
 export function sortForExecution(guides) {
@@ -425,6 +483,13 @@ export function findAudioOverlaps(guides, spans = {}) {
         }
     }
     return overlaps;
+}
+
+// v2 validation: a card at 0.00 is not part of the run, so its placement cannot
+// break it. Mirrors core/guide_timeline.validate_guides_v2 so the panel never shows a
+// red problem the node would ignore.
+export function validateGuidesV2(guides, frameCount, options = {}) {
+    return validateGuides((guides || []).filter((guide) => !isMutedImage(guide)), frameCount, options);
 }
 
 export function validateGuides(guides, frameCount, { spans = {}, imageFrames = {}, fps = DEFAULT_FPS } = {}) {
@@ -820,6 +885,24 @@ export const STRIP_CHROME_H = 100;
 // the strip hides itself instead of drawing something unreadable.
 export const STRIP_LANE_MIN = { [IMAGE_KIND]: 52, [AUDIO_KIND]: 44 };
 export const STRIP_MARKER_MIN = 40;
+export const STRIP_MARKER_SIDE_DEFAULT = 100;
+export const STRIP_MARKER_SIDE_LIMITS = { min: 40, max: 320, step: 16 };
+
+export function hasStripMarkerSide(view = {}) {
+    const value = view?.strip_marker_side;
+    return value !== undefined && value !== null && String(value).trim() !== "" && Number.isFinite(Number(value));
+}
+
+export function stripMarkerSide(view = {}) {
+    const value = hasStripMarkerSide(view) ? Number(view.strip_marker_side) : STRIP_MARKER_SIDE_DEFAULT;
+    return Math.min(STRIP_MARKER_SIDE_LIMITS.max, Math.max(STRIP_MARKER_SIDE_LIMITS.min, Math.trunc(value)));
+}
+
+export function stepStripMarkerSide(current, delta) {
+    const base = Number.isFinite(Number(current)) ? Number(current) : STRIP_MARKER_SIDE_DEFAULT;
+    const next = base + (Number(delta) || 0) * STRIP_MARKER_SIDE_LIMITS.step;
+    return stripMarkerSide({ strip_marker_side: next });
+}
 
 export function stripRoom({ containerHeight, toolbarHeight, footerHeight } = {}) {
     return Math.trunc(Number(containerHeight) || 0)
@@ -829,31 +912,31 @@ export function stripRoom({ containerHeight, toolbarHeight, footerHeight } = {})
 
 // The lane heights are the editor's numbers, but the node panel owns its own height, so in
 // the strip they are a request: both lanes shrink together until they fit, and never below
-// their own floor. fits=false is the case that hides the helper view. The card side follows
-// the height that was actually applied, so the same - / + control works in both places and
-// the two never disagree about what a card looks like.
+// their own floor. fits=false is the case that hides the helper view. An automatic card
+// follows the height that was applied; an independent node card is not an input here.
 export function stripLaneHeights({ room, image, audio } = {}) {
+    const floors = { ...STRIP_LANE_MIN };
     const wanted = {
         [IMAGE_KIND]: clampLaneHeight(IMAGE_KIND, image),
         [AUDIO_KIND]: clampLaneHeight(AUDIO_KIND, audio),
     };
     const available = Math.trunc(Number(room) || 0) - (Number(STRIP_CHROME_H) || 0);
-    const floorSum = STRIP_LANE_MIN[IMAGE_KIND] + STRIP_LANE_MIN[AUDIO_KIND];
+    const floorSum = floors[IMAGE_KIND] + floors[AUDIO_KIND];
     if (available < floorSum) return { fits: false, heights: wanted };
     const total = wanted[IMAGE_KIND] + wanted[AUDIO_KIND];
     if (total <= available) return { fits: true, heights: wanted };
     const heights = {};
     for (const kind of [IMAGE_KIND, AUDIO_KIND]) {
-        heights[kind] = Math.max(STRIP_LANE_MIN[kind], Math.floor((available * wanted[kind]) / total));
+        heights[kind] = Math.max(floors[kind], Math.floor((available * wanted[kind]) / total));
     }
     // Two floored shares can still overshoot when one of them hit its floor; take the
     // overshoot back out of the lane with the most room to spare.
     let over = heights[IMAGE_KIND] + heights[AUDIO_KIND] - available;
     const order = [IMAGE_KIND, AUDIO_KIND]
-        .sort((a, b) => (heights[b] - STRIP_LANE_MIN[b]) - (heights[a] - STRIP_LANE_MIN[a]));
+        .sort((a, b) => (heights[b] - floors[b]) - (heights[a] - floors[a]));
     for (const kind of order) {
         if (over <= 0) break;
-        const take = Math.min(Math.max(0, heights[kind] - STRIP_LANE_MIN[kind]), over);
+        const take = Math.min(Math.max(0, heights[kind] - floors[kind]), over);
         heights[kind] -= take;
         over -= take;
     }
@@ -872,6 +955,19 @@ export function stripMarkerPlan({ laneWidth, count, max = MARKER_SIDE_HARD_MAX, 
         ? Math.max(min, Math.min(max, Math.floor(width / total)))
         : max;
     return { markerWidth, padding: Math.ceil(markerWidth / 2) + 4 };
+}
+
+// Once the user sets a node-only card side, neither the lane nor the number of cards
+// may silently change it, and the card never changes the lane in return. Without an
+// explicit side this keeps the legacy automatic behaviour for old workflows.
+export function stripCardPlan({ laneHeight, markerSide = null, widthBudget = 0 } = {}) {
+    const custom = hasStripMarkerSide({ strip_marker_side: markerSide });
+    if (custom) {
+        const side = stripMarkerSide({ strip_marker_side: markerSide });
+        return { side, padding: Math.ceil(side / 2) + 4 };
+    }
+    const max = Math.min(MARKER_SIDE_HARD_MAX, Math.max(0, Math.trunc(Number(laneHeight) || 0) - MARKER_INSET * 2));
+    return squareMarkerPlan({ laneHeight, widthBudget, max });
 }
 
 // A marker is a square, never a thin sliver: its side is the lane's inner height minus
@@ -1079,7 +1175,7 @@ export function resolveTimelineRange(options = {}) {
     const run = Math.trunc(Number(resolvedFrameCount) || 0);
     if (typed > 0) {
         return {
-            frames: alignFrameCount(rawFrames), source: "manual", label: "本节点的时长（秒）",
+            frames: alignFrameCount(rawFrames), source: "manual", label: "本节点的时间轴长度（秒）",
             seconds: typed, rawFrames,
             runFrames: run > 0 ? run : 0, runSource: run > 0 ? String(resolvedSource || "run") : "",
         };

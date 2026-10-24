@@ -192,13 +192,14 @@ export function mediaKey(entry) {
 
 // --- List edits: every one of them returns a new array, never mutates ---
 export function addEntries(entries, incoming, max) {
-    // New cards join the slot block, never the parked block behind it. A parked
-    // file still counts as "already here", so adding it again stays a no-op.
+    // New cards fill free slots first, then join the parked block. A parked file
+    // still counts as "already here", so adding it again stays a no-op.
     const { active, parked } = splitEntries(entries);
     const out = active;
     const seen = new Set([...out, ...parked].map(mediaKey));
     let added = 0;
     let skipped = 0;
+    let parkedAdded = 0;
     for (const item of incoming ?? []) {
         const entry = normalizeEntry(item, out.length + skipped);
         const key = mediaKey(entry);
@@ -206,15 +207,17 @@ export function addEntries(entries, incoming, max) {
             skipped++;
             continue;
         }
-        if (out.length >= max) {
-            skipped++;
-            continue;
-        }
         seen.add(key);
-        out.push(entry);
+        if (isSkipped(entry) || out.length >= max) {
+            entry.skip = true;
+            parked.push(entry);
+            parkedAdded++;
+        } else {
+            out.push(entry);
+        }
         added++;
     }
-    return { entries: [...out, ...parked], added, skipped };
+    return { entries: [...out, ...parked], added, skipped, parked: parkedAdded };
 }
 
 export function removeEntry(entries, index) {

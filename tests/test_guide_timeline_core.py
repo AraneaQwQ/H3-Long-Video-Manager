@@ -22,6 +22,12 @@ from core.guide_timeline import (  # noqa: E402
     merge_guides, parse_guides, parked_guides, ensure_labels, runnable_guides,
     seconds_to_frame, serialize_guides, sort_for_execution, summary, validate_guides,
 )
+from core.guide_timeline import (  # noqa: E402
+    STRENGTH_DEFAULT, STRENGTH_MAX, STRENGTH_MIN, STRENGTH_OFF, STRENGTH_STEP,
+    execution_digest_v2, guide_fingerprint_v2, has_reduced_strength, is_muted_image,
+    normalize_strength, parse_guides_v2, serialize_guides_v2, sort_for_execution_v2,
+    validate_guides_v2,
+)
 
 
 def image_guide(label_index=0, frame=0, name="pose.png", **extra):
@@ -389,6 +395,157 @@ class FingerprintTests(unittest.TestCase):
         from core.guide_timeline import guide_paths
         guides = parse_guides([image_guide(0, name="a.png"), image_guide(1, name="b.png")])
         self.assertEqual([entry["filename"] for entry in guide_paths(guides)], ["a.png", "b.png"])
+
+
+class StrengthTests(unittest.TestCase):
+    """v2 only: one strength per image guide.
+
+    The v1 half of these tests is the important half. A v1 document must not gain a
+    strength key, and the v1 digest must not move, or an old workflow changes behaviour
+    just because the plugin was updated.
+    """
+
+    def test_normalize_strength_rules(self):
+        self.assertEqual(normalize_strength(None), STRENGTH_DEFAULT)
+        self.assertEqual(normalize_strength(""), STRENGTH_DEFAULT)
+        self.assertEqual(normalize_strength(1.0), 1.0)
+        for value, want in [(0.75, 0.75), ("0.8", 0.8), (0.0, 0.0), ("0", 0.0),
+                            (-0.4, 0.0), (1.4, 1.0), (0.77, 0.75), (0.78, 0.8),
+                            (0.02, 0.0), (0.03, 0.05), (0.58, 0.6), (0.62, 0.6),
+                            (0.63, 0.65)]:
+            self.assertEqual(normalize_strength(value), want, "value=%r" % value)
+        for bad in (True, False, "abc", {}, []):
+            with self.assertRaises(ValueError, msg="value=%r" % (bad,)):
+                normalize_strength(bad)
+
+    def test_the_grid_is_the_one_the_panel_offers(self):
+        self.assertEqual(STRENGTH_DEFAULT, STRENGTH_MAX)
+        self.assertEqual(STRENGTH_MIN, 0.0)
+        self.assertEqual(STRENGTH_OFF, STRENGTH_MIN)
+        self.assertEqual(STRENGTH_STEP, 0.05)
+        steps = int(round((STRENGTH_MAX - STRENGTH_MIN) / STRENGTH_STEP)) + 1
+        for index in range(steps):
+            value = round(STRENGTH_MIN + index * STRENGTH_STEP, 2)
+            self.assertEqual(normalize_strength(value), value)
+
+    def test_v1_never_sees_a_strength(self):
+        raw = [image_guide(0, frame=0, strength=0.7), audio_guide(frame=24, strength=0.7)]
+        parsed = parse_guides(raw)
+        for guide in parsed:
+            self.assertNotIn("strength", guide)
+        self.assertNotIn("strength", serialize_guides(parsed))
+        # The v1 digest and cache key must not move when a stray key is in the widget.
+        self.assertEqual(execution_digest(parsed), execution_digest(parse_guides(raw)))
+        self.assertEqual(guide_fingerprint(parsed, {}), guide_fingerprint(
+            parse_guides([image_guide(0, frame=0), audio_guide(frame=24)]), {}))
+
+    def test_the_v1_digest_bytes_are_frozen(self):
+        """The v1 digest format predates v2 and must not move, ever.
+
+        These hashes were taken from the plugin before any strength work existed. If
+        the v1 hash moves, an old workflow re-encodes after a plugin update.
+        """
+        entries = [image_guide(0, frame=24, name="pose.png"),
+                   audio_guide(gid="aud0", frame=48, start=1000, end=96000, name="line.wav")]
+        parsed = parse_guides(entries)
+        self.assertEqual(
+            execution_digest(parsed),
+            "3b00e7d2ffa9427667f166d625e752b321b2ad7269dc5c764762e34c6a0dfb33")
+        # The v2 call is the only one that adds the strength segment, so the two
+        # hashes for the same document must never be equal.
+        self.assertNotEqual(execution_digest(parsed, True), execution_digest(parsed))
+
+    def test_v2_defaults_to_full_strength(self):
+        parsed = parse_guides_v2([image_guide(0, frame=0), image_guide(1, frame=24, strength=0.8)])
+        self.assertEqual(parsed[0]["strength"], 1.0)
+        self.assertEqual(parsed[1]["strength"], 0.8)
+        # A v2 document written before the field existed still runs, at full strength.
+        again = parse_guides_v2(json.loads(serialize_guides([image_guide(0, frame=0)])))
+        self.assertEqual(again[0]["strength"], STRENGTH_DEFAULT)
+
+    def test_v2_audio_has_no_strength_field(self):
+        parsed = parse_guides_v2([audio_guide(frame=0, strength=0.6)])
+        self.assertNotIn("strength", parsed[0])
+        self.assertNotIn("strength", serialize_guides_v2(parsed))
+
+    def test_v2_round_trip_keeps_the_strength(self):
+        parsed = parse_guides_v2([image_guide(0, frame=0, strength=0.65),
+                                  image_guide(1, frame=24, strength=0.95)])
+        text = serialize_guides_v2(parsed)
+        self.assertEqual([g["strength"] for g in parse_guides_v2(json.loads(text))], [0.65, 0.95])
+        self.assertEqual(json.loads(text)["schema_version"], SCHEMA_VERSION)
+
+    def test_the_v2_digest_and_cache_key_follow_the_strength(self):
+        base = parse_guides_v2([image_guide(0, frame=0)])
+        lower = parse_guides_v2([image_guide(0, frame=0, strength=0.7)])
+        self.assertNotEqual(execution_digest_v2(base), execution_digest_v2(lower))
+        self.assertNotEqual(guide_fingerprint_v2(base, {}), guide_fingerprint_v2(lower, {}))
+        self.assertEqual(len(guide_fingerprint_v2(lower, {})), 64)
+
+    def test_view_state_never_changes_the_v2_key(self):
+        entries = [image_guide(0, frame=0, strength=0.7)]
+        first = guide_fingerprint_v2(parse_guides_v2(entries), {})
+        document = {"schema_version": SCHEMA_VERSION, "fps": 24, "guides": entries,
+                    "view_state": {"zoom": 3, "scroll": 400, "selected_id": "img0"}}
+        self.assertEqual(first, guide_fingerprint_v2(parse_guides_v2(document), {}))
+
+    def test_zero_strength_keeps_the_card_and_drops_it_from_the_run(self):
+        """0.00 is a value the document keeps, not a delete button.
+
+        The card, its frame position and its strength all survive a round trip; what
+        changes is only the run: the card is not in the execution order, and the other
+        cards keep their exact v1 order.
+        """
+        parsed = parse_guides_v2([
+            image_guide(0, frame=0, name="soft.png", strength=0.0),
+            image_guide(1, frame=48, name="mid.png"),
+            audio_guide(frame=24),
+        ])
+        self.assertEqual(parsed[0]["strength"], 0.0)
+        self.assertTrue(is_muted_image(parsed[0]))
+        self.assertFalse(is_muted_image(parsed[1]))
+        self.assertFalse(is_muted_image(parsed[2]))
+        again = parse_guides_v2(json.loads(serialize_guides_v2(parsed)))
+        self.assertEqual([g["strength"] for g in again if g["kind"] == IMAGE_KIND], [0.0, 1.0])
+        self.assertNotIn("strength", [g for g in again if g["kind"] == AUDIO_KIND][0])
+        # The v1 order still contains it; only the v2 order leaves it out.
+        self.assertEqual([g["asset"]["filename"] for g in sort_for_execution(parsed)],
+                         ["soft.png", "line.wav", "mid.png"])
+        self.assertEqual([g["asset"]["filename"] for g in sort_for_execution_v2(parsed)],
+                         ["line.wav", "mid.png"])
+
+    def test_a_muted_card_does_not_ask_for_the_adaptation(self):
+        self.assertFalse(has_reduced_strength(parse_guides_v2(
+            [image_guide(0, frame=0, strength=0.0), image_guide(1, frame=24, strength=0.0)])))
+        self.assertTrue(has_reduced_strength(parse_guides_v2(
+            [image_guide(0, frame=0, strength=0.0), image_guide(1, frame=24, strength=0.05)])))
+
+    def test_a_muted_card_cannot_break_the_run(self):
+        """Off-the-end and shared-frame checks skip cards that never encode."""
+        entries = [image_guide(0, frame=9999, name="soft.png", strength=0.0),
+                   image_guide(1, frame=9999, name="mid.png", strength=0.0),
+                   image_guide(2, frame=24, name="hard.png")]
+        v1 = validate_guides(parse_guides(entries), 124)
+        self.assertTrue(any("超出视频范围" in problem for problem in v1))
+        self.assertEqual(validate_guides_v2(parse_guides_v2(entries), 124), [])
+
+    def test_zero_strength_is_part_of_the_v2_cache_key(self):
+        """0.00 -> 0.05 and 0.00 -> 1.00 both re-run; that is the whole point."""
+        off = parse_guides_v2([image_guide(0, frame=0, strength=0.0)])
+        lowest = parse_guides_v2([image_guide(0, frame=0, strength=0.05)])
+        full = parse_guides_v2([image_guide(0, frame=0)])
+        keys = {execution_digest_v2(key) for key in (off, lowest, full)}
+        keys |= {guide_fingerprint_v2(key, {}) for key in (off, lowest, full)}
+        self.assertEqual(len(keys), 6)
+
+    def test_only_a_running_card_can_lower_the_strength(self):
+        self.assertFalse(has_reduced_strength(parse_guides_v2([image_guide(0, frame=0)])))
+        self.assertFalse(has_reduced_strength(parse_guides_v2(
+            [image_guide(0, frame=None, strength=0.6)])))
+        self.assertFalse(has_reduced_strength(parse_guides_v2(
+            [image_guide(0, frame=0, enabled=False, strength=0.6)])))
+        self.assertFalse(has_reduced_strength(parse_guides_v2([audio_guide(frame=0, strength=0.6)])))
+        self.assertTrue(has_reduced_strength(parse_guides_v2([image_guide(0, frame=0, strength=0.95)])))
 
 
 if __name__ == "__main__":

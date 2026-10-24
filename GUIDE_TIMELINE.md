@@ -88,11 +88,53 @@ execute(cls, positive, latent, frame_idx, vae=None, audio_vae=None, image=None, 
   `editorSurface` 与节点内的 `nodeSurface`，后者按宽度铺满、marker 与音频条同样可拖）、`web/guide_timeline.css`。
 - 自动化：`tests/test_guide_timeline_core.py` 37 项、`tests/test_guide_nodes.py` 29 项（含与显式串联原生节点的张量等价比较），
   全套 `Ran 529 tests ... OK`；前端纯函数 `work/guide_state.test.mjs` 89 项全绿。
-- 轨道与卡片的大小只有一套控制：`view_state.lane_heights`。卡片是正方形，边长 = **实际生效**的轨道高度 − `MARKER_INSET*2`，
-  所以「轨道高度」和「卡片大小」是同一个数字，两处（浮层编辑器的轨道头、节点内时间轴的头部）改的是同一份 view state。
+- 弹窗的轨道与卡片大小共用 `view_state.lane_heights`。卡片是正方形，边长 = **实际生效**的轨道高度 − `MARKER_INSET*2`。
+  节点内时间轴另有可选的 `view_state.strip_marker_side`：用户点「卡片 − / ＋」后才写入，范围 40–320px、步进 16px；
+  此后卡片不再随轨道高度、节点宽度或卡片数量改变，只随这个控件改变。未设置时仍走旧的自动尺寸，旧工作流显示不变。
   节点面板自己拥有高度，所以那里的高度是一个请求：`stripLaneHeights` 会把两条轨道按比例一起缩到面板放得下（各自不低于
   `STRIP_LANE_MIN`），读数显示实际生效值并在被夹住时变琥珀色；完全放不下时整条时间轴自己隐藏，绝不写 `node.size`。
-  多条卡片时真正的限制是 fit-to-width 的宽度预算（`stripMarkerPlan`），不是任何固定尺寸。
+  自动模式下多条卡片的限制是 fit-to-width 的宽度预算（`stripMarkerPlan`）；独立尺寸模式由 `stripCardPlan` 固定边长。
+  `stripLaneHeights` 不读取卡片边长，所以两个控件双向独立。大卡片可超出图片轨层叠显示，但不会撑高轨道；
+  最外层面板仍按节点真实边界裁切。
 - 未验证（必须用户实测）：真实 ComfyUI 里的面板交互与计划书 D 章要求的四种截图（完整布局 / 选中编辑音频 / 冲突定位 / 窄宽度），
   以及节点内那条时间轴（把节点拉高才出现，默认 112px 节点高度下不显示，这是设计而不是 bug）。
   浏览器端没有 DOM 测试环境，所以「拖拽、试听、缩放、保存重开」只能算已实现、未实测。
+## 7. v2：逐张图片引导强度（2026-10-23）
+
+- 两个节点：`H3 Guide Timeline`（稳定版，未改动）与 `H3 Guide Timeline v2`（`H3GuideTimelineV2`，
+  继承旧类，只改 `define_schema()` 里的 node_id / display_name / description / tooltip 和强度路径）。
+  旧工作流不会自动迁移，两个节点可以同时存在。
+- 数据：v2 的图片条目多一个 `strength`（0.00-1.00，步进 0.05，缺字段按 1.00 读）。三档语义：`1.00` = 原生路径；
+  `0.05-0.95` = 逐图强度；`0.00` = 卡片、时间位置和强度值都留在文档里，但这张图不 VAE 编码、不进 conditioning、不新增 keyframe。
+  两个 VAE 端口和接线方式不变，可以一直连着：执行时按实际生效的素材决定调用哪个，全是 `0.00` 图片时不要求连接视频 VAE，
+  没有任何生效 Guide 时 positive 原样透传。`schema_version` 仍是 1，
+  `strength` 键本身就是 v2 文档的标记；v1 的解析、序列化、执行摘要与缓存指纹逐字节不变
+  （`tests/test_guide_timeline_core.py` 里有一条硬编码哈希守卫）。共用纯函数用版本明确的包装：
+  `parse_guides_v2` / `serialize_guides_v2` / `execution_digest_v2` / `guide_fingerprint_v2` / `has_reduced_strength`。
+- 强度为什么不能只调全局值：原生 H3 只有一个全局 `visual_cond_noise_aug`，串联几个全局设置得不到逐图强度，
+  把 latent 直接乘以强度也不是同一件事。原生 `_cond_video_rows` 对每个视觉条件都用
+  `aug * r + (1 - aug) * noise`（`aug` 默认 `VISUAL_COND_TIMESTEP = 0.999`），并且 `_forward` 给所有视觉条件行
+  打同一个时间标签。机制参考 ComfyUI-H3Studio 的 `h3_studio.py` / `extra_conds_patch.py` / `h3_row_aug_patch.py`，
+  只借图片 Guide 需要的最小部分。
+- 生效路径（`comfyui/h3_strength_patch.py`，不改 ComfyUI 内核文件）：
+  1. 节点在每次调用原生 `MiniMaxH3AddGuide.execute` 前记下已有 keyframe 的身份，调用后按「新增的那一个」写入
+     `noise_aug = round(strength * VISUAL_COND_TIMESTEP, 6)`，并用同一系数把该 keyframe 的 latent 向噪声混合
+     （种子按锚定帧 `frame_index` 固定，可复现；用槽位序号会让「把某张卡改成 0.00」连带改变别的卡的噪声）。
+     卡片序号从不被当成 keyframe 序号：输入 `positive` 可能已有首尾帧或别的 Guide，
+     普通参考图也不是 keyframe。若这次新增的不是恰好一个，直接中文报错，不猜。
+  2. 类级改写 `MiniMaxH3Model._cond_video_rows`（带自己强度的条件不再二次加噪）与 `_forward`（按块生成时间标签，
+     使加噪强度与时间标签始终一致）。安装前比对 `_cond_video_rows` 源码与 `_forward` 的两处锚点，装完跑一次
+     自检（每条 packed segment 一个标签、标签都能索引到调制表；没有任何强度时标签必须与今天完全一致）。
+  3. 只有本次 v2 执行里存在 `0.05-0.95` 的图片才安装补丁；`1.00` 完全不碰模型，`0.00` 连编码都不做，也不需要补丁。
+     锚点不符、编译失败、
+     自检不过，或检测到别的插件（`_guide_row_aug`，ComfyUI-H3Studio）已经改写过同一批方法 → 不安装，
+     v2 低强度运行明确报错；旧节点与 v2 的 1.00 路径不受影响。补丁是进程级的，所以没有 v2 参数的普通 H3
+     工作流必须保持原样——这一条由自检和 `tests/test_h3_strength_patch.py` 守。
+- 自动化：`tests/test_h3_strength_patch.py` 21 项、`tests/test_guide_nodes.py` 51 项（两个节点 ID 与接口、
+  多图不同强度且输入已有 keyframe 时对应正确、全 1.00 与旧节点张量等价、`0.00` 不解码不编码也不新增 keyframe、
+  只有 `0.00` 时不接视频 VAE 也照常透传、适配被拒绝时报错而旧节点照常）、
+  `tests/test_guide_timeline_core.py` 54 项；前端 `work/guide_state.test.mjs` 100 项（取整与 Python 一致）。
+  全套 23 个模块 589 项，只有 `tests/test_ref_media.py:196` 那条「写根目录外应被拒绝」的探针在本沙箱里报
+  PermissionError（环境限制，不是实现问题）。
+- 未验证（必须用户实测）：0.80 / 0.60 / 0.00 对成片画面的实际影响、卡片上强度徽标与详情编辑的手感；
+  本机没有安装 ComfyUI-H3Studio，所以「与它共存」只有代码层的拒绝路径，没有实测。

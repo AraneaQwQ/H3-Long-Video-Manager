@@ -267,6 +267,42 @@ function installRefPanel(node, spec) {
     savePresetBtn.textContent = "📤 存为项目预设";
     savePresetBtn.title = "把当前卡片保存为当前项目的预设，含排列顺序与跳过状态；只保存路径，不复制文件";
 
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "h3lvm-refresh-btn h3ref-clear";
+    clearBtn.textContent = "🗑 全部清空";
+    clearBtn.title = "清空当前节点的全部卡片；不删除原文件，也不删除项目预设";
+    let clearArmed = false;
+    let clearTimer = 0;
+
+    function disarmClear() {
+        clearArmed = false;
+        window.clearTimeout(clearTimer);
+        clearTimer = 0;
+        clearBtn.textContent = "🗑 全部清空";
+        clearBtn.title = "清空当前节点的全部卡片；不删除原文件，也不删除项目预设";
+        clearBtn.classList.remove("h3ref-clear-confirm");
+    }
+
+    clearBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (!entries.length) return;
+        if (!clearArmed) {
+            clearArmed = true;
+            clearBtn.textContent = "确认清空？";
+            clearBtn.title = "再次点击确认清空；原文件和项目预设不会删除";
+            clearBtn.classList.add("h3ref-clear-confirm");
+            clearTimer = window.setTimeout(disarmClear, 4000);
+            return;
+        }
+        const count = entries.length;
+        disarmClear();
+        entries = [];
+        commit();
+        render();
+        updateStatus(`已清空 ${count} 张卡片；原文件与项目预设未删除`);
+    });
+    signal.addEventListener("abort", () => window.clearTimeout(clearTimer), { once: true });
+
     loadPresetBtn.addEventListener("click", (event) => {
         event.stopPropagation();
         void loadPreset();
@@ -280,7 +316,7 @@ function installRefPanel(node, spec) {
     addHint.className = "h3ref-hint";
     addHint.textContent = spec.dropHint;
 
-    addRow.append(addBtn, loadPresetBtn, savePresetBtn, restoreBtn, fileInput, addHint);
+    addRow.append(addBtn, loadPresetBtn, savePresetBtn, restoreBtn, clearBtn, fileInput, addHint);
     container.appendChild(addRow);
 
     // --- Card grid ---
@@ -325,7 +361,7 @@ function installRefPanel(node, spec) {
 
     function updateStatus(extra = "") {
         const { active, parked } = splitEntries(entries);
-        let base = slotRangeText(spec.kind, active.length, spec.max);
+        let base = `素材 ${entries.length} 张 · ${slotRangeText(spec.kind, active.length, spec.max)}`;
         if (parked.length) base += ` · 已跳过 ${parked.length}（不占槽位）`;
         // Saying what the project already holds is what makes 载入 predictable: the
         // button is disabled when the preset is empty, and the count is visible.
@@ -341,6 +377,8 @@ function installRefPanel(node, spec) {
             }
         }
         loadPresetBtn.disabled = presetEntries().length === 0;
+        clearBtn.disabled = entries.length === 0;
+        if (!entries.length && clearArmed) disarmClear();
         statusText.textContent = extra ? `${base} · ${extra}` : base;
     }
 
@@ -898,7 +936,8 @@ function installRefPanel(node, spec) {
         commit();
         render();
         const notes = [];
-        if (result.skipped) notes.push(`跳过 ${result.skipped} 个（重复或超出 ${spec.max} 个槽位）`);
+        if (result.parked) notes.push(`${result.parked} 张已加入后排（启用槽位已满 ${spec.max}）`);
+        if (result.skipped) notes.push(`跳过 ${result.skipped} 个重复文件`);
         if (wrong) notes.push(`忽略 ${wrong} 个非${spec.kind === "image" ? "图片" : "音频"}文件`);
         if (failed.length) notes.push(`上传失败 ${failed.length} 个`);
         if (notes.length) updateStatus(notes.join(" · "));

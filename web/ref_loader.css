@@ -262,6 +262,18 @@
     flex: 0 0 auto;
 }
 
+.h3ref-clear {
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.h3ref-clear-confirm,
+.h3ref-clear-confirm:hover {
+    border-color: #f87171;
+    background: #451a1a;
+    color: #fecaca;
+}
+
 /* --- Same interaction feedback as the shared sheet --- */
 .h3ref-act:active,
 .h3ref-play:active { transform: scale(.97); }

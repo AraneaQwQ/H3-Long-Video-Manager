@@ -566,6 +566,43 @@ overflow-x: hidden;
 
 .h3guide-play:hover { border-color: var(--h3g-accent); background: var(--h3g-hover); }
 
+/* v2 only: the per-image guide strength shown on the image card. It sits in the same
+   corner-badge slot the deck already uses, so it reads like the rest of the cards rather
+   than a new kind of widget. 1.00 is the native path, so it is drawn muted; a lower value
+   is the only case where the number changes what the model sees, so it gets the accent.
+   pointer-events: none - a badge must never swallow a click or start a drag. */
+.h3guide-strength {
+    position: absolute;
+    z-index: 2;
+    right: 4px;
+    bottom: 4px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(17, 17, 17, .8);
+    border: 1px solid var(--h3g-accent);
+    color: var(--h3g-info);
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1.4;
+    pointer-events: none;
+}
+
+.h3guide-strength-native {
+    border-color: var(--h3g-input-line);
+    color: var(--h3g-muted);
+}
+
+/* 0.00 is not an error and not a disabled card: the card stays where it is, the node
+   simply does not encode it. Amber is the "not in this run" colour the panel already
+   uses for pending material, so it reads as a state, not as a failure. */
+.h3guide-strength-off {
+    border-color: var(--h3g-pending);
+    color: var(--h3g-pending);
+}
+
+.h3lvm-card.h3guide-muted { border-color: var(--h3g-pending); }
+.h3lvm-card.h3guide-muted .h3lvm-thumb-wrap { filter: grayscale(.45) brightness(.8); }
+
 /* --- Selected item detail ---
    Labelled rows in a grid that wraps. One long flex line is how IMG-02 got split in half and
    a button got cut to 「停…」. The card keeps the two time fields; this area holds the full
@@ -583,6 +620,16 @@ overflow-x: hidden;
 .h3guide-detail-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; }
 .h3guide-detail-id { font-size: 13px; white-space: nowrap; }
 .h3guide-note { font-size: 11px; color: var(--h3g-muted); overflow-wrap: anywhere; }
+
+.h3guide-detail-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+    flex: 1 1 480px;
+    gap: 8px;
+    min-width: min(100%, 304px);
+}
+
+.h3guide-detail-actions .h3guide-act { min-width: 0; }
 
 .h3guide-fields {
     display: grid;
@@ -657,6 +704,15 @@ overflow-x: hidden;
 
 .h3guide-strip.h3guide-strip-off { display: none; }
 
+.h3guide-strip-body {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.h3guide-strip-body.h3guide-strip-body-off { display: none; }
+
 .h3guide-strip-head {
     display: flex;
     align-items: center;
@@ -674,14 +730,21 @@ overflow-x: hidden;
 /* The lane height control inside the node: the same quiet button as the editor's
    secondary actions, and the same monospace readout. Amber means the panel clamped it. */
 .h3guide-strip-head .h3guide-secondary { padding: 1px 6px; }
-.h3guide-strip-head .h3guide-lane-px { min-width: 38px; }
+.h3guide-strip-head .h3guide-lane-px { min-width: 38px; text-align: center; }
+.h3guide-strip-head .h3guide-card-px { flex: 0 0 52px; width: 52px; min-width: 52px; }
 .h3guide-lane-px-clamped { color: #fbbf24; }
 
 /* The ruler row keeps its own height; the two lane rows are exactly as tall as the lanes
-   they contain. The renderer sizes every card from the lane height, so this is the control
-   that makes a 9:16 frame readable without dragging the whole panel. */
+   they contain. Automatic cards follow that height; an independent node card does not. */
 .h3guide-strip-row { flex: 0 0 auto; margin-bottom: 6px; }
 .h3guide-strip-row-track { flex: 0 0 auto; }
+
+/* An independently sized node card does not resize its lane. A large card may extend
+   past the image track, so that row paints above the audio row instead of clipping the
+   card back to the lane height. The outer panel still clips at the node's real bounds. */
+.h3guide-strip-custom-card .h3guide-strip-row-track { position: relative; z-index: 2; }
+.h3guide-strip-custom-card .h3guide-strip-row-image { z-index: 3; }
+.h3guide-strip-custom-card .h3guide-track { overflow: visible; }
 
 .h3guide-strip-row .h3guide-lane-label {
     flex: 0 0 40px;

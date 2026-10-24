@@ -34,10 +34,12 @@ from comfy_api.latest import io
 
 from ..core.guide_timeline import (
     AUDIO_KIND, DEFAULT_FPS, IMAGE_KIND, MAX_GUIDE_AUDIOS, MAX_GUIDE_IMAGES,
-    MAX_GUIDE_TOTAL, SCHEMA_VERSION, audio_span_frames, count_runnable,
-    execution_digest, frame_count_from_latent_t, guide_fingerprint,
-    guide_frames_for, parse_guides, serialize_guides, sort_for_execution, summary,
-    validate_guides,
+    MAX_GUIDE_TOTAL, SCHEMA_VERSION, STRENGTH_MAX, audio_span_frames, count_runnable,
+    execution_digest, execution_digest_v2, frame_count_from_latent_t,
+    guide_fingerprint, guide_fingerprint_v2, guide_frames_for, has_reduced_strength,
+    is_muted_image, normalize_strength, parse_guides, parse_guides_v2,
+    serialize_guides, sort_for_execution, sort_for_execution_v2, summary,
+    validate_guides, validate_guides_v2,
 )
 from ..core.ref_media import resolve_media_path
 from ..core.ref_size import MAX_SOURCE_PIXELS
@@ -45,10 +47,16 @@ from ..core.ref_size import MAX_SOURCE_PIXELS
 # loader nodes already resolved both, and a second implementation here could only
 # drift away from what the panels upload.
 from .ref_nodes import _decode_audio_file, _media_roots
+# v2 only. Importing this module never touches the model: install() does, and only
+# when a v2 run actually asks for less than full strength.
+from .h3_strength_patch import apply_image_strength, install_reason, install as install_strength_patch
 
 logger = logging.getLogger(__name__)
 
 GUIDE_NODE_ID = "H3 Guide Timeline"
+# v2 is a second node, not a rename: the stable id above keeps its document format
+# and its execution, and old workflows keep pointing at it.
+GUIDE_NODE_V2_ID = "H3 Guide Timeline v2"
 
 # The empty document, not "[]": the panel and the node always see the same shape,
 # and a saved workflow carries the version it was written with.
@@ -189,7 +197,42 @@ def _decode_audio_window(path: str, guide: dict) -> dict:
 
 
 
-def _ui_document(guides: list, frame_count: int) -> dict:
+def _keyframes_of(conditioning) -> list:
+    try:
+        return list(conditioning[0][1].get("minimax_keyframes") or [])
+    except (AttributeError, IndexError, TypeError):
+        return []
+
+
+def _keyframe_ids(conditioning) -> set:
+    """Identity of the keyframes a conditioning already carries.
+
+    The native node copies the list and appends one dict, so "what is new after this
+    call" is exactly the keyframe this node just created. A card number is therefore
+    never treated as a keyframe number: the input positive may already hold first and
+    last frames or another node's guides, and ordinary reference images are not
+    keyframes at all.
+    """
+    return {id(keyframe) for keyframe in _keyframes_of(conditioning)}
+
+
+def _mark_new_keyframe_strength(conditioning, before: set, strength: float,
+                                slot: int, guide: dict) -> None:
+    """Attach one card's strength to the keyframe its own encode just produced.
+
+    "slot" is the frame the card anchors, not its position in the run: two running
+    image cards can never share a frame, and a frame-keyed noise role means muting or
+    reordering one card cannot change another card's guide.
+    """
+    created = [k for k in _keyframes_of(conditioning) if id(k) not in before]
+    if len(created) != 1:
+        raise ValueError(
+            "「%s」的引导强度无法定位：原生 Add Guide 这次新增了 %d 个 keyframe，"
+            "本节点只在恰好新增一个时写入强度，不会猜。" % (guide["label"], len(created)))
+    apply_image_strength(created[0], strength, slot)
+
+
+def _ui_document(guides: list, frame_count: int, with_strength: bool = False) -> dict:
     """The one thing the node tells the panel back: the real total frames.
 
     The ruler has to be drawn from the latent the workflow actually carries, and the
@@ -201,13 +244,42 @@ def _ui_document(guides: list, frame_count: int) -> dict:
         "schema_version": SCHEMA_VERSION,
         "fps": DEFAULT_FPS,
         "frame_count": int(frame_count or 0),
-        "digest": execution_digest(guides),
+        "digest": execution_digest_v2(guides) if with_strength else execution_digest(guides),
         "summary": summary(guides, frame_count),
     }]}
 
 
 class H3GuideTimeline(io.ComfyNode):
     """Image and audio guides on a timeline; one node instead of a chain of Add Guide."""
+
+    # The one switch between the stable node and v2. Everything else is shared code,
+    # so the stable node cannot drift while v2 grows a feature.
+    STRENGTH_ENABLED = False
+    LOG_TAG = GUIDE_NODE_ID
+
+    @classmethod
+    def _parse(cls, guides) -> list:
+        """v2 documents carry a strength; v1 documents never do."""
+        return parse_guides_v2(guides) if cls.STRENGTH_ENABLED else parse_guides(guides)
+
+    @classmethod
+    def _ordered(cls, parsed: list) -> list:
+        """The cards that will actually be encoded, in run order.
+
+        v2 drops the 0.00 image cards here and nowhere else, so the header pass, the
+        VAE requirement, the validation and the encode loop all agree about what runs.
+        The cards themselves stay in the document, the digest and the cache key, which
+        is what makes 0.00 -> 0.05 re-run instead of replaying a cached pass-through.
+        """
+        if cls.STRENGTH_ENABLED:
+            return sort_for_execution_v2(parsed)
+        return sort_for_execution(parsed)
+
+    @classmethod
+    def _validate(cls, parsed: list, frame_count: int, spans: dict, image_frames: dict) -> list:
+        if cls.STRENGTH_ENABLED:
+            return validate_guides_v2(parsed, frame_count, spans=spans, image_frames=image_frames)
+        return validate_guides(parsed, frame_count, spans=spans, image_frames=image_frames)
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -232,7 +304,7 @@ class H3GuideTimeline(io.ComfyNode):
                     max=150.0,
                     step=0.1,
                     tooltip=(
-                        "只给编辑器的时间尺用：填目标时长（秒），面板按 秒 × 24fps 换算成帧并向上对齐到"
+                        "只给编辑器的时间尺用：填目标时间轴长度（秒），面板按 秒 × 24fps 换算成帧并向上对齐到"
                         " H3 的 17n+5（10 秒 → 240 → 243 帧）。0 或留空表示不设置。运行后仍以 latent 的"
                         "实际帧数为准；这个值不参与执行，也不改变输出。"),
                 ),
@@ -255,7 +327,7 @@ class H3GuideTimeline(io.ComfyNode):
     @classmethod
     def validate_inputs(cls, guides, length_seconds=0.0):
         try:
-            parse_guides(guides)
+            cls._parse(guides)
         except ValueError as exc:
             return str(exc)
         return True
@@ -269,24 +341,37 @@ class H3GuideTimeline(io.ComfyNode):
         thirty guides.
         """
         try:
-            return guide_fingerprint(parse_guides(guides), _media_roots())
+            digest = guide_fingerprint_v2 if cls.STRENGTH_ENABLED else guide_fingerprint
+            return digest(cls._parse(guides), _media_roots())
         except Exception:
             return repr(guides)
 
     @classmethod
     def execute(cls, positive, latent, guides, length_seconds=0.0, vae=None, audio_vae=None) -> io.NodeOutput:
-        parsed = parse_guides(guides)
-        ordered = sort_for_execution(parsed)
+        return cls._run(positive, latent, guides, length_seconds=length_seconds,
+                        vae=vae, audio_vae=audio_vae)
+
+    @classmethod
+    def _run(cls, positive, latent, guides, length_seconds=0.0, vae=None, audio_vae=None) -> io.NodeOutput:
+        parsed = cls._parse(guides)
+        ordered = cls._ordered(parsed)
         if not ordered:
-            print("[H3 Guide Timeline] 没有启用且已放置的 Guide，positive 原样透传")
-            return io.NodeOutput(positive, ui=_ui_document(parsed, 0))
+            muted = [guide for guide in parsed if is_muted_image(guide)]
+            if muted:
+                print("[%s] %d 张图片 Guide 的引导强度是 0.00，本次没有要编码的素材，positive 原样透传"
+                      % (cls.LOG_TAG, len(muted)))
+            else:
+                print("[%s] 没有启用且已放置的 Guide，positive 原样透传" % cls.LOG_TAG)
+            return io.NodeOutput(positive, ui=_ui_document(parsed, 0, cls.STRENGTH_ENABLED))
 
         native, table = _native_add_guide()
         frame_count, why = _latent_frame_count(latent, table)
         if not frame_count:
             raise ValueError(why)
 
-        counts = count_runnable(parsed)
+        # Counted from what actually runs, not from the document: a 0.00 image card is
+        # never encoded, so it must not be the reason the node asks for a video VAE.
+        counts = count_runnable(ordered)
         roots = _media_roots()
         problems = []
         if counts[IMAGE_KIND] and vae is None:
@@ -321,13 +406,22 @@ class H3GuideTimeline(io.ComfyNode):
             except (ValueError, OSError, RuntimeError) as exc:
                 problems.append("%s 的素材不可用：%s" % (guide["label"], exc))
 
-        problems.extend(validate_guides(parsed, frame_count, spans=spans, image_frames=image_frames))
+        problems.extend(cls._validate(parsed, frame_count, spans, image_frames))
         if problems:
             raise ValueError("Guide 校验未通过：\n  - " + "\n  - ".join(problems))
 
         # Pass 2 - one media at a time: decode, hand it to the native node, drop it.
         # The conditioning is what grows across the loop, never the media, so thirty
         # guides cost one image and one waveform at a time.
+        # v2 only: a card between 0.05 and 0.95 needs the model adaptation, and it has
+        # to be there before the first encode. Falling back to the global strength
+        # silently would run a different prompt than the one the user built. A 0.00
+        # card is not in the ordered list at all, so it never asks for the adaptation.
+        per_image = cls.STRENGTH_ENABLED and has_reduced_strength(ordered)
+        if per_image and not install_strength_patch():
+            raise ValueError("%s 需要逐图引导强度，但它无法在当前 ComfyUI 上启用：%s"
+                             % (cls.LOG_TAG, install_reason()))
+
         conditioned = positive
         for guide in ordered:
             image = audio = None
@@ -337,19 +431,62 @@ class H3GuideTimeline(io.ComfyNode):
                 audio = audios.pop(guide["id"], None)
                 if audio is None:
                     audio = _decode_audio_window(resolve_media_path(roots, guide["asset"]), guide)
+            before = _keyframe_ids(conditioned) if cls.STRENGTH_ENABLED else None
             result = native.execute(
                 conditioned, latent, int(guide["frame_index"]),
                 vae=vae, audio_vae=audio_vae, image=image, audio=audio)
             conditioned = result[0] if isinstance(result, io.NodeOutput) else result
+            if cls.STRENGTH_ENABLED and guide["kind"] == IMAGE_KIND:
+                strength = normalize_strength(guide.get("strength"))
+                if strength < STRENGTH_MAX:
+                    _mark_new_keyframe_strength(conditioned, before, strength,
+                                                int(guide["frame_index"]), guide)
             del image, audio
 
-        keyframes = conditioned[0][1].get("minimax_keyframes", []) if conditioned else []
-        print("[H3 Guide Timeline] %d guides anchored (%d image / %d audio) on a %d frame "
-              "video (%.3f s @ %d FPS); conditioning now carries %d keyframes"
-              % (len(ordered), counts[IMAGE_KIND], counts[AUDIO_KIND], frame_count,
-                 frame_count / float(DEFAULT_FPS), DEFAULT_FPS, len(keyframes)))
-        return io.NodeOutput(conditioned, ui=_ui_document(parsed, frame_count))
+        keyframes = _keyframes_of(conditioned)
+        print("[%s] %d guides anchored (%d image / %d audio) on a %d frame video "
+              "(%.3f s @ %d FPS); conditioning now carries %d keyframes%s"
+              % (cls.LOG_TAG, len(ordered), counts[IMAGE_KIND], counts[AUDIO_KIND],
+                 frame_count, frame_count / float(DEFAULT_FPS), DEFAULT_FPS,
+                 len(keyframes), " (per-image strength)" if per_image else ""))
+        return io.NodeOutput(conditioned,
+                             ui=_ui_document(parsed, frame_count, cls.STRENGTH_ENABLED))
 
 
 
-NODE_LIST = [H3GuideTimeline]
+class H3GuideTimelineV2(H3GuideTimeline):
+    """The stable timeline plus a per-image guide strength.
+
+    A second node, not a rename. It reuses the media reading, the validation, the
+    ordering and the native Add Guide chain above, and differs only in the schema
+    strings and the strength path - so the stable node and its saved workflows stay
+    exactly as they are.
+    """
+
+    STRENGTH_ENABLED = True
+    LOG_TAG = GUIDE_NODE_V2_ID
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        schema = super().define_schema()
+        schema.node_id = GUIDE_NODE_V2_ID
+        schema.display_name = "H3 Guide 时间轴 v2"
+        schema.description = (
+            "与「H3 Guide 时间轴」同等的图片/音频时间轴，另外可以为每张图片 Guide 单独设置引导强度："
+            "1.00 与原生 Add Guide 一致；0.05-0.95 数值越低，这张图对画面的约束越弱，动作与场景衔接的自由度越大；"
+            "0.00 表示这张图片不加入 conditioning：卡片、插入位置和强度值都保留，但本次不解码、不编码。"
+            "强度只作用于本节点新建的图片条件：首尾帧、上游已有的 Guide、普通参考图和全部音频条件都保持原生参数。"
+            "强度范围 0.00-1.00、步进 0.05，音频没有强度项。两个 VAE 端口和接线方式与旧节点一致，可以一直连着，"
+            "执行时按实际生效的素材决定是否调用：强度 0.00 的图片不需要视频 VAE。"
+            "当前 ComfyUI 无法启用逐图强度时本节点会明确报错，不会静默退回全局强度。")
+        for item in schema.inputs:
+            if getattr(item, "id", None) == "guides":
+                item.tooltip = (
+                    "Guide 列表的 JSON（由「打开 Guide 编辑器」的面板读写，也可以直接编辑）。格式与"
+                    "「H3 Guide 时间轴」一致，只是图片条目多一个 strength（0.00-1.00，缺省 1.00，"
+                    "缺字段按 1.00 读取；0.00 表示这张图片不加入 conditioning）。strength 计入执行指纹："
+                    "改强度会重新编码，改选中卡片、缩放或滚动时间轴不会。")
+        return schema
+
+
+NODE_LIST = [H3GuideTimeline, H3GuideTimelineV2]

@@ -529,5 +529,346 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(len(self.audio_vae.calls), 1)
 
 
+
+def image_entry_strength(name, frame, strength, gid=None):
+    """One card with an explicit strength; None means the field is absent (read as 1.00)."""
+    entry = image_entry(name, frame, gid=gid)
+    if strength is not None:
+        entry["strength"] = strength
+    return entry
+
+
+@unittest.skipIf(LOAD_ERROR is not None, "comfy_api unavailable: %s" % LOAD_ERROR)
+class StrengthSchemaTests(unittest.TestCase):
+    """v2 is a second node: same wiring, one extra field, and the stable node untouched."""
+
+    def setUp(self):
+        self.v1 = GUIDE.H3GuideTimeline.define_schema()
+        self.v2 = GUIDE.H3GuideTimelineV2.define_schema()
+
+    def test_both_nodes_are_registered(self):
+        from h3lvm.comfyui.nodes import NODE_LIST
+
+        self.assertIn(GUIDE.H3GuideTimeline, NODE_LIST)
+        self.assertIn(GUIDE.H3GuideTimelineV2, NODE_LIST)
+        self.assertEqual(GUIDE.NODE_LIST, [GUIDE.H3GuideTimeline, GUIDE.H3GuideTimelineV2])
+
+    def test_two_node_ids_one_output_and_the_same_wiring(self):
+        self.assertEqual(self.v1.node_id, "H3 Guide Timeline")
+        self.assertEqual(self.v2.node_id, "H3 Guide Timeline v2")
+        self.assertEqual(self.v2.display_name, "H3 Guide 时间轴 v2")
+        self.assertEqual(self.v2.category, self.v1.category)
+        self.assertEqual([item.id for item in self.v2.inputs],
+                         ["positive", "latent", "length_seconds", "vae", "audio_vae", "guides"])
+        self.assertEqual([item.optional for item in self.v2.inputs],
+                         [item.optional for item in self.v1.inputs])
+        self.assertEqual(len(self.v2.outputs), 1)
+        self.assertEqual(self.v2.outputs[0].display_name, "positive")
+
+    def test_the_v2_schema_does_not_touch_the_v1_schema(self):
+        # v2 edits the schema it got back. Calling either twice must stay clean.
+        again = GUIDE.H3GuideTimeline.define_schema()
+        self.assertEqual(again.node_id, "H3 Guide Timeline")
+        self.assertEqual(again.display_name, "H3 Guide 时间轴")
+        self.assertEqual(GUIDE.H3GuideTimeline.STRENGTH_ENABLED, False)
+        self.assertEqual(GUIDE.H3GuideTimelineV2.STRENGTH_ENABLED, True)
+
+    def test_every_strength_value_has_its_own_cache_key(self):
+        """0.00 and 0.05 are their own runs; 1.00 is the same run as "no field".
+
+        Without this, a user muting a card or raising it again would replay a cached
+        result instead of re-encoding. A missing field reads as 1.00 by design, so it
+        must not create a fourth key.
+        """
+        v2 = GUIDE.H3GuideTimelineV2.fingerprint_inputs
+        keys = {value: v2(guides_json([image_entry_strength("a.png", 0, value)]))
+                for value in (0.0, 0.05, 1.0, None)}
+        self.assertEqual(len(set(keys.values())), 3)
+        self.assertEqual(keys[1.0], keys[None])
+        self.assertNotEqual(keys[0.0], keys[0.05])
+        self.assertNotEqual(keys[0.0], keys[1.0])
+        self.assertNotEqual(keys[0.05], keys[1.0])
+
+    def test_the_v2_key_follows_the_strength_and_not_the_view(self):
+        entries = [image_entry_strength("a.png", 0, 0.7)]
+        v2 = GUIDE.H3GuideTimelineV2.fingerprint_inputs
+        first = v2(guides_json(entries))
+        self.assertEqual(first, v2(guides_json(
+            entries, view_state={"zoom": 4, "scroll": 900, "selected_id": entries[0]["id"]})))
+        self.assertNotEqual(first, v2(guides_json([image_entry_strength("a.png", 0, 0.9)])))
+        self.assertNotEqual(first, v2(guides_json([image_entry("a.png", 0)])))
+        # The stable node never reads the field, so its key does not move.
+        self.assertEqual(GUIDE.H3GuideTimeline.fingerprint_inputs(guides_json(entries)),
+                         GUIDE.H3GuideTimeline.fingerprint_inputs(
+                             guides_json([image_entry("a.png", 0)])))
+
+
+@unittest.skipIf(LOAD_ERROR is not None, "comfy_api unavailable: %s" % LOAD_ERROR)
+class StrengthExecutionTests(unittest.TestCase):
+    """What a strength actually does to the conditioning.
+
+    The observable contract is the noise_aug coefficient on the keyframe dict: the
+    model adaptation reads that, so a card's strength must land on the keyframe that
+    card created and nowhere else.
+    """
+
+    def setUp(self):
+        self._roots = GUIDE._media_roots
+        GUIDE._media_roots = lambda: {"input": INPUTS}
+        self.vae, self.audio_vae = FakeVideoVae(), FakeAudioVae()
+        make_gray("soft.png", (64, 64), 0.25)
+        make_gray("mid.png", (64, 64), 0.5)
+        make_gray("hard.png", (64, 64), 0.75)
+        make_wav("line.wav", seconds=2.0, sample_rate=48000)
+
+    def tearDown(self):
+        GUIDE._media_roots = self._roots
+
+    def run_node(self, node, entries, positive=None):
+        return node.execute(
+            positive if positive is not None else conditioning(), av_latent(),
+            guides_json(entries), vae=self.vae, audio_vae=self.audio_vae)
+
+    def frames(self, out):
+        return out.result[0][0][1]["minimax_keyframes"]
+
+    def coefficient(self, strength):
+        from comfy.ldm.minimax.model import VISUAL_COND_TIMESTEP
+
+        return round(float(strength) * float(VISUAL_COND_TIMESTEP), 6)
+
+    def test_full_strength_is_the_native_path(self):
+        out = self.run_node(GUIDE.H3GuideTimelineV2,
+                            [image_entry("mid.png", 48), image_entry_strength("soft.png", 0, 1.0)])
+        frames = self.frames(out)
+        self.assertEqual([frame["resolved_frame_index"] for frame in frames], [0, 48])
+        for frame in frames:
+            self.assertNotIn("noise_aug", frame)
+        self.assertAlmostEqual(float(frames[0]["latent"].flatten()[0]),
+                               quantized(0.25), places=4)
+
+    def test_the_adaptation_is_only_asked_for_when_a_card_asks_for_less(self):
+        asked = []
+        saved = GUIDE.install_strength_patch
+        GUIDE.install_strength_patch = lambda: (asked.append(1), True)[1]
+        try:
+            self.run_node(GUIDE.H3GuideTimelineV2,
+                          [image_entry("mid.png", 48), image_entry_strength("soft.png", 0, 1.0)])
+            self.assertEqual(asked, [])
+            self.run_node(GUIDE.H3GuideTimelineV2, [image_entry_strength("mid.png", 48, 0.8)])
+            self.assertEqual(len(asked), 1)
+        finally:
+            GUIDE.install_strength_patch = saved
+
+    def test_each_strength_lands_on_the_keyframe_that_card_created(self):
+        audio = audio_entry("line.wav", 12, end_sample=48000)
+        audio["strength"] = 0.6  # a stray field: audio has no strength, it must be dropped
+        upstream = {"resolved_frame_index": 3, "latent": torch.full((1, 24, 1, 2, 2), 0.125)}
+        positive = conditioning()
+        positive[0][1]["minimax_keyframes"] = [upstream]
+        out = self.run_node(GUIDE.H3GuideTimelineV2, [
+            image_entry_strength("soft.png", 0, 0.7),
+            audio,
+            image_entry("mid.png", 48),
+            image_entry_strength("hard.png", 96, 0.85),
+        ], positive=positive)
+        frames = self.frames(out)
+        self.assertEqual([frame["resolved_frame_index"] for frame in frames], [3, 0, 12, 48, 96])
+        self.assertTrue(torch.equal(frames[0]["latent"], upstream["latent"]))
+        self.assertEqual([frame.get("noise_aug") for frame in frames],
+                         [None, self.coefficient(0.7), None, None, self.coefficient(0.85)])
+
+    def test_a_zero_strength_image_is_never_decoded_or_encoded(self):
+        decoded = []
+        real = GUIDE._decode_image_frames
+        GUIDE._decode_image_frames = lambda path: (
+            decoded.append(os.path.basename(path)), real(path))[1]
+        try:
+            out = self.run_node(GUIDE.H3GuideTimelineV2, [
+                image_entry_strength("soft.png", 0, 0.0),
+                image_entry("mid.png", 48),
+            ])
+        finally:
+            GUIDE._decode_image_frames = real
+        self.assertEqual(decoded, ["mid.png"], "a 0.00 card was decoded")
+        self.assertEqual(len(self.vae.calls), 1, "a 0.00 card reached the video VAE")
+        frames = self.frames(out)
+        self.assertEqual([frame["resolved_frame_index"] for frame in frames], [48])
+        self.assertNotIn("noise_aug", frames[0])
+
+    def test_only_zero_strength_images_pass_through_without_a_video_vae(self):
+        """The wiring stays the wiring: nothing to encode needs no VAE at all.
+
+        Called without vae/audio_vae on purpose - the user is allowed to leave both
+        connected, and must not have to unplug one to mute every image.
+        """
+        positive = conditioning()
+        out = GUIDE.H3GuideTimelineV2.execute(positive, av_latent(), guides_json([
+            image_entry_strength("soft.png", 0, 0.0),
+            image_entry_strength("mid.png", 48, 0.0),
+        ]))
+        self.assertIs(out.result[0], positive)
+        self.assertEqual(self.vae.calls, [])
+        self.assertEqual(self.audio_vae.calls, [])
+
+    def test_a_zero_strength_card_leaves_the_other_guides_alone(self):
+        """Muting one card removes its keyframe and changes nothing else.
+
+        The latents are compared, not just the frame numbers: the noise role is keyed
+        by the anchor frame, so a shifted run position must not re-noise a guide.
+        """
+        without = self.frames(self.run_node(GUIDE.H3GuideTimelineV2, [
+            image_entry("mid.png", 48), image_entry_strength("hard.png", 96, 0.85)]))
+        muted = self.frames(self.run_node(GUIDE.H3GuideTimelineV2, [
+            image_entry_strength("soft.png", 0, 0.0),
+            image_entry("mid.png", 48), image_entry_strength("hard.png", 96, 0.85)]))
+        self.assertEqual([frame["resolved_frame_index"] for frame in without],
+                         [frame["resolved_frame_index"] for frame in muted])
+        self.assertEqual([frame.get("noise_aug") for frame in without],
+                         [frame.get("noise_aug") for frame in muted])
+        for left, right in zip(without, muted):
+            self.assertTrue(torch.equal(left["latent"], right["latent"]))
+
+    def test_a_zero_strength_card_is_not_validated(self):
+        """A card that never runs cannot be the reason the prompt is refused."""
+        out = self.run_node(GUIDE.H3GuideTimelineV2, [
+            image_entry_strength("soft.png", 9999, 0.0),
+            image_entry("mid.png", 48),
+        ])
+        self.assertEqual([frame["resolved_frame_index"] for frame in self.frames(out)], [48])
+
+    def test_a_lower_strength_blends_the_latent_and_is_reproducible(self):
+        native = self.frames(self.run_node(GUIDE.H3GuideTimelineV2, [image_entry("mid.png", 48)]))[0]
+        first = self.frames(self.run_node(
+            GUIDE.H3GuideTimelineV2, [image_entry_strength("mid.png", 48, 0.6)]))[0]
+        second = self.frames(self.run_node(
+            GUIDE.H3GuideTimelineV2, [image_entry_strength("mid.png", 48, 0.6)]))[0]
+        self.assertTrue(torch.equal(first["latent"], second["latent"]))
+        self.assertEqual(first["noise_aug"], second["noise_aug"])
+        self.assertFalse(torch.equal(native["latent"], first["latent"]))
+
+    def test_all_full_strength_equals_the_stable_node(self):
+        entries = [audio_entry("line.wav", 12, end_sample=48000),
+                   image_entry("hard.png", 96), image_entry("soft.png", 0),
+                   image_entry("mid.png", 48)]
+        first = self.run_node(GUIDE.H3GuideTimeline, entries)
+        second = self.run_node(GUIDE.H3GuideTimelineV2, entries)
+        a, b = self.frames(first), self.frames(second)
+        self.assertEqual([frame["resolved_frame_index"] for frame in a],
+                         [frame["resolved_frame_index"] for frame in b])
+        for left, right in zip(a, b):
+            self.assertNotIn("noise_aug", right)
+            for key in ("latent", "audio_latent"):
+                if key in left:
+                    self.assertTrue(torch.equal(left[key], right[key]))
+        # The panel digest is the v2 one, so a strength change can invalidate its cache.
+        v1_digest = first.ui["h3_guide_timeline"][0]["digest"]
+        v2_digest = second.ui["h3_guide_timeline"][0]["digest"]
+        self.assertEqual(v1_digest, GUIDE.execution_digest(GUIDE.parse_guides(
+            guides_json(entries))))
+        self.assertNotEqual(v1_digest, v2_digest)
+        lowered = self.run_node(GUIDE.H3GuideTimelineV2,
+                                [image_entry_strength("mid.png", 48, 0.7)]).ui
+        self.assertNotEqual(lowered["h3_guide_timeline"][0]["digest"], v2_digest)
+
+    def test_a_native_that_adds_two_keyframes_is_refused_not_guessed(self):
+        real = GUIDE._native_add_guide()
+
+        class TwoKeyframeNative:
+            def execute(self, positive, latent, frame, vae=None, audio_vae=None,
+                        image=None, audio=None):
+                head, extra = positive[0]
+                frames = list(extra.get("minimax_keyframes") or [])
+                for _ in range(2):
+                    frames.append({"resolved_frame_index": frame, "latent": torch.zeros(1)})
+                merged = dict(extra)
+                merged["minimax_keyframes"] = frames
+                return [(head, merged)]
+
+        GUIDE._native_add_guide = lambda: (TwoKeyframeNative(), real[1])
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                self.run_node(GUIDE.H3GuideTimelineV2, [image_entry_strength("mid.png", 48, 0.7)])
+            self.assertIn("无法定位", str(ctx.exception))
+            self.assertIn("IMG-01", str(ctx.exception))
+        finally:
+            GUIDE._native_add_guide = lambda: real
+
+
+@unittest.skipIf(LOAD_ERROR is not None, "comfy_api unavailable: %s" % LOAD_ERROR)
+class StrengthRefusalTests(unittest.TestCase):
+    """A model adaptation that cannot be installed has to stop the run, loudly."""
+
+    def setUp(self):
+        self._roots = GUIDE._media_roots
+        GUIDE._media_roots = lambda: {"input": INPUTS}
+        self.vae, self.audio_vae = FakeVideoVae(), FakeAudioVae()
+        make_gray("a.png", (64, 64), 0.5)
+
+    def tearDown(self):
+        GUIDE._media_roots = self._roots
+
+    def run_node(self, node, entries):
+        return node.execute(conditioning(), av_latent(), guides_json(entries),
+                            vae=self.vae, audio_vae=self.audio_vae)
+
+    def test_a_refused_adaptation_is_an_error_not_a_silent_fallback(self):
+        saved = (GUIDE.install_strength_patch, GUIDE.install_reason)
+        GUIDE.install_strength_patch = lambda: False
+        GUIDE.install_reason = lambda: "simulated: this ComfyUI cannot patch the model"
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                self.run_node(GUIDE.H3GuideTimelineV2, [image_entry_strength("a.png", 0, 0.7)])
+            message = str(ctx.exception)
+            self.assertIn("逐图引导强度", message)
+            self.assertIn("simulated: this ComfyUI cannot patch the model", message)
+            self.assertIn("H3 Guide Timeline v2", message)
+            # The stable node and a v2 run at 1.00 keep working without the adaptation.
+            self.run_node(GUIDE.H3GuideTimeline, [image_entry_strength("a.png", 0, 0.7)])
+            self.run_node(GUIDE.H3GuideTimelineV2, [image_entry_strength("a.png", 24, 1.0)])
+        finally:
+            GUIDE.install_strength_patch, GUIDE.install_reason = saved
+        self.assertEqual(len(self.vae.calls), 2)
+
+
+@unittest.skipIf(LOAD_ERROR is not None, "comfy_api unavailable: %s" % LOAD_ERROR)
+class OldDocumentTests(unittest.TestCase):
+    """A widget string saved by the stable node, exactly as it sits on disk."""
+
+    OLD_DOCUMENT = json.dumps({
+        "schema_version": 1, "fps": 24,
+        "guides": [{
+            "id": "img-old", "kind": "image", "label": "IMG-01", "enabled": True,
+            "frame_index": 48,
+            "asset": {"filename": "mid.png", "subfolder": "", "type": "input"},
+        }],
+        "view_state": {"zoom": 2, "scroll": 0, "selected_id": "img-old",
+                      "lane_heights": {"image": 120, "audio": 96}},
+        "resolved_frame_count": 124,
+    }, ensure_ascii=False)
+
+    def setUp(self):
+        self._roots = GUIDE._media_roots
+        GUIDE._media_roots = lambda: {"input": INPUTS}
+        self.vae, self.audio_vae = FakeVideoVae(), FakeAudioVae()
+        make_gray("mid.png", (64, 64), 0.5)
+
+    def tearDown(self):
+        GUIDE._media_roots = self._roots
+
+    def test_an_old_document_runs_on_both_nodes_unchanged(self):
+        for node in (GUIDE.H3GuideTimeline, GUIDE.H3GuideTimelineV2):
+            out = node.execute(conditioning(), av_latent(), self.OLD_DOCUMENT,
+                               vae=self.vae, audio_vae=self.audio_vae)
+            frames = out.result[0][0][1]["minimax_keyframes"]
+            self.assertEqual([frame["resolved_frame_index"] for frame in frames], [48])
+            self.assertNotIn("noise_aug", frames[0])
+            self.assertAlmostEqual(float(frames[0]["latent"].flatten()[0]),
+                                   quantized(0.5), places=4)
+            self.assertEqual(out.ui["h3_guide_timeline"][0]["frame_count"], 124)
+        # A v2 read of that same document fills the missing field with full strength.
+        self.assertEqual(GUIDE.parse_guides_v2(json.loads(self.OLD_DOCUMENT))[0]["strength"], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

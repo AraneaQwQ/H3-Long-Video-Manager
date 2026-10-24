@@ -38,7 +38,7 @@ from .ref_nodes import H3AudioReferenceLoader, H3ImageReferenceLoader
 # RAFOLIE 2026-10-22: the Guide Timeline node is its own module too - it is the only
 # thing that touches the native Add Guide node, so a ComfyUI without it fails there
 # and nowhere else.
-from .guide_nodes import H3GuideTimeline
+from .guide_nodes import H3GuideTimeline, H3GuideTimelineV2
 
 logger = logging.getLogger(__name__)
 CORE_AVAILABLE = True
@@ -800,6 +800,7 @@ class H3SmartSplit(io.ComfyNode):
 NODE_LIST = [
     H3LongVideoManager, H3SmartSplit, H3SegmentPicker,
     H3ImageReferenceLoader, H3AudioReferenceLoader, H3GuideTimeline,
+    H3GuideTimelineV2,
 ]
 
 

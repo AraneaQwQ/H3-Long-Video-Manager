@@ -31,14 +31,16 @@ import { appendThumbnail } from "./thumb_fit.js";
 import { insertPosition } from "./ref_state.js";
 import {
     alignFrameCount, AUDIO_DECODING, AUDIO_FAILED, AUDIO_KIND, AUDIO_METADATA_ONLY, AUDIO_READY, DEFAULT_DOCUMENT, DEFAULT_FPS, IMAGE_KIND, KINDS,
-    MAX_GUIDE_AUDIOS, MAX_GUIDE_IMAGES, MAX_GUIDE_TOTAL,
-    TRACK_PADDING, addGuides, audioSpans, audioStatus, clampScroll, countRunnable, createScale,
+    MAX_GUIDE_AUDIOS, MAX_GUIDE_IMAGES, MAX_GUIDE_TOTAL, STRENGTH_OFF,
+    TRACK_PADDING, addGuides, audioSpans, audioStatus, clampScroll, countRunnable, countRunnableV2, createScale,
     declutterMarkers, duplicateGuide, formatSeconds, frameFromLanePointer, frameToSeconds, guideFramesFor, mediaKind, mediaKeyOf,
     moveGuide, nextFreeFrame, panBy, panWindow, parseDocument, patchGuide, pendingAudioCount, ensureLabels, removeGuide,
     scrollForPanThumb, scrollForPointerPan, scrollToFrame, secondsToFrame,
-    squareMarkerPlan, stripLaneHeights, stripMarkerPlan, stripRoom, DEFAULT_LANE_HEIGHTS,
+    squareMarkerPlan, stripCardPlan, stripLaneHeights, stripMarkerPlan, stripRoom, DEFAULT_LANE_HEIGHTS,
+    hasStripMarkerSide, stepStripMarkerSide, stripMarkerSide,
+    STRENGTH_MAX, STRENGTH_MIN, STRENGTH_STEP, isMutedImage, normalizeStrength, strengthOf,
     MARKER_INSET, MARKER_SIDE_HARD_MAX, clampLaneHeight, laneHeights, stepLaneHeight,
-    serializeDocument, summaryOf, tickMarks, trimFromSeconds, trimWindow, validateGuides, validationState, zoomStepAt,
+    serializeDocument, summaryOf, tickMarks, trimFromSeconds, trimWindow, validateGuides, validateGuidesV2, validationState, zoomStepAt,
     DRAG_START_PX, passedDragThreshold, resolveDropTarget, resolveTimelineRange,
 } from "./guide_state.js";
 
@@ -63,6 +65,10 @@ try {
 }
 
 const GUIDE_NODE = "H3 Guide Timeline";
+const GUIDE_NODE_V2 = "H3 Guide Timeline v2";
+// The stable node and the strength node share this one file. The panel difference is a
+// single control, so it is one flag below rather than a second copy of 3000 lines.
+const GUIDE_NODES = new Set([GUIDE_NODE, GUIDE_NODE_V2]);
 const GUIDES_FIELD = "guides";
 
 // A constant, not a measured value: pressing 刷新 or 打开编辑器 must not resize the
@@ -75,10 +81,10 @@ const SECOND_STEP = 1 / DEFAULT_FPS;
 
 const LABELS = {
     guides: "🎬 Guide 列表 (JSON)",
-    length_seconds: "⏱ 视频时长（秒）",
+    length_seconds: "⏱ 时间轴长度（秒）",
 };
 const TOOLTIPS = {
-    length_seconds: "只给编辑器的时间尺用：填目标时长秒数，面板按 秒 × 24fps 换算成帧并向上对齐到 H3 的 17n+5"
+    length_seconds: "只给编辑器的时间尺用：填目标时间轴长度（秒），面板按 秒 × 24fps 换算成帧并向上对齐到 H3 的 17n+5"
         + "（10 秒 → 240 → 243 帧）。0 表示不设置，此时时间尺用上一次运行得到的真实帧数。"
         + "这个值不参与执行，也不会改变输出。",
     guides: "由「打开 Guide 编辑器」的面板读写的 JSON 列表。frame_index 是权威时间位置，"
@@ -91,7 +97,7 @@ app.registerExtension({
     name: "H3.LVM.GuideTimeline",
 
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== GUIDE_NODE) return;
+        if (!GUIDE_NODES.has(nodeData.name)) return;
 
         const originalCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
@@ -166,6 +172,10 @@ function installGuideNode(node) {
     const signal = lifetime.signal;
 
     const widgetFor = (name) => node.widgets?.find((item) => item.name === name);
+    // v2 only: per-image guide strength. Everything else is the same panel, so this flag is
+    // the whole difference. It is read from the node type, not from the document, because a
+    // v1 node must not grow the control just because a v2 document was pasted into it.
+    const perImageStrength = String(node.type || "").trim() === GUIDE_NODE_V2;
 
     // Declared before the first readDoc() call: readDoc writes it, so a let below that
     // call would be in the temporal dead zone and the whole panel would fail to build.
@@ -239,37 +249,42 @@ function installGuideNode(node) {
 
     const strip = make("div", "h3guide-strip h3guide-strip-off");
     const stripHead = make("div", "h3guide-strip-head");
-    // The same control as the editor's lane header, because it is the same control: the lane
-    // height is what sizes a card on the track (squareMarkerPlan), so a second "card size"
-    // button could only disagree with it. Here the number is a request the panel may clamp, so
-    // the readout shows the height that was really applied and turns amber when it did.
     const stripLaneSize = (label) => {
         const shrink = make("button", "h3guide-secondary", label + " −");
         const grow = make("button", "h3guide-secondary", "＋");
         const px = make("span", "h3guide-lane-count h3guide-lane-px");
-        shrink.title = "把这条轨道变矮，轨道上的卡片随之变小";
+        shrink.title = "把节点内这条轨道变矮；独立设置的图片卡片尺寸不变";
         return { shrink, grow, px };
     };
     const stripImageSize = stripLaneSize("图片轨");
     const stripAudioSize = stripLaneSize("音频轨");
-    stripImageSize.grow.title = "把这条轨道变高，卡片随之变大（竖屏素材更清楚）";
+    const stripCardSize = {
+        shrink: make("button", "h3guide-secondary", "卡片 −"),
+        grow: make("button", "h3guide-secondary", "＋"),
+        px: make("span", "h3guide-lane-count h3guide-lane-px h3guide-card-px"),
+    };
+    stripImageSize.grow.title = "只把节点内的图片轨道变高";
     stripAudioSize.grow.title = "把这条轨道变高，波形更清楚";
+    const stripHint = make("span", "h3guide-strip-hint", "整段视频按宽度铺满 · 缩放与卡片池在「打开 Guide 编辑器」");
     stripHead.append(
-        make("span", "h3guide-strip-title", "时间轴（轨道上的卡片可以直接拖动）"),
+        make("span", "h3guide-strip-title", "节点时间轴"),
+        stripCardSize.shrink, stripCardSize.px, stripCardSize.grow,
         stripImageSize.shrink, stripImageSize.px, stripImageSize.grow,
         stripAudioSize.shrink, stripAudioSize.px, stripAudioSize.grow,
-        make("span", "h3guide-strip-hint", "整段视频按宽度铺满 · 缩放与卡片池在「打开 Guide 编辑器」"),
+        stripHint,
     );
+    const stripBody = make("div", "h3guide-strip-body h3guide-strip-body-off");
     const stripRuler = make("div", "h3guide-ruler");
     const stripRulerRow = make("div", "h3guide-row h3guide-strip-row");
     stripRulerRow.append(make("span", "h3guide-lane-label", "时间尺"), stripRuler);
     const stripImageTrack = make("div", "h3guide-track");
-    const stripImageRow = make("div", "h3guide-row h3guide-strip-row h3guide-strip-row-track");
+    const stripImageRow = make("div", "h3guide-row h3guide-strip-row h3guide-strip-row-track h3guide-strip-row-image");
     stripImageRow.append(make("span", "h3guide-lane-label", "图片轨"), stripImageTrack);
     const stripAudioTrack = make("div", "h3guide-track h3guide-track-audio");
     const stripAudioRow = make("div", "h3guide-row h3guide-strip-row h3guide-strip-row-track");
     stripAudioRow.append(make("span", "h3guide-lane-label", "音频轨"), stripAudioTrack);
-    strip.append(stripHead, stripRulerRow, stripImageRow, stripAudioRow);
+    stripBody.append(stripRulerRow, stripImageRow, stripAudioRow);
+    strip.append(stripHead, stripBody);
     nodeSurface = createSurface({
         ruler: stripRuler,
         trackImage: stripImageTrack,
@@ -390,9 +405,9 @@ function installGuideNode(node) {
         if (range.source === "manual") {
             const math = `${range.seconds} 秒 × ${doc.fps}fps = ${range.rawFrames} 帧，向上对齐 17n+5 = ${range.frames} 帧`;
             if (range.runFrames && range.runFrames !== range.frames) {
-                return `总帧数按本节点的时长（秒）推算（${math}）；上次实际运行是 ${range.runFrames} 帧，两者不一致，运行时会按实际 latent 重新校验`;
+                return `总帧数按本节点的时间轴长度（秒）推算（${math}）；上次实际运行是 ${range.runFrames} 帧，两者不一致，运行时会按实际 latent 重新校验`;
             }
-            return `总帧数按本节点的时长（秒）推算（${math}），运行后以实际 latent 为准`;
+            return `总帧数按本节点的时间轴长度（秒）推算（${math}），运行后以实际 latent 为准`;
         }
         if (range.source === "upstream") {
             return `总帧数按「${range.label}」的 length（帧）推算，运行后以实际 latent 为准`;
@@ -439,7 +454,9 @@ function installGuideNode(node) {
 
     function currentProblems() {
         const range = timelineRange();
-        return validateGuides(doc.guides, range.frames, {
+        // v2: a 0.00 card is not part of the run, so its placement is not a problem either.
+        const check = perImageStrength ? validateGuidesV2 : validateGuides;
+        return check(doc.guides, range.frames, {
             spans: currentSpans(),
             imageFrames: imageFramesById(),
             fps: doc.fps,
@@ -732,7 +749,7 @@ function installGuideNode(node) {
             input.addEventListener("change", () => {
                 const files = [...(input.files ?? [])];
                 input.value = "";
-                void addFiles(files, kind);
+                void importFiles(files, kind);
             }, { signal });
         }
 
@@ -830,20 +847,23 @@ function installGuideNode(node) {
     }
 
     // The node strip draws the same lanes with the same numbers, clamped to the height the
-    // panel really has. Returns whether the helper view fits at all, which is the case that
-    // hides it. Both readouts describe the height that was applied, so the node and the
-    // editor can never show two different card sizes for one document.
+    // panel really has. Card sizing is deliberately absent: the two controls are independent
+    // in both directions. Returns false when the tracks do not fit; their header stays visible.
     function applyStripHeights() {
         const wanted = laneHeights(doc.view_state);
+        const customMarkerSide = hasStripMarkerSide(doc.view_state);
+        const markerSide = customMarkerSide ? stripMarkerSide(doc.view_state) : 0;
+        const headExtra = Math.max(0, stripHead.offsetHeight - 28);
         const plan = stripLaneHeights({
             room: stripRoom({
                 containerHeight: container.clientHeight,
                 toolbarHeight: toolbar.offsetHeight,
                 footerHeight: nodeFooter.offsetHeight,
-            }),
+            }) - headExtra,
             image: wanted[IMAGE_KIND],
             audio: wanted[AUDIO_KIND],
         });
+        strip.classList.toggle("h3guide-strip-custom-card", customMarkerSide);
         stripHeights = plan.heights;
         stripImageTrack.style.height = `${plan.heights[IMAGE_KIND]}px`;
         stripAudioTrack.style.height = `${plan.heights[AUDIO_KIND]}px`;
@@ -851,10 +871,17 @@ function installGuideNode(node) {
             const asked = wanted[kind];
             const got = plan.heights[kind];
             control.px.textContent = `${got}px`;
-            control.px.classList.toggle("h3guide-lane-px-clamped", got !== asked);
+            control.px.classList.toggle("h3guide-lane-px-clamped", got < asked);
             control.px.title = got === asked
-                ? "轨道高度：轨道上的卡片大小随它变化"
+                ? "节点内的轨道高度；图片卡片大小由「卡片 − / ＋」单独设置"
                 : `面板只放得下 ${got}px（想要 ${asked}px）：把节点拉高，或调矮另一条轨道`;
+        }
+        stripCardSize.px.textContent = customMarkerSide ? `${markerSide}px` : "自动";
+        stripCardSize.px.title = customMarkerSide
+            ? "节点内图片卡片的独立边长；轨道高度、节点宽度和卡片数量都不会改变它"
+            : "当前沿用旧版自动尺寸；点击 − 或 ＋ 后改为独立尺寸";
+        for (const button of [stripCardSize.shrink, stripCardSize.grow]) {
+            button.title = "只调整节点内图片卡片，不改变弹窗或音频轨道；设置会随工作流保存";
         }
         return plan.fits;
     }
@@ -870,25 +897,29 @@ function installGuideNode(node) {
         // open, the node strip whenever it is drawn.
         applyLaneHeights();
         applyStripHeights();
-        // The card side comes from the lane height, so the squares have to be re-planned.
+    // The editor cards follow their lane; an independent node card does not.
         // While a grip is held that is the cheap part only; the full render waits for release.
         syncMarkerSide(editorSurface);
         syncMarkerSide(nodeSurface);
         return true;
     }
 
-    // A card is a square: its side is the lane height minus the CSS inset. The user chose that
-    // height in both places, so the only ceiling is the sanity limit - and in the node strip
-    // the fit-to-width budget is the limit that actually binds once several guides are placed,
-    // which is what keeps the strip a timeline instead of a second card pool. The scale
-    // padding comes from the same number, so the first and last card are never cut off.
     function markerPlanFor(surface, placedCount) {
         const laneHeight = surface.trackImage.clientHeight;
-        const budget = surface.fitWidth
-            ? stripMarkerPlan({ laneWidth: surface.trackImage.clientWidth, count: placedCount }).markerWidth
-            : 0;
+        if (surface.fitWidth) {
+            const custom = hasStripMarkerSide(doc.view_state);
+            const budget = custom ? 0 : stripMarkerPlan({
+                laneWidth: surface.trackImage.clientWidth,
+                count: placedCount,
+            }).markerWidth;
+            return stripCardPlan({
+                laneHeight,
+                widthBudget: budget,
+                markerSide: custom ? stripMarkerSide(doc.view_state) : null,
+            });
+        }
         const max = Math.min(MARKER_SIDE_HARD_MAX, laneHeight - MARKER_INSET * 2);
-        return squareMarkerPlan({ laneHeight, widthBudget: budget, max });
+        return squareMarkerPlan({ laneHeight, widthBudget: 0, max });
     }
 
     function syncMarkerSide(surface) {
@@ -1129,10 +1160,9 @@ function installGuideNode(node) {
         renderPanBar();
     }
 
-    // One renderer for both copies of the timeline. The node surface differs only in
-    // that it fits the whole video to its own width and sizes its markers to the lane,
-    // so the thumbnails, labels and waveforms are the same DOM as in the editor and a
-    // guide can be placed from either place.
+    // One renderer for both copies of the timeline. The node surface fits the whole video
+    // to its own width and can have an independently sized image marker; the thumbnails,
+    // labels and waveforms are the same DOM as in the editor.
     function renderSurface(surface) {
         if (!surface) return;
         const range = timelineRange();
@@ -1399,9 +1429,44 @@ function installGuideNode(node) {
         return guide.frame_index !== null && guide.frame_index !== undefined;
     }
 
+    // v2 only: the strength belongs to the card, so it is shown on the card and edited in
+    // the detail area - both from the same guide.strength. A v2 card always shows its
+    // value, including 1.00, because "this card has no strength set" and "this card is at
+    // the native 1.00" must not look like two different things. A 0.00 card also says 不加入:
+    // the card is still on the timeline, and the node still will not encode it - both facts
+    // have to be readable at the same time.
+    function syncStrengthBadge(card, guide) {
+        const wrap = card.querySelector(".h3lvm-thumb-wrap");
+        if (!wrap) return;
+        const old = wrap.querySelector(".h3guide-strength");
+        if (!perImageStrength || guide.kind !== IMAGE_KIND) {
+            old?.remove();
+            return;
+        }
+        const strength = strengthOf(guide);
+        const off = strength <= STRENGTH_OFF;
+        const text = off ? "强度 0.00 · 不加入" : `强度 ${strength.toFixed(2)}`;
+        if (old) {
+            old.textContent = text;
+            old.classList.toggle("h3guide-strength-native", strength >= STRENGTH_MAX);
+            old.classList.toggle("h3guide-strength-off", off);
+            return;
+        }
+        const badge = make("div", "h3guide-strength", text);
+        badge.title = off
+            ? "引导强度 0.00：卡片和插入位置都保留，但本次不会解码这张图，也不会加入 conditioning"
+            : "这张图对生成画面的约束强度，选中卡片后可在下方详情里修改";
+        badge.classList.toggle("h3guide-strength-native", strength >= STRENGTH_MAX);
+        badge.classList.toggle("h3guide-strength-off", off);
+        wrap.appendChild(badge);
+    }
+
     function updateCardState(card, guide) {
         const placed = isPlaced(guide);
         card.classList.toggle("h3guide-off", guide.enabled === false);
+        // v2 only: a 0.00 image card is enabled and placed but never encoded. It is drawn
+        // between those two states, never greyed out like a disabled card.
+        card.classList.toggle("h3guide-muted", perImageStrength && isMutedImage(guide));
         card.classList.toggle("h3guide-unplaced", !placed);
         card.classList.toggle("active", guide.id === doc.view_state.selected_id);
         // 放置 only makes sense for material that is not on the timeline yet. Leaving it on
@@ -1410,6 +1475,7 @@ function installGuideNode(node) {
         if (place) place.hidden = placed;
         const wrap = card.querySelector(".h3lvm-thumb-wrap");
         if (!wrap) return;
+        syncStrengthBadge(card, guide);
         const badge = wrap.querySelector(".h3lvm-active-badge");
         const text = !placed ? "待放置" : (guide.enabled === false ? "已停用" : "");
         if (!text) {
@@ -1441,6 +1507,18 @@ function installGuideNode(node) {
         const meta = card.querySelector(".h3lvm-meta");
         if (!meta) return;
         for (const text of lines) meta.append(make("div", "h3lvm-seg-info", text));
+    }
+
+    function placeGuideOnTimeline(guide) {
+        const range = timelineRange();
+        const frame = nextFreeFrame(doc.guides, range.frames, currentSpans(), doc.fps);
+        if (frame === null) {
+            showLiveNote(range.frames ? "时间轴已经排满，放不下下一条 Guide 了" : "还没有可用的时间轴长度：填「时间轴长度（秒）」输入，或连接 latent 运行一次");
+            return;
+        }
+        const next = patchGuide(doc.guides, guide.id, { frame_index: frame, enabled: true });
+        if (!tryQuota(next, guide.kind)) return;
+        mutate(next);
     }
 
     function buildCard(guide) {
@@ -1524,15 +1602,7 @@ function installGuideNode(node) {
         };
         place.onclick = (event) => {
             event.stopPropagation();
-            const range = timelineRange();
-            const frame = nextFreeFrame(doc.guides, range.frames, currentSpans(), doc.fps);
-            if (frame === null) {
-                showLiveNote(range.frames ? "视频长度已经排满，放不下下一条 Guide 了" : "还没有可用的视频长度：填「视频时长（秒）」输入，或连接 latent 运行一次");
-                return;
-            }
-            const next = patchGuide(doc.guides, guide.id, { frame_index: frame, enabled: true });
-            if (!tryQuota(next, guide.kind)) return;
-            mutate(next);
+            placeGuideOnTimeline(guide);
         };
         replace.onclick = (event) => {
             event.stopPropagation();
@@ -1704,43 +1774,72 @@ function installGuideNode(node) {
         form.append("subfolder", "");
         form.append("type", "input");
         const res = await api.fetchApi("/upload/image", { method: "POST", body: form });
-        if (res.status !== 200) throw new Error(`上传失败：${res.status} ${res.statusText}`);
+        if (!res.ok) {
+            const body = await res.text().catch(() => "");
+            const detail = body.replace(/\s+/g, " ").trim().slice(0, 240);
+            throw new Error(`HTTP ${res.status} ${res.statusText}${detail ? `：${detail}` : ""}`);
+        }
         const data = await res.json().catch(() => ({}));
-        if (!data.name) throw new Error("上传失败：服务器没有返回文件名");
+        if (!data.name) throw new Error("服务器没有返回文件名");
         return { filename: data.name, subfolder: data.subfolder || "", type: data.type || "input" };
     }
 
-    // A file input hands us an Array, a drop hands us a FileList. FileList has no .filter, and
-        // that single line was the whole bug: the drop handler ran, threw on its first statement,
-        // and the panel had nothing to show, so "drag a file into the pool" looked dead. Normalise
-        // first. Then the kind: a file input already filtered by tab, a drop has no tab to honour -
-        // every file becomes the card its own extension says it is.
-        async function addFiles(files, kind = null) {
-            if (!root) return;
-            const list = Array.from(files ?? []);
-            if (!list.length) return;
-            const wanted = KINDS.includes(kind) ? kind : null;
-            const usable = list.filter((file) => {
-                const found = mediaKind(file.name);
-                return wanted ? found === wanted : KINDS.includes(found);
+    function fileError(error) {
+        return String(error?.message || error || "未知错误").replace(/\s+/g, " ").trim().slice(0, 300);
+    }
+
+    function importFiles(files, kind = null) {
+        return addFiles(files, kind).catch((error) => {
+            const reason = fileError(error);
+            debugEvent("native-import-failed", { reason });
+            showLiveNote(`素材载入失败：${reason}`);
+        });
+    }
+
+    // Normalize FileList and Array at the same boundary. A native drop is not restricted to
+    // the visible tab: each file becomes the card its own extension says it is.
+    async function addFiles(files, kind = null) {
+        if (!root) return;
+        const list = Array.from(files ?? []);
+        if (!list.length) {
+            showLiveNote("没有读取到文件，请重新拖入或使用添加按钮");
+            debugEvent("native-import-rejected", { reason: "empty-file-list" });
+            return;
+        }
+        const wanted = KINDS.includes(kind) ? kind : null;
+        const usable = list.filter((file) => {
+            const found = mediaKind(file.name);
+            return wanted ? found === wanted : KINDS.includes(found);
+        });
+        const wrong = list.length - usable.length;
+        if (!usable.length) {
+            const reason = wanted ? `只能添加${wanted === IMAGE_KIND ? "图片" : "音频"}文件` : "只能添加图片或音频文件";
+            showLiveNote(`${reason}（${list.map((file) => file.name).join("、")}）`);
+            debugEvent("native-import-rejected", {
+                reason: "unsupported-files",
+                names: list.map((file) => file.name),
+                kinds: list.map((file) => mediaKind(file.name)),
             });
-            const wrong = list.length - usable.length;
-            if (!usable.length) {
-                showLiveNote(wanted ? `只能添加${wanted === IMAGE_KIND ? "图片" : "音频"}文件` : "只能添加图片或音频文件");
-                return;
-            }
+            return;
+        }
         const incoming = [];
-        let failed = 0;
+        const failed = [];
         for (const [position, file] of usable.entries()) {
+            showLiveNote(`上传中 ${position + 1}/${usable.length}：${file.name}`);
+            debugEvent("native-upload-start", { name: file.name, size: file.size, kind: mediaKind(file.name) });
             try {
                 incoming.push(await uploadFile(file));
+                debugEvent("native-upload-success", { name: file.name });
             } catch (error) {
-                failed += 1;
+                const reason = fileError(error);
+                failed.push({ name: file.name, reason });
+                debugEvent("native-upload-failed", { name: file.name, size: file.size, reason });
             }
-            showLiveNote(`上传中 ${position + 1}/${usable.length}`);
         }
         const notes = [];
-        if (failed) notes.push(`上传失败 ${failed.length} 个`);
+        if (failed.length) {
+            notes.push(`上传失败 ${failed.length} 个：${failed.map((item) => `${item.name}（${item.reason}）`).join("；")}`);
+        }
         if (wrong) notes.push(wanted ? `忽略 ${wrong} 个非${wanted === IMAGE_KIND ? "图片" : "音频"}文件` : `忽略 ${wrong} 个不支持的文件`);
 
         if (pendingReplaceId && guideById(pendingReplaceId)) {
@@ -1766,7 +1865,7 @@ function installGuideNode(node) {
         writeDoc({ dirty: true });
         // A dropped mp3 while the 图片 grid is open adds a card the user cannot see, which is the
         // second way a working drop looks like a dead one. Follow the file instead of the tab.
-        const addedKinds = [...new Set(usable.map((file) => mediaKind(file.name)))];
+        const addedKinds = [...new Set(incoming.map((asset) => mediaKind(asset.filename)))];
         if (!wanted && addedKinds.length === 1 && addedKinds[0] !== activeTab()) {
             setTab(addedKinds[0]);
             notes.push(`已切到${addedKinds[0] === AUDIO_KIND ? "音频" : "图片"}卡片`);
@@ -2148,7 +2247,7 @@ function installGuideNode(node) {
                 files: files.length,
                 kinds: files.map((file) => mediaKind(file.name)),
             });
-            void addFiles(files, null);
+            void importFiles(files, null);
         }, { signal });
     }
 
@@ -2582,6 +2681,20 @@ function installGuideNode(node) {
         commitEdit();
     }
 
+    // v2 only. Clamped and snapped to the 0.05 grid here, so typing 0.75 or 0.9 lands on a
+    // step the node accepts instead of an arbitrary float.
+    function applyStrengthInput(guide, raw) {
+        let strength;
+        try {
+            strength = normalizeStrength(raw);
+        } catch (error) {
+            showLiveNote(`引导强度无效：${error.message}`);
+            syncDetail(guide);
+            return;
+        }
+        mutate(patchGuide(doc.guides, guide.id, { strength }));
+    }
+
     // The detail area is a list of labelled rows, not one long line. renderDetail builds the
     // rows and syncDetail refills them, so a drag updates exactly what the user can edit.
     function detailSpec(guide) {
@@ -2602,6 +2715,16 @@ function installGuideNode(node) {
             },
         ];
         if (guide.kind === IMAGE_KIND) {
+            if (perImageStrength) {
+                rows.push({
+                    label: "引导强度", key: "strength", step: String(STRENGTH_STEP),
+                    min: String(STRENGTH_MIN), max: String(STRENGTH_MAX),
+                    title: "这张图对生成画面的约束强度（0.00 - 1.00，默认 1.00 就是原生行为）。"
+                        + "数值越低，画面越自由，动作与场景衔接的空间越大；它不是保留像素的百分比。"
+                        + "0.00 表示这张图片不加入本次生成：卡片、插入位置和这个数值都保留，但不会解码它、不会加入 conditioning。",
+                    value: strengthOf(guide).toFixed(2),
+                });
+            }
             const meta = imageCache.get(mediaKeyOf(guide));
             const held = guideFramesFor(1);
             rows.push({
@@ -2656,6 +2779,7 @@ function installGuideNode(node) {
             make("strong", "h3guide-detail-id", guide.label || ""),
             make("span", "h3guide-note", `${guide.kind === AUDIO_KIND ? "音频" : "图片"} · ${String(guide.asset.filename).split("/").pop()}`),
         );
+        const actions = make("div", "h3guide-detail-actions");
         const toggle = make("button", "h3guide-act", guide.enabled === false ? "启用" : "停用");
         toggle.title = "停用会保留这条记录、裁切和时间，但不会执行";
         toggle.onclick = (event) => {
@@ -2664,26 +2788,32 @@ function installGuideNode(node) {
             if (!tryQuota(next, guide.kind)) return;
             mutate(next);
         };
-        head.appendChild(toggle);
+        actions.appendChild(toggle);
         // 停用 is not the same as taking a card off the timeline. 移出时间轴 clears frame_index
         // only - the record, its crop and its enabled state stay, and the card returns to the
-        // pool. 删除 drops the record, exactly like the 删除 button on the pool card.
-        if (guide.frame_index !== null && guide.frame_index !== undefined) {
-            const unplace = make("button", "h3guide-act", "移出时间轴");
-            unplace.title = "从时间轴上取下，回到卡片池待放置；这条记录、裁切和启用状态都保留";
-            unplace.onclick = (event) => {
-                event.stopPropagation();
-                mutate(patchGuide(doc.guides, guide.id, { frame_index: null }));
-            };
-            head.appendChild(unplace);
-        }
+        // pool. The same slot becomes 放置 while the card is in the pool, so the action row
+        // never gains or loses a button and the neighbouring buttons do not change width.
+        const placed = guide.frame_index !== null && guide.frame_index !== undefined;
+        const place = make("button", "h3guide-act", placed ? "移出时间轴" : "放置");
+        place.title = placed
+            ? "从时间轴上取下，回到卡片池待放置；这条记录、裁切和启用状态都保留"
+            : "放到下一个空位（也可以直接把卡片或轨道上的标记拖到时间轴）";
+        place.onclick = (event) => {
+            event.stopPropagation();
+            if (!placed) {
+                placeGuideOnTimeline(guide);
+                return;
+            }
+            mutate(patchGuide(doc.guides, guide.id, { frame_index: null }));
+        };
+        actions.appendChild(place);
         const drop = make("button", "h3guide-act warn", "删除");
         drop.title = "删除这条 Guide（与卡片池里的删除相同）";
         drop.onclick = (event) => {
             event.stopPropagation();
             mutate(removeGuide(doc.guides, guide.id));
         };
-        head.appendChild(drop);
+        actions.appendChild(drop);
         if (guide.kind === AUDIO_KIND) {
             // Previewing is the card's job when the card is on screen; the detail area only
             // owns its own player when the selection came from the other lane.
@@ -2692,8 +2822,9 @@ function installGuideNode(node) {
             const onCard = cardEls.get(guide.id)?.querySelector(".h3guide-play");
             if (onCard) play.onclick = (event) => { event.stopPropagation(); onCard.click(); };
             else wirePlayer(play, guide);
-            head.appendChild(play);
+            actions.appendChild(play);
         }
+        head.appendChild(actions);
         els.detail.appendChild(head);
 
         const fields = make("div", "h3guide-fields");
@@ -2704,7 +2835,8 @@ function installGuideNode(node) {
                 const input = make("input", "h3guide-num");
                 input.type = "number";
                 input.step = row.step;
-                input.min = "0";
+                input.min = row.min !== undefined ? row.min : "0";
+                input.max = row.max !== undefined ? row.max : "";
                 input.dataset.key = row.key;
                 if (row.title) input.title = row.title;
                 input.value = row.value;
@@ -2723,6 +2855,10 @@ function installGuideNode(node) {
     function onDetailInput(guide, key, value) {
         if (key === "seconds" || key === "frames") {
             applyTimeInput(guide, value, key === "seconds" ? "seconds" : "frames");
+            return;
+        }
+        if (key === "strength") {
+            applyStrengthInput(guide, value);
             return;
         }
         if (key === "in" || key === "out") {
@@ -2858,7 +2994,10 @@ function installGuideNode(node) {
     // make the node grow. The node surface below fills whatever the panel still has.
     function renderSummary() {
         const range = timelineRange();
-        const counts = countRunnable(doc.guides);
+        // "What runs" leaves out a 0.00 image card, so the node body cannot promise an encode
+        // the node will not do. The editor quota line still counts the document, which is
+        // what the node's own quota check counts.
+        const counts = perImageStrength ? countRunnableV2(doc.guides) : countRunnable(doc.guides);
         const parked = doc.guides.length - counts[IMAGE_KIND] - counts[AUDIO_KIND];
         const info = summaryOf(doc.guides, range.frames, doc.fps);
         statusText.textContent = `启用 图片 ${counts[IMAGE_KIND]} · 音频 ${counts[AUDIO_KIND]} · 不执行 ${parked}`
@@ -2898,13 +3037,18 @@ function installGuideNode(node) {
         const fits = applyStripHeights();
         stripBtn.classList.toggle("on", wanted);
         stripBtn.textContent = wanted ? "📈 隐藏节点时间轴" : "📈 显示节点时间轴";
+        strip.classList.toggle("h3guide-strip-off", !wanted);
+        stripBody.classList.toggle("h3guide-strip-body-off", !wanted || !fits);
+        stripHint.textContent = wanted && !fits
+            ? "空间不足：拉高节点或点「卡片 −」"
+            : "整段视频按宽度铺满 · 缩放与卡片池在「打开 Guide 编辑器」";
+        stripHint.classList.toggle("h3guide-lane-px-clamped", wanted && !fits);
         const next = wanted && fits;
         if (next === stripOn) {
             if (stripOn) renderSurface(nodeSurface);
             return;
         }
         stripOn = next;
-        strip.classList.toggle("h3guide-strip-off", !stripOn);
         if (stripOn) renderSurface(nodeSurface);
     }
 
@@ -2955,6 +3099,23 @@ function installGuideNode(node) {
     stripAudioSize.grow.onclick = (event) => {
         event.stopPropagation();
         stripStepHeight(AUDIO_KIND, 1);
+    };
+    const stripStepCard = (delta) => {
+        const measured = markerPlanFor(nodeSurface, nodeSurface.laneItems?.length || 0).side;
+        const current = hasStripMarkerSide(doc.view_state)
+            ? stripMarkerSide(doc.view_state)
+            : measured || stripMarkerSide(doc.view_state);
+        doc.view_state.strip_marker_side = stepStripMarkerSide(current, delta);
+        writeDoc({ dirty: false });
+        fitStrip();
+    };
+    stripCardSize.shrink.onclick = (event) => {
+        event.stopPropagation();
+        stripStepCard(-1);
+    };
+    stripCardSize.grow.onclick = (event) => {
+        event.stopPropagation();
+        stripStepCard(1);
     };
     refreshBtn.onclick = (event) => {
         event.stopPropagation();
@@ -3009,6 +3170,7 @@ function installGuideNode(node) {
     try {
         stripObserver = new ResizeObserver(() => scheduleStrip());
         stripObserver.observe(container);
+        stripObserver.observe(stripHead);
     } catch (error) {
         console.warn("[H3 Guide Timeline] the node timeline cannot follow the node size:", error);
     }

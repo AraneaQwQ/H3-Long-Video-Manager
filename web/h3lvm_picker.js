@@ -130,6 +130,8 @@ function setupPickerUI(node) {
         if (modeWidget) {
             modeWidget.label = "素材来源模式";
             modeWidget.title = "面板顶部两个按钮写的就是这个值：它决定节点读哪一个库";
+            modeWidget.options = modeWidget.options || {};
+            modeWidget.options.hidden = true;
         }
         if (sizeWidget) {
             sizeWidget.label = "输出分辨率";
