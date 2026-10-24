@@ -3,6 +3,49 @@
 > 版本铁规：每次改动前，把旧版本完整快照存入 `archive/<日期>-<commit 短 hash>/`，并在本文件顶部追加一条说明。
 > 只有用户的明确命令才能删改 `archive/` 中的旧版本。
 
+## 2026-10-24 · `666f4ac`（当前基线，= tag `v1.5.0`）
+
+- 快照：改动前的状态就是 `ee627c8`（tag `v1.4.0` 之后的文档 commit），已由 `git archive ee627c8` 解到 `archive/2026-10-24-ee627c8/`（87 个文件，与 `git ls-files` 一一对应）。该目录原先存的是本轮在途工作树，那些内容现在全部进了 `666f4ac`，所以按目录名重取干净基线不丢任何东西。提交后的快照在 `archive/2026-10-24-666f4ac/`（87 个文件，由 `git archive v1.5.0` 解出，与提交内容逐字节相同）。
+- 本 tag 打包了四条在途改动：下面三条记录（参考池超额保留 + 全部清空、Segment Picker 隐藏重复下拉框、Guide 卡片池文件载入诊断），加上本轮的 **H3 Guide Timeline v2 逐图引导强度** 与 **节点内时间轴卡片的独立尺寸**。三条旧记录里的「未提交」字样已改成指向本 tag。
+- 需求（用户任务书 + 两次收窄）：新增**独立**节点 `H3 Guide Timeline v2`（`comfyui/guide_nodes.py: H3GuideTimelineV2`，继承稳定版类，只改 `define_schema()` 里的 node_id / display_name / description / tooltip 和强度路径），保留 v1 全部时间轴能力，只额外给**每张图片 Guide** 一个「引导强度」。稳定版 `H3 Guide Timeline` 的节点 ID、接口、数据格式与执行行为一字未改，也不做自动迁移；两个节点同时出现在 ComfyUI 里，旧工作流继续走旧节点。音频 Guide 不加强度。
+- 强度口径（最终）：范围 `0.00–1.00`，步进 `0.05`，默认 `1.00`。`1.00` = 原生 Add Guide 原路径，模型侧什么都不改写；`0.05–0.95` = 逐图强度机制；`0.00` = 卡片、时间位置、强度值照常留在文档里，但这张图片不 VAE 编码、不进 conditioning、不新增 keyframe，也不参与该项校验。
+- 为什么不是「latent 乘系数」也不是「串几个全局值」：原生 H3 只有一个全局 `minimax_visual_cond_noise_aug`，串联时最后一个赢，payload 里本来就只有一个数；只把 latent 乘系数会让那一行仍带着近乎干净的 timestep 标签，模型把注入的噪声当**内容**画成纹理畸变。逐图强度必须同时做两件事：把这一条条件的 latent 朝噪声插值 `a*z + (1-a)*noise`（flow-matching 前向过程在时间 a），并把这一行的 modulation timestep 重标为 `max(t_video, a)`，让模型把噪声读成**不确定性**。只做一件就是任务书禁止的失败模式，所以两者一起装、要么都不装。机制参考 ComfyUI-H3Studio 的拆分，只借图片 Guide 需要的最小部分。
+- 新增 `comfyui/h3_strength_patch.py`（不编辑 ComfyUI 内核）：给 keyframe / reference 字典写 `noise_aug` 键，按**真实 payload 顺序**（带 latent 的 keyframes，再带 latent 的 refs）逐条对齐——不是卡片序号、也不是卡片数量，输入 `positive` 里已有首尾帧或其他 Guide 时照样对应正确；原生一次加两条 keyframe 时明确拒绝而不是猜。没有 `noise_aug` 的块保持原生逐比特行为（含内核自己的全局插值与全局 timestep 标签）；整个 payload 都没有这个键时补丁是惰性的，所以同进程里普通 H3 工作流不受影响；条数对不上直接抛错。适配装不上（内核实现变了 / 别的插件已改写同一批模型方法 / 模型类不存在）时 v2 低于 1.00 的运行以中文错误停下，不静默退化成全局强度；v1 与 v2 的 `1.00` / `0.00` 路径都不碰模型，照常运行。
+- 数据与缓存：v2 的图片条目多一个 `strength`，缺字段按 `1.00` 读，音频条目没有这个字段；强度计入 v2 的执行摘要与缓存指纹（改强度必重新执行；改选中项、缩放、滚动时间轴不重新编码）。v1 的文档解析、摘要与缓存行为不变，`tests/test_guide_timeline_core.py: test_the_v1_digest_bytes_are_frozen` 把 v1 摘要哈希钉死。
+- VAE 端口不变：两个 VAE 输入端口与接线方式照旧，可以一直连着；执行时按实际生效的素材决定调用哪一个，图片全是 `0.00` 时不要求连接视频 VAE，没有任何生效 Guide 时 positive 原样透传。
+- 前端：`web/guide_state.js` 是同一套规则的 JS 镜像（`STRENGTH_DEFAULT/MIN/OFF/MAX/STEP`、`normalizeStrength`、`strengthOf`、`isMutedImage`、`hasStrength`、`countRunnableV2`、`validateGuidesV2`）；`web/guide_timeline.js` 在图片卡片上显示强度徽标（`1.00` 与 `0.00` 各有样式，`0.00` 文案「强度 0.00 · 不加入」），详情区滑杆与卡片共用同一份 `guide.strength`；复制继承、替换素材保留、拖动换序不改强度。v1/v2 共用同一份前端文件，只靠一个节点版本开关决定是否显示强度，没有第二套渲染器。顺带按用户要求把节点上的「视频时长（秒）」改成「时间轴长度（秒）」。
+- 另一条未记录过的改动（补记）：节点内时间轴的卡片有独立尺寸控件 `view_state.strip_marker_side`（`STRIP_MARKER_SIDE_LIMITS` 40–320px、步进 16、默认 100），点「卡片 − / ＋」才写入；此后卡片不随轨道高度、节点宽度或卡片数量改变，未设置时仍走原来的自动尺寸，旧工作流显示不变。`stripLaneHeights` 不读卡片边长，所以两个控件互不影响；纯函数在 `web/guide_state.js: stripCardPlan`。
+- 测试：`tests/test_h3_strength_patch.py` 新增 21 条（payload 顺序与空洞对齐、无键时惰性、只移动被标记的行、标签不低于目标流、条数/布局不符拒绝、blend 按锚定帧种子可复现且保持编码器 dtype、全 1.00 什么都不改、模型类缺失/外部补丁/内核变更三种拒绝、拒绝后不动活内核、已标记条件不二次插值、未标记 prompt 保留全局插值）；`tests/test_guide_nodes.py` 51 条（两个节点同时注册、两个 node_id 一个输出同一接线、v2 schema 不动 v1 schema、每个强度值一个缓存键、强度对应它自己那条 keyframe、`0.00` 不解码不编码、只有 `0.00` 时不接视频 VAE 也透传、`0.00` 不影响其他 Guide 也不参与校验、全 1.00 与稳定版张量等价、适配被拒是错误不是静默退化、旧文档在两个节点上都不变）；`tests/test_guide_timeline_core.py` 54 条（`normalize_strength` 边界与缺字段、面板档位、v1 永远看不到 strength、v2 默认满强度、音频无字段、往返保存、摘要与缓存键随强度、视图状态不改键）；`tests/test_node_schema.py` 12 条。四套合跑 `Ran 138 tests ... OK`；全套 `Ran 589 tests in 23.838s ... OK`（日志 `work/h3lvm_full.log`）。前端 `node work/guide_state.test.mjs` → **103 passed, 0 failed**；`work/ref_state.test.mjs` → 46 passed；`work/picker_mode_state.test.mjs` 全绿；`work/check_plugin_web.ps1` → `syntax failures: 0`；`work/check_guide_imports.mjs` 无缺失/未使用导入。运行时导入 `work/check_runtime_import.py` → `NODE_LIST: 7`，`H3 Guide Timeline` 与 `H3 Guide Timeline v2` 同时注册。运行副本 `work/sync_h3lvm.ps1` → **87 files / mismatch 0 / stale 0**。
+- 本轮改了 Python 的 schema 与新节点 → 实测要**重启 ComfyUI**，`Ctrl+F5` 不够。
+- 未验证（必须用户实测）：`0.80 / 0.60 / 0.00` 对成片画面的实际影响、卡片徽标与详情滑杆的手感、节点内卡片独立尺寸控件的实际观感；与别的改写同一批模型方法的插件（例如 H3Studio）同时装在同一进程时的真实冲突。
+
+
+## 2026-10-24 · 参考素材池保留超额卡片与全部清空（已提交，见 Tag 线 v1.5.0）
+
+- 快照：`archive/2026-10-24-ee627c8-ref-pool-clear/` 保存本轮修改前完整工作树。
+- `H3 图片参考加载器`（共用面板的音频加载器同享）：状态栏分开显示素材总数与启用槽位数；添加唯一新素材时只有启用数量受 H3 槽位上限限制，超额素材自动以跳过状态保留在后排，不再直接丢弃，重复文件仍去重。
+- 新增「全部清空」：第一次点击只进入确认状态，第二次才清空当前节点的全部卡片；不删除 input/output 原文件，也不删除项目预设。清空后可继续添加或载入预设。
+- 自动验证：`work/ref_state.test.mjs` **46 passed, 0 failed**；`work/check_plugin_web.ps1` **syntax failures: 0**。独立 Chrome 通过 CDP 真实鼠标命中与点击完成 **21 passed, 0 failed**（首次点击仅确认、二次点击才清空、原文件仍可读取、项目预设不变且可重新载入、确认超时自动取消、空列表可序列化）；报告 `work/probe/ref-clear-all-report.json`。
+- 部署：已同步 ComfyUI 运行副本，**87 files / mismatch 0 / stale 0**。只改前端，`Ctrl+F5` 后生效；视觉布局仍由用户验收。
+- 本轮只改前端状态与交互，不改节点 ID、输入输出 schema、后端执行或预设文件结构。已随 v1.5.0 提交并推送。
+
+## 2026-10-24 · Segment Picker 隐藏重复模式下拉框（已提交，见 Tag 线 v1.5.0）
+
+- 快照：`archive/2026-10-24-ee627c8-picker-mode/` 保存本轮修改前完整工作树。
+- `H3 Segment Picker` 的原生 `source_mode` 下拉框设置 `options.hidden = true`，界面只保留顶部的「裁切片段 / 投放视频」两个大按钮。控件与输入 schema 未删除，仍按原位置保存和恢复，按钮、双模式项目状态及后端执行逻辑不变。
+- 测试：`work/picker_mode_state.test.mjs` 全绿；`work/check_plugin_web.ps1` **syntax failures: 0**。独立 Chrome 真实鼠标验证 **3/3 passed**：下拉值已隐藏、两个按钮仍存在、两种模式均可切换且节点尺寸不变。
+- 部署：已同步 ComfyUI 运行副本，只改前端，`Ctrl+F5` 后生效。已随 v1.5.0 提交并推送。
+
+## 2026-10-24 · Guide 卡片池外部文件载入诊断（已提交，见 Tag 线 v1.5.0）
+
+- 快照：`archive/2026-10-24-ee627c8/` 保存本轮修改前的完整工作树（包含当时尚未提交的 v2 与界面改动）。
+- 本轮只改 `web/guide_timeline.js` 的文件导入路径，不改 v1/v2 节点接口、Guide 数据格式或执行行为。
+- 已确认并修复的报告层缺陷：上传异常原先被空 `catch` 吞掉，失败计数又误用 `failed.length`（原变量是数字），用户只能看到“上传失败 undefined 个”或完全没有原因。现在逐个记录 `native-upload-start/success/failed`，底栏显示失败文件名与 HTTP/网络原因；非支持格式、空文件列表及其他导入异常也有明确提示。
+- `FileList` 在 `addFiles()` 入口统一转成数组；外部拖放按文件自身类型入库，上传失败不留下卡片。上传中提示包含当前文件名，成功添加的类型切换只依据实际上传成功的素材。
+- 自动验证：`node work/guide_state.test.mjs` → **103 passed, 0 failed**；`work/check_guide_imports.mjs` 无缺失/未使用导入；`work/check_plugin_web.ps1` → **syntax failures: 0**。同步运行副本后，独立 Chrome 对 `H3 Guide Timeline v2` 执行真实 `/upload/image` 请求与文档渲染，`work/guide_file_drop.mjs` → **14 passed, 0 failed**，其中网络失败分支明确显示 `probe_upload_failure.jpg（Failed to fetch）`，卡片数不变。
+- 部署：`work/sync_h3lvm.ps1` 已复制 `web/guide_timeline.js`，全仓 **87 files / mismatch 0 / stale 0**。只改前端，用户 `Ctrl+F5` 后复测。
+- 验证边界：探针使用合成 `DragEvent` 驱动产品处理器，上传、失败网络响应、文档写入和卡片渲染是真实的；它**不等于** Windows 资源管理器真人鼠标拖放已通过。用户原始文件的真人拖放仍待验收，不能把本轮自动结果宣称为该手势已修复。
+
 ## Tag 线
 
 - `v1.0.0` → `305a5d7`（首个 tag）：定长切段（每段含 MC 重叠帧固定 ≤ 用户输入时长且对齐 17n+5）+ 末段零丢失不对齐、素材存盘 int8/fp16 开关、项目素材库选单（切换/新建/删除整库）、两个节点的中文可视面板与常开卡片区、竖屏卡片完整显示、卡片缩放 100%–400% 共用控件。已推送 `origin`（`git-push-github.ps1 -Tags` 只推 tag，分支要再跑一次不带 `-Tags`）。
@@ -14,7 +57,9 @@
 
 - `v1.4.0` → `3d7a75e`（tag 对象 `ebba9af`）：新增 `H3 Guide Timeline` 节点（`comfyui/guide_nodes.py` + `core/guide_timeline.py`）——一个节点替代串联的原生 `MiniMaxH3AddGuide`：Guide 文档存在 `guides` widget，锚点按真实 latent 帧数解析，没有任何启用且已放置的 Guide 时 positive 原样透传，宿主缺 `MiniMaxH3AddGuide` 时只有本节点报中文错。`web/guide_timeline.js` 的 Guide 编排弹窗：图片轨/音频轨 + 素材池 + pointer 拖动（放置、轨道内移动、拖回素材池排序）、裁切与试听、缩放平移、卡片可禁用也可移除、`length_seconds` 直接按秒数给时长。节点内也画同一条时间轴（`📈 显示节点时间轴`），**轨道高度是唯一尺寸控件、编辑器与节点内共用同一份 `view_state.lane_heights`**，卡片边长 = 实际生效轨道高度 − `MARKER_INSET*2`；面板不够高时按比例夹住并把读数标琥珀，完全放不下时自动隐藏，**绝不写 `node.size`**。文档 `GUIDE_TIMELINE.md`（本机 ComfyUI `0.42.4` / 前端 `1.55.18` 的源码核对）+ README 一节。测试：`tests/test_guide_timeline_core.py`、`tests/test_guide_nodes.py`（含与显式串联原生 Add Guide 的张量等价）、`work/guide_state.test.mjs` 89 条。已推送 `origin/main`（远端 main = `3d7a75e`）与 `v1.4.0`。
 
-## 2026-10-23 · `v1.4.0`（当前基线）
+- `v1.5.0` → `666f4ac`（tag 对象 `3b7d1be`）：新增 `H3 Guide Timeline v2`（`comfyui/guide_nodes.py: H3GuideTimelineV2`，继承稳定版类，只改 node_id / display_name / 强度路径）——每张图片 Guide 一个「引导强度」`0.00–1.00` 步进 `0.05` 默认 `1.00`：`1.00` 走原生 Add Guide 原路径；`0.05–0.95` 走新增 `comfyui/h3_strength_patch.py` 的逐条件机制（按**真实 payload 顺序**给带 latent 的 keyframe/ref 写 `noise_aug`，同时做 latent 朝噪声插值 + 把该行 modulation timestep 重标为 `max(t_video, a)`；缺键的块逐比特不变，整块无键则补丁惰性，条数不符或内核被别的插件改写过就中文报错，不静默退化成全局强度）；`0.00` 保留卡片与时间位置但不 VAE 编码、不进 conditioning、不新增 keyframe。两个 VAE 端口与接线不变，按实际生效素材决定调用哪个，全是 `0.00` 时不要求接视频 VAE。强度进 v2 摘要与缓存指纹，视图状态不进；稳定版节点 ID/schema/文档/执行一字未改，v1 摘要哈希有测试钉住。另外：节点内时间轴卡片独立尺寸 `view_state.strip_marker_side`（40–320px 步进 16，与轨道高度互不影响）、`H3 Segment Picker` 隐藏重复的 `source_mode` 下拉框、参考加载器超额素材保留为跳过卡 + 两步「全部清空」、Guide 卡池 `FileList` 崩溃与上传失败原因显示。测试：`tests/test_h3_strength_patch.py` 21 条新增、`tests/test_guide_nodes.py` 51、`tests/test_guide_timeline_core.py` 54、`tests/test_node_schema.py` 12（四套合跑 `Ran 138 tests ... OK`），全套 `Ran 589 tests in 23.838s ... OK`（`work/h3lvm_full.log`），`work/guide_state.test.mjs` 103 passed，`work/ref_state.test.mjs` 46 passed，`work/picker_mode_state.test.mjs` 全绿，`work/check_plugin_web.ps1` 0 failures，运行时导入 `NODE_LIST: 7` 含两个 Guide 节点。已推送 `origin/main` 与 `v1.5.0`。
+
+## 2026-10-23 · `v1.4.0`（上一基线）
 
 - 快照：改动前的状态就是 `1921477`，已在 `archive/2026-10-21-1921477/`，本轮不另建旧快照。提交后的快照在 `archive/2026-10-23-3d7a75e/`（85 个文件，与 `git ls-files` 数量一致，由 `git archive v1.4.0` 解出，因此与提交内容逐字节相同）。
 - 需求（用户给的任务书）：`H3-Guide-Timeline-Plan-v1` —— 新增**一个**集成节点 `H3 Guide Timeline`，用双轨时间轴替代手动串联的原生 `MiniMaxH3AddGuide`。验收以任务书第 8 章 A/B/C/D 为准，第 9 章「明确不做」一条都不做（不改内核、不改现有节点接口、不做 17n+5/MC 吸附、不做 TTS/混音/补间/多 Shot 编排、不把素材上传外部服务）。
