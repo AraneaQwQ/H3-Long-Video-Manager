@@ -554,17 +554,21 @@ class StrengthSchemaTests(unittest.TestCase):
         self.assertIn(GUIDE.H3GuideTimelineV2, NODE_LIST)
         self.assertEqual(GUIDE.NODE_LIST, [GUIDE.H3GuideTimeline, GUIDE.H3GuideTimelineV2])
 
-    def test_two_node_ids_one_output_and_the_same_wiring(self):
+    def test_two_node_ids_dual_outputs_and_backward_compatible_wiring(self):
         self.assertEqual(self.v1.node_id, "H3 Guide Timeline")
         self.assertEqual(self.v2.node_id, "H3 Guide Timeline v2")
         self.assertEqual(self.v2.display_name, "H3 Guide 时间轴 v2")
         self.assertEqual(self.v2.category, self.v1.category)
         self.assertEqual([item.id for item in self.v2.inputs],
-                         ["positive", "latent", "length_seconds", "vae", "audio_vae", "guides"])
+                         ["positive", "positive_b", "latent", "length_seconds", "vae",
+                          "audio_vae", "guides", "enable_a", "enable_b"])
         self.assertEqual([item.optional for item in self.v2.inputs],
-                         [item.optional for item in self.v1.inputs])
-        self.assertEqual(len(self.v2.outputs), 1)
-        self.assertEqual(self.v2.outputs[0].display_name, "positive")
+                         [True, True, False, True, True, True, False, False, False])
+        self.assertEqual(self.v2.inputs[-2].default, True)
+        self.assertEqual(self.v2.inputs[-1].default, False)
+        self.assertEqual(len(self.v2.outputs), 2)
+        self.assertEqual(self.v2.outputs[0].display_name, "一采 positive (A)")
+        self.assertEqual(self.v2.outputs[1].display_name, "二采 positive (B)")
 
     def test_the_v2_schema_does_not_touch_the_v1_schema(self):
         # v2 edits the schema it got back. Calling either twice must stay clean.
@@ -602,6 +606,16 @@ class StrengthSchemaTests(unittest.TestCase):
         self.assertEqual(GUIDE.H3GuideTimeline.fingerprint_inputs(guides_json(entries)),
                          GUIDE.H3GuideTimeline.fingerprint_inputs(
                              guides_json([image_entry("a.png", 0)])))
+
+    def test_channel_switches_have_their_own_cache_keys(self):
+        document = guides_json([image_entry("a.png", 0)])
+        v2 = GUIDE.H3GuideTimelineV2.fingerprint_inputs
+        default = v2(document)
+        self.assertEqual(default, v2(document, enable_a=True, enable_b=False))
+        self.assertNotEqual(default, v2(document, enable_a=False, enable_b=False))
+        self.assertNotEqual(default, v2(document, enable_a=True, enable_b=True))
+        self.assertNotEqual(v2(document, enable_a=False, enable_b=True),
+                            v2(document, enable_a=True, enable_b=False))
 
 
 @unittest.skipIf(LOAD_ERROR is not None, "comfy_api unavailable: %s" % LOAD_ERROR)
@@ -794,6 +808,94 @@ class StrengthExecutionTests(unittest.TestCase):
             self.assertIn("IMG-01", str(ctx.exception))
         finally:
             GUIDE._native_add_guide = lambda: real
+
+
+@unittest.skipIf(LOAD_ERROR is not None, "comfy_api unavailable: %s" % LOAD_ERROR)
+class DualChannelExecutionTests(unittest.TestCase):
+    def setUp(self):
+        self._roots = GUIDE._media_roots
+        GUIDE._media_roots = lambda: {"input": INPUTS}
+        self.vae, self.audio_vae = FakeVideoVae(), FakeAudioVae()
+        make_gray("mid.png", (64, 64), 0.5)
+        make_wav("line.wav", seconds=2.0, sample_rate=48000)
+
+    def tearDown(self):
+        GUIDE._media_roots = self._roots
+
+    def run_node(self, entries, first, second, enable_a=True, enable_b=False):
+        return GUIDE.H3GuideTimelineV2.execute(
+            positive=first, positive_b=second, latent=av_latent(),
+            guides=guides_json(entries), vae=self.vae, audio_vae=self.audio_vae,
+            enable_a=enable_a, enable_b=enable_b)
+
+    def frames(self, out, channel):
+        return out.result[channel][0][1]["minimax_keyframes"]
+
+    def test_both_channels_keep_their_own_upstream_conditions(self):
+        from comfy.ldm.minimax.model import VISUAL_COND_TIMESTEP
+
+        first, second = conditioning(), conditioning()
+        first[0][1]["ref"] = "first-pass"
+        second[0][1]["ref"] = "second-pass"
+        out = self.run_node([
+            audio_entry("line.wav", 12, end_sample=48000),
+            image_entry_strength("mid.png", 48, 0.8),
+        ], first, second, enable_b=True)
+        self.assertEqual(len(out.result), 2)
+        self.assertEqual(out.result[0][0][1]["ref"], "first-pass")
+        self.assertEqual(out.result[1][0][1]["ref"], "second-pass")
+        for channel in (0, 1):
+            frames = self.frames(out, channel)
+            self.assertEqual([frame["resolved_frame_index"] for frame in frames], [12, 48])
+            self.assertEqual(frames[1]["noise_aug"], round(0.8 * VISUAL_COND_TIMESTEP, 6))
+        self.assertIsNot(self.frames(out, 0)[1], self.frames(out, 1)[1])
+        self.assertEqual(len(self.vae.calls), 2)
+        self.assertEqual(len(self.audio_vae.calls), 2)
+
+    def test_each_switch_independently_runs_or_passes_through(self):
+        first, second = conditioning(), conditioning()
+        entries = [image_entry("mid.png", 48)]
+        first_only = self.run_node(entries, first, second)
+        self.assertEqual(len(self.frames(first_only, 0)), 1)
+        self.assertIs(first_only.result[1], second)
+
+        first, second = conditioning(), conditioning()
+        second_only = self.run_node(entries, first, second, enable_a=False, enable_b=True)
+        self.assertIs(second_only.result[0], first)
+        self.assertEqual(len(self.frames(second_only, 1)), 1)
+        self.assertEqual(len(self.vae.calls), 2)
+
+    def test_second_channel_can_run_without_a_first_positive(self):
+        second = conditioning()
+        out = self.run_node([image_entry("mid.png", 48)], None, second,
+                            enable_a=False, enable_b=True)
+        self.assertIsNone(out.result[0])
+        self.assertEqual(len(self.frames(out, 1)), 1)
+        self.assertEqual(len(self.vae.calls), 1)
+
+    def test_an_active_channel_requires_its_own_positive(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.run_node([image_entry("mid.png", 48)], conditioning(), None,
+                          enable_a=False, enable_b=True)
+        self.assertIn("二采通道已启用", str(ctx.exception))
+        self.assertIn("positive", str(ctx.exception))
+        self.assertEqual(self.vae.calls, [])
+
+    def test_two_disabled_channels_do_not_validate_or_encode_guides(self):
+        first, second = conditioning(), conditioning()
+        asked = []
+        saved = GUIDE.install_strength_patch
+        GUIDE.install_strength_patch = lambda: asked.append(1)
+        try:
+            out = self.run_node([image_entry_strength("missing.png", 9999, 0.7)],
+                                first, second, enable_a=False, enable_b=False)
+        finally:
+            GUIDE.install_strength_patch = saved
+        self.assertIs(out.result[0], first)
+        self.assertIs(out.result[1], second)
+        self.assertEqual(asked, [])
+        self.assertEqual(self.vae.calls, [])
+        self.assertEqual(self.audio_vae.calls, [])
 
 
 @unittest.skipIf(LOAD_ERROR is not None, "comfy_api unavailable: %s" % LOAD_ERROR)

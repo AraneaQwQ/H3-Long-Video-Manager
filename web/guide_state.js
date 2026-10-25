@@ -425,6 +425,21 @@ export function countRunnableV2(guides) {
     return countRunnable((guides || []).filter((guide) => !isMutedImage(guide)));
 }
 
+export function guideStatusCounts(guides, withStrength = false) {
+    const rows = guides || [];
+    const counts = {
+        images: 0, audios: 0, unplaced: 0, disabled: 0, muted: 0, total: rows.length,
+    };
+    for (const guide of rows) {
+        if (guide.enabled === false) counts.disabled += 1;
+        else if (guide.frame_index === null || guide.frame_index === undefined) counts.unplaced += 1;
+        else if (withStrength && isMutedImage(guide)) counts.muted += 1;
+        else if (guide.kind === IMAGE_KIND) counts.images += 1;
+        else if (guide.kind === AUDIO_KIND) counts.audios += 1;
+    }
+    return counts;
+}
+
 export function sortForExecution(guides) {
     const order = { [IMAGE_KIND]: 0, [AUDIO_KIND]: 1 };
     return runnableGuides(guides)

@@ -167,6 +167,27 @@
     padding-right: 8px;
 }
 
+.h3ref-name {
+    width: 100%;
+    height: 24px;
+    box-sizing: border-box;
+    margin-bottom: 4px;
+    padding: 3px 6px;
+    border: 1px solid #3f3f46;
+    border-radius: 4px;
+    background: #18181b;
+    color: #e2e8f0;
+    font-size: 11px;
+    line-height: 16px;
+    cursor: text;
+}
+
+.h3ref-name::placeholder { color: #94a3b8; }
+.h3ref-name:hover { border-color: #52525b; }
+.h3ref-name:focus { outline: none; border-color: #60a5fa; }
+
+.h3lvm-card[draggable="true"] .h3ref-name { cursor: text; }
+
 /* One card = one fixed meta block. The size line may wrap onto a second line, but the
    block is always exactly two lines tall (26px = 2 x 10px x 1.3), so a long size string
    can never make one card taller than its neighbours and the rows keep lining up. The

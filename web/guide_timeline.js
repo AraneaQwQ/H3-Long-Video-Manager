@@ -32,7 +32,7 @@ import { insertPosition } from "./ref_state.js";
 import {
     alignFrameCount, AUDIO_DECODING, AUDIO_FAILED, AUDIO_KIND, AUDIO_METADATA_ONLY, AUDIO_READY, DEFAULT_DOCUMENT, DEFAULT_FPS, IMAGE_KIND, KINDS,
     MAX_GUIDE_AUDIOS, MAX_GUIDE_IMAGES, MAX_GUIDE_TOTAL, STRENGTH_OFF,
-    TRACK_PADDING, addGuides, audioSpans, audioStatus, clampScroll, countRunnable, countRunnableV2, createScale,
+    TRACK_PADDING, addGuides, audioSpans, audioStatus, clampScroll, countRunnable, createScale, guideStatusCounts,
     declutterMarkers, duplicateGuide, formatSeconds, frameFromLanePointer, frameToSeconds, guideFramesFor, mediaKind, mediaKeyOf,
     moveGuide, nextFreeFrame, panBy, panWindow, parseDocument, patchGuide, pendingAudioCount, ensureLabels, removeGuide,
     scrollForPanThumb, scrollForPointerPan, scrollToFrame, secondsToFrame,
@@ -397,25 +397,6 @@ function installGuideNode(node) {
             fps: doc.fps,
             upstream: upstreamLength(),
         });
-    }
-
-    // Show the arithmetic rather than just the result: a person typed seconds, and the ruler is
-    // in frames, so the note has to say how 10 秒 became 243 帧 and why that is not 240.
-    function lengthNote(range) {
-        if (range.source === "manual") {
-            const math = `${range.seconds} 秒 × ${doc.fps}fps = ${range.rawFrames} 帧，向上对齐 17n+5 = ${range.frames} 帧`;
-            if (range.runFrames && range.runFrames !== range.frames) {
-                return `总帧数按本节点的时间轴长度（秒）推算（${math}）；上次实际运行是 ${range.runFrames} 帧，两者不一致，运行时会按实际 latent 重新校验`;
-            }
-            return `总帧数按本节点的时间轴长度（秒）推算（${math}），运行后以实际 latent 为准`;
-        }
-        if (range.source === "upstream") {
-            return `总帧数按「${range.label}」的 length（帧）推算，运行后以实际 latent 为准`;
-        }
-        if (range.source === "none") {
-            return "还没有可用的 H3 AV latent：连接 latent 后时间尺才会出现";
-        }
-        return "总帧数来自上一次实际运行的 latent";
     }
 
     // ---------- media metadata, cached by file ----------
@@ -1251,6 +1232,7 @@ function installGuideNode(node) {
                 img.alt = guide.label || "";
                 img.draggable = false;
                 el.append(img, make("span", "h3guide-marker-cap", `${guide.label} · ${frame}f`));
+                if (perImageStrength) el.appendChild(makeStrengthBadge(guide, true));
                 if (laid?.groupSize > 1) el.append(make("span", "h3guide-group", `×${laid.groupSize}`));
                 widthFrames = 1;
             } else {
@@ -1435,6 +1417,25 @@ function installGuideNode(node) {
     // the native 1.00" must not look like two different things. A 0.00 card also says 不加入:
     // the card is still on the timeline, and the node still will not encode it - both facts
     // have to be readable at the same time.
+    function paintStrengthBadge(badge, guide, compact = false) {
+        const strength = strengthOf(guide);
+        const off = strength <= STRENGTH_OFF;
+        badge.textContent = compact
+            ? strength.toFixed(2)
+            : (off ? "强度 0.00 · 不加入" : `强度 ${strength.toFixed(2)}`);
+        badge.title = off
+            ? "引导强度 0.00：卡片和插入位置都保留，但本次不会解码这张图，也不会加入 conditioning"
+            : `引导强度 ${strength.toFixed(2)}：选中卡片后可在详情区修改；1.00 为原生行为`;
+        badge.classList.toggle("h3guide-strength-native", strength >= STRENGTH_MAX);
+        badge.classList.toggle("h3guide-strength-off", off);
+    }
+
+    function makeStrengthBadge(guide, compact = false) {
+        const badge = make("div", `h3guide-strength${compact ? " h3guide-strength-compact" : ""}`);
+        paintStrengthBadge(badge, guide, compact);
+        return badge;
+    }
+
     function syncStrengthBadge(card, guide) {
         const wrap = card.querySelector(".h3lvm-thumb-wrap");
         if (!wrap) return;
@@ -1443,22 +1444,11 @@ function installGuideNode(node) {
             old?.remove();
             return;
         }
-        const strength = strengthOf(guide);
-        const off = strength <= STRENGTH_OFF;
-        const text = off ? "强度 0.00 · 不加入" : `强度 ${strength.toFixed(2)}`;
         if (old) {
-            old.textContent = text;
-            old.classList.toggle("h3guide-strength-native", strength >= STRENGTH_MAX);
-            old.classList.toggle("h3guide-strength-off", off);
+            paintStrengthBadge(old, guide);
             return;
         }
-        const badge = make("div", "h3guide-strength", text);
-        badge.title = off
-            ? "引导强度 0.00：卡片和插入位置都保留，但本次不会解码这张图，也不会加入 conditioning"
-            : "这张图对生成画面的约束强度，选中卡片后可在下方详情里修改";
-        badge.classList.toggle("h3guide-strength-native", strength >= STRENGTH_MAX);
-        badge.classList.toggle("h3guide-strength-off", off);
-        wrap.appendChild(badge);
+        wrap.appendChild(makeStrengthBadge(guide));
     }
 
     function updateCardState(card, guide) {
@@ -2842,6 +2832,52 @@ function installGuideNode(node) {
                 input.value = row.value;
                 input.addEventListener("change", () => onDetailInput(guide, row.key, input.value));
                 box.appendChild(input);
+                if (row.key === "strength") {
+                    box.classList.add("h3guide-field-strength");
+                    const controls = make("div", "h3guide-strength-controls");
+                    const slider = make("input", "h3guide-strength-range");
+                    slider.type = "range";
+                    slider.min = String(STRENGTH_MIN);
+                    slider.max = String(STRENGTH_MAX);
+                    slider.step = String(STRENGTH_STEP);
+                    slider.value = row.value;
+                    slider.dataset.strengthRange = "";
+                    slider.title = row.title;
+                    slider.setAttribute("aria-label", "图片引导强度");
+                    const presets = make("div", "h3guide-strength-presets");
+                    const syncPresets = (raw) => {
+                        const value = Number(raw);
+                        for (const button of presets.children) {
+                            const active = Math.abs(Number(button.dataset.strength) - value) < 0.001;
+                            button.classList.toggle("active", active);
+                            button.setAttribute("aria-pressed", String(active));
+                        }
+                    };
+                    for (const preset of [
+                        { value: 1, label: "原生 1.00", title: "沿用原生图片 Guide 行为" },
+                        { value: 0.8, label: "0.80", title: "降低这张图片的画面约束" },
+                        { value: 0.6, label: "0.60", title: "进一步放宽动作与场景衔接" },
+                        { value: 0, label: "不加入 0.00", title: "保留卡片和时间位置，但不编码、不加入 conditioning" },
+                    ]) {
+                        const button = make("button", "h3guide-act h3guide-strength-preset", preset.label);
+                        button.type = "button";
+                        button.dataset.strength = String(preset.value);
+                        button.title = preset.title;
+                        button.onclick = (event) => {
+                            event.stopPropagation();
+                            applyStrengthInput(guide, preset.value);
+                        };
+                        presets.appendChild(button);
+                    }
+                    slider.addEventListener("input", () => {
+                        input.value = Number(slider.value).toFixed(2);
+                        syncPresets(slider.value);
+                    });
+                    slider.addEventListener("change", () => applyStrengthInput(guide, slider.value));
+                    syncPresets(row.value);
+                    controls.append(slider, presets);
+                    box.appendChild(controls);
+                }
             } else {
                 const value = make("div", "h3guide-fvalue", row.value);
                 value.dataset.key = row.key;
@@ -2876,6 +2912,16 @@ function installGuideNode(node) {
                 if (document.activeElement !== field) field.value = row.value;
             } else {
                 field.textContent = row.value;
+            }
+        }
+        if (guide.kind === IMAGE_KIND && perImageStrength) {
+            const strength = strengthOf(guide);
+            const slider = els.detail.querySelector("[data-strength-range]");
+            if (slider && document.activeElement !== slider) slider.value = strength.toFixed(2);
+            for (const button of els.detail.querySelectorAll("[data-strength]")) {
+                const active = Math.abs(Number(button.dataset.strength) - strength) < 0.001;
+                button.classList.toggle("active", active);
+                button.setAttribute("aria-pressed", String(active));
             }
         }
     }
@@ -2994,17 +3040,53 @@ function installGuideNode(node) {
     // make the node grow. The node surface below fills whatever the panel still has.
     function renderSummary() {
         const range = timelineRange();
+        const info = summaryOf(doc.guides, range.frames, doc.fps);
+        nodeFooter.replaceChildren();
+        if (perImageStrength) {
+            const counts = guideStatusCounts(doc.guides, true);
+            statusText.textContent = `生效 图片 ${counts.images} · 音频 ${counts.audios}`
+                + ` · 待放置 ${counts.unplaced} · 停用 ${counts.disabled} · 强度0 ${counts.muted}`
+                + ` · ${doc.fps} FPS · `
+                + (range.frames ? `${range.frames} 帧 / ${formatSeconds(info.duration_seconds, 2)}s` : "总帧数未知");
+            const active = counts.images + counts.audios;
+            let vaeNote = "无需 VAE";
+            if (counts.images && counts.audios) vaeNote = "需要视频 VAE + 音频 VAE";
+            else if (counts.images) vaeNote = "需要视频 VAE · 无需音频 VAE";
+            else if (counts.audios) vaeNote = "需要音频 VAE · 无需视频 VAE";
+            let checkNote = "无生效 Guide · positive 原样透传";
+            let checkClass = "ok";
+            let checkTitle = "没有实际生效的 Guide，不调用图片或音频 VAE";
+            if (parseError) {
+                checkNote = "Guide 列表读取失败 · 打开编辑器处理";
+                checkClass = "error";
+                checkTitle = parseError;
+            } else if (active) {
+                const state = validationState(currentProblems(), pendingAudioCount(doc.guides, readyAudioKeys()));
+                checkTitle = state.problems.join("\n") || state.text;
+                if (state.level === "error") {
+                    checkNote = `编排 ${state.problems.length} 项待修正 · ${state.problems[0]}`;
+                    checkClass = "error";
+                } else if (state.level === "pending") {
+                    checkNote = "音频信息待确认 · 时长与重叠检查未完成";
+                    checkClass = "pending";
+                } else {
+                    checkNote = "编排校验通过";
+                }
+            }
+            const hint = make("span", `h3lvm-hint h3guide-node-check ${checkClass}`, `${vaeNote} · ${checkNote}`);
+            hint.title = checkTitle;
+            nodeFooter.appendChild(hint);
+            scheduleStrip();
+            return;
+        }
         // "What runs" leaves out a 0.00 image card, so the node body cannot promise an encode
         // the node will not do. The editor quota line still counts the document, which is
         // what the node's own quota check counts.
-        const counts = perImageStrength ? countRunnableV2(doc.guides) : countRunnable(doc.guides);
+        const counts = countRunnable(doc.guides);
         const parked = doc.guides.length - counts[IMAGE_KIND] - counts[AUDIO_KIND];
-        const info = summaryOf(doc.guides, range.frames, doc.fps);
         statusText.textContent = `启用 图片 ${counts[IMAGE_KIND]} · 音频 ${counts[AUDIO_KIND]} · 不执行 ${parked}`
             + ` · ${doc.fps} FPS · `
             + (range.frames ? `${range.frames} 帧 / ${formatSeconds(info.duration_seconds, 2)}s` : "总帧数未知");
-        nodeFooter.replaceChildren();
-        nodeFooter.append(make("span", "h3lvm-hint", lengthNote(range)));
         if (doc.view_state.strip_open === true) {
             nodeFooter.append(make("span", "h3lvm-hint", "节点时间轴已开启：把节点拉高后才会显示；缩放与卡片池在 Guide 编辑器里。"));
         } else {

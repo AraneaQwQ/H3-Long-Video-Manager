@@ -86,6 +86,14 @@ def _clean_filename(value, index: int) -> str:
     return name
 
 
+def _clean_label(value, index: int) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"media item {index} has a non-text card label: {value!r}")
+    return " ".join(value.split())
+
+
 def parse_media_list(raw, max_items: int = MAX_REF_IMAGES) -> list:
     """Return an ordered list of {"filename", "subfolder", "type"} entries.
 
@@ -140,6 +148,9 @@ def parse_media_list(raw, max_items: int = MAX_REF_IMAGES) -> list:
                 f"expected one of {', '.join(ALLOWED_MEDIA_TYPES)}"
             )
         entry["type"] = media_type
+        label = _clean_label(item.get("label"), index) if isinstance(item, dict) else ""
+        if label:
+            entry["label"] = label
         # A parked card keeps its file so the panel can bring it back, but it holds
         # no slot. Absent means active, so lists saved before this feature parse the
         # same way they always did.

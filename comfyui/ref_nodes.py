@@ -150,7 +150,7 @@ class H3ImageReferenceLoader(io.ComfyNode):
                 io.String.Input(
                     "media_files",
                     default="[]",
-                    tooltip="面板写入的 JSON 列表；卡片顺序就是 ref_image_0..8 的槽位顺序。手动写 API 时也可以直接填文件名列表。带 skip: true 的条目是已跳过的卡片：保留在列表里，但不输出、也不占槽位。",
+                    tooltip="面板写入的 JSON 列表；卡片顺序就是 ref_image_0..8 的槽位顺序。可选 label 只是卡片自定义名称，不改变接口编号或输出内容。手动写 API 时也可以直接填文件名列表。带 skip: true 的条目是已跳过的卡片：保留在列表里，但不输出、也不占槽位。",
                 ),
                 io.Float.Input(
                     "target_megapixels",
@@ -174,7 +174,7 @@ class H3ImageReferenceLoader(io.ComfyNode):
                 io.String.Input(
                     "project_name",
                     default=DEFAULT_PROJECT,
-                    tooltip="面板的项目预设库：决定「存为项目预设 / 载入项目预设」读写哪个项目文件夹。预设里只有参考图的路径，不复制图片；这个字段不影响本节点输出的图片。",
+                    tooltip="面板的项目预设库：决定「存为项目预设 / 载入项目预设」读写哪个项目文件夹。预设保存参考图路径、自定义名称与排列，不复制图片；这个字段不影响本节点输出的图片。",
                 ),
             ],
             outputs=[io.Image.Output(display_name=f"ref_image_{index}")
@@ -246,14 +246,14 @@ class H3AudioReferenceLoader(io.ComfyNode):
                 io.String.Input(
                     "media_files",
                     default="[]",
-                    tooltip="面板写入的 JSON 列表；卡片顺序就是 ref_audio_0..2 的槽位顺序。带 skip: true 的条目是已跳过的卡片：保留在列表里，但不输出、也不占槽位。带 start / duration（秒）的音频卡片只输出那一段：start 为负数是从片尾往前算，duration 为 0 表示到片尾。",
+                    tooltip="面板写入的 JSON 列表；卡片顺序就是 ref_audio_0..2 的槽位顺序。可选 label 只是卡片自定义名称，不改变接口编号或输出内容。带 skip: true 的条目是已跳过的卡片：保留在列表里，但不输出、也不占槽位。带 start / duration（秒）的音频卡片只输出那一段：start 为负数是从片尾往前算，duration 为 0 表示到片尾。",
                 ),
                 # Appended last, and only used by the panel's preset buttons; see the
                 # image node for why the order matters.
                 io.String.Input(
                     "project_name",
                     default=DEFAULT_PROJECT,
-                    tooltip="面板的项目预设库：决定「存为项目预设 / 载入项目预设」读写哪个项目文件夹。预设里只有音频的路径，不复制音频；这个字段不影响本节点输出的音频。",
+                    tooltip="面板的项目预设库：决定「存为项目预设 / 载入项目预设」读写哪个项目文件夹。预设保存音频路径、自定义名称、排列与裁切窗口，不复制音频；这个字段不影响本节点输出的音频。",
                 ),
             ],
             outputs=[io.Audio.Output(display_name=f"ref_audio_{index}")

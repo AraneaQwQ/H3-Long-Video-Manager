@@ -255,6 +255,7 @@ class H3GuideTimeline(io.ComfyNode):
     # The one switch between the stable node and v2. Everything else is shared code,
     # so the stable node cannot drift while v2 grows a feature.
     STRENGTH_ENABLED = False
+    DUAL_CHANNEL = False
     LOG_TAG = GUIDE_NODE_ID
 
     @classmethod
@@ -274,6 +275,13 @@ class H3GuideTimeline(io.ComfyNode):
         if cls.STRENGTH_ENABLED:
             return sort_for_execution_v2(parsed)
         return sort_for_execution(parsed)
+
+    @classmethod
+    def _node_output(cls, first, second, parsed: list, frame_count: int) -> io.NodeOutput:
+        ui = _ui_document(parsed, frame_count, cls.STRENGTH_ENABLED)
+        if cls.DUAL_CHANNEL:
+            return io.NodeOutput(first, second, ui=ui)
+        return io.NodeOutput(first, ui=ui)
 
     @classmethod
     def _validate(cls, parsed: list, frame_count: int, spans: dict, image_frames: dict) -> list:
@@ -347,14 +355,31 @@ class H3GuideTimeline(io.ComfyNode):
             return repr(guides)
 
     @classmethod
-    def execute(cls, positive, latent, guides, length_seconds=0.0, vae=None, audio_vae=None) -> io.NodeOutput:
+    def execute(cls, positive=None, latent=None, guides=DEFAULT_GUIDES, length_seconds=0.0,
+                vae=None, audio_vae=None, positive_b=None, enable_a=True,
+                enable_b=False) -> io.NodeOutput:
         return cls._run(positive, latent, guides, length_seconds=length_seconds,
-                        vae=vae, audio_vae=audio_vae)
+                        vae=vae, audio_vae=audio_vae, positive_b=positive_b,
+                        enable_a=enable_a, enable_b=enable_b)
 
     @classmethod
-    def _run(cls, positive, latent, guides, length_seconds=0.0, vae=None, audio_vae=None) -> io.NodeOutput:
+    def _run(cls, positive=None, latent=None, guides=DEFAULT_GUIDES, length_seconds=0.0,
+             vae=None, audio_vae=None, positive_b=None, enable_a=True,
+             enable_b=False) -> io.NodeOutput:
         parsed = cls._parse(guides)
         ordered = cls._ordered(parsed)
+        channels = [{"name": "一采", "active": not cls.DUAL_CHANNEL or enable_a,
+                     "conditioning": positive}]
+        if cls.DUAL_CHANNEL:
+            channels.append({"name": "二采", "active": bool(enable_b),
+                             "conditioning": positive_b})
+            missing = [channel["name"] for channel in channels
+                       if channel["active"] and channel["conditioning"] is None]
+            if missing:
+                raise ValueError("%s：%s通道已启用，但没有连接对应的 positive。"
+                                 % (cls.LOG_TAG, "、".join(missing)))
+        active_channels = [channel for channel in channels if channel["active"]]
+        second = channels[1]["conditioning"] if cls.DUAL_CHANNEL else None
         if not ordered:
             muted = [guide for guide in parsed if is_muted_image(guide)]
             if muted:
@@ -362,7 +387,10 @@ class H3GuideTimeline(io.ComfyNode):
                       % (cls.LOG_TAG, len(muted)))
             else:
                 print("[%s] 没有启用且已放置的 Guide，positive 原样透传" % cls.LOG_TAG)
-            return io.NodeOutput(positive, ui=_ui_document(parsed, 0, cls.STRENGTH_ENABLED))
+            return cls._node_output(channels[0]["conditioning"], second, parsed, 0)
+        if not active_channels:
+            print("[%s] 一采与二采 Guide 均已停用，两路 positive 原样透传" % cls.LOG_TAG)
+            return cls._node_output(channels[0]["conditioning"], second, parsed, 0)
 
         native, table = _native_add_guide()
         frame_count, why = _latent_frame_count(latent, table)
@@ -422,7 +450,6 @@ class H3GuideTimeline(io.ComfyNode):
             raise ValueError("%s 需要逐图引导强度，但它无法在当前 ComfyUI 上启用：%s"
                              % (cls.LOG_TAG, install_reason()))
 
-        conditioned = positive
         for guide in ordered:
             image = audio = None
             if guide["kind"] == IMAGE_KIND:
@@ -431,26 +458,33 @@ class H3GuideTimeline(io.ComfyNode):
                 audio = audios.pop(guide["id"], None)
                 if audio is None:
                     audio = _decode_audio_window(resolve_media_path(roots, guide["asset"]), guide)
-            before = _keyframe_ids(conditioned) if cls.STRENGTH_ENABLED else None
-            result = native.execute(
-                conditioned, latent, int(guide["frame_index"]),
-                vae=vae, audio_vae=audio_vae, image=image, audio=audio)
-            conditioned = result[0] if isinstance(result, io.NodeOutput) else result
-            if cls.STRENGTH_ENABLED and guide["kind"] == IMAGE_KIND:
-                strength = normalize_strength(guide.get("strength"))
-                if strength < STRENGTH_MAX:
-                    _mark_new_keyframe_strength(conditioned, before, strength,
-                                                int(guide["frame_index"]), guide)
+            for channel in active_channels:
+                conditioned = channel["conditioning"]
+                before = _keyframe_ids(conditioned) if cls.STRENGTH_ENABLED else None
+                result = native.execute(
+                    conditioned, latent, int(guide["frame_index"]),
+                    vae=vae, audio_vae=audio_vae, image=image, audio=audio)
+                conditioned = result[0] if isinstance(result, io.NodeOutput) else result
+                channel["conditioning"] = conditioned
+                if cls.STRENGTH_ENABLED and guide["kind"] == IMAGE_KIND:
+                    strength = normalize_strength(guide.get("strength"))
+                    if strength < STRENGTH_MAX:
+                        _mark_new_keyframe_strength(conditioned, before, strength,
+                                                    int(guide["frame_index"]), guide)
             del image, audio
 
-        keyframes = _keyframes_of(conditioned)
+        keyframe_counts = [len(_keyframes_of(channel["conditioning"]))
+                           for channel in active_channels]
+        channel_note = ("；通道：" + "、".join(channel["name"] for channel in active_channels)
+                        if cls.DUAL_CHANNEL else "")
         print("[%s] %d guides anchored (%d image / %d audio) on a %d frame video "
-              "(%.3f s @ %d FPS); conditioning now carries %d keyframes%s"
+              "(%.3f s @ %d FPS); conditioning now carries %s keyframes%s%s"
               % (cls.LOG_TAG, len(ordered), counts[IMAGE_KIND], counts[AUDIO_KIND],
                  frame_count, frame_count / float(DEFAULT_FPS), DEFAULT_FPS,
-                 len(keyframes), " (per-image strength)" if per_image else ""))
-        return io.NodeOutput(conditioned,
-                             ui=_ui_document(parsed, frame_count, cls.STRENGTH_ENABLED))
+                 "/".join(str(count) for count in keyframe_counts),
+                 " (per-image strength)" if per_image else "", channel_note))
+        second = channels[1]["conditioning"] if cls.DUAL_CHANNEL else None
+        return cls._node_output(channels[0]["conditioning"], second, parsed, frame_count)
 
 
 
@@ -464,6 +498,7 @@ class H3GuideTimelineV2(H3GuideTimeline):
     """
 
     STRENGTH_ENABLED = True
+    DUAL_CHANNEL = True
     LOG_TAG = GUIDE_NODE_V2_ID
 
     @classmethod
@@ -479,6 +514,27 @@ class H3GuideTimelineV2(H3GuideTimeline):
             "强度范围 0.00-1.00、步进 0.05，音频没有强度项。两个 VAE 端口和接线方式与旧节点一致，可以一直连着，"
             "执行时按实际生效的素材决定是否调用：强度 0.00 的图片不需要视频 VAE。"
             "当前 ComfyUI 无法启用逐图强度时本节点会明确报错，不会静默退回全局强度。")
+        schema.inputs[0].optional = True
+        schema.inputs[0].display_name = "一采 positive (A)"
+        schema.inputs[0].tooltip = "一采参考转视频节点的 positive；停用一采 Guide 时原样透传。"
+        schema.inputs.insert(1, io.Conditioning.Input(
+            "positive_b", display_name="二采 positive (B)", optional=True,
+            tooltip="二采参考转视频节点的 positive；停用二采 Guide 时原样透传。"))
+        schema.inputs.extend([
+            io.Boolean.Input(
+                "enable_a", display_name="激活一采 Guide", default=True,
+                label_on="开启", label_off="关闭",
+                tooltip="开启后，把本节点的时间轴 Guide 加入一采 positive；关闭则一采原样透传。"),
+            io.Boolean.Input(
+                "enable_b", display_name="激活二采 Guide", default=False,
+                label_on="开启", label_off="关闭",
+                tooltip="开启后，把本节点的时间轴 Guide 加入二采 positive；关闭则二采原样透传。"),
+        ])
+        schema.outputs[0].display_name = "一采 positive (A)"
+        schema.outputs.append(io.Conditioning.Output(display_name="二采 positive (B)"))
+        schema.description += (
+            "双通道共用同一时间轴、latent 与 VAE：一采 Guide 默认开启，二采 Guide 默认关闭，"
+            "可分别启用。停用的通道不添加 Guide，其 positive 原样透传；只使用二采时一采输入可以留空。")
         for item in schema.inputs:
             if getattr(item, "id", None) == "guides":
                 item.tooltip = (
@@ -487,6 +543,11 @@ class H3GuideTimelineV2(H3GuideTimeline):
                     "缺字段按 1.00 读取；0.00 表示这张图片不加入 conditioning）。strength 计入执行指纹："
                     "改强度会重新编码，改选中卡片、缩放或滚动时间轴不会。")
         return schema
+
+    @classmethod
+    def fingerprint_inputs(cls, guides, enable_a=True, enable_b=False):
+        base = super().fingerprint_inputs(guides)
+        return "%s|guide_a=%d|guide_b=%d" % (base, bool(enable_a), bool(enable_b))
 
 
 NODE_LIST = [H3GuideTimeline, H3GuideTimelineV2]

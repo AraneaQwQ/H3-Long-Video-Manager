@@ -59,6 +59,18 @@ class TestParseMediaList(unittest.TestCase):
         self.assertEqual(parse_media_list('[{"filename": "x.png"}]'),
                          [{"filename": "x.png", "subfolder": "", "type": "input"}])
 
+    def test_custom_card_labels_are_optional_clean_text(self):
+        entries = parse_media_list(json.dumps([
+            {"filename": "hero.png", "label": "  主角   小林  "},
+            {"filename": "voice.wav", "label": "旁白声线"},
+            {"filename": "plain.png"},
+        ]))
+        self.assertEqual(entries[0]["label"], "主角 小林")
+        self.assertEqual(entries[1]["label"], "旁白声线")
+        self.assertNotIn("label", entries[2], "an untitled card keeps the old JSON shape")
+        with self.assertRaises(ValueError):
+            parse_media_list('[{"filename": "bad.png", "label": 42}]')
+
     def test_more_items_than_slots_keeps_the_first_ones(self):
         raw = [f"pic{i}.png" for i in range(MAX_REF_IMAGES + 4)]
         entries = parse_media_list(raw, MAX_REF_IMAGES)
@@ -246,6 +258,13 @@ class TestMediaFingerprint(unittest.TestCase):
         roots = {"input": TMP_ROOT}
         entries = parse_media_list('[{"filename": "same.png"}]')
         self.assertEqual(media_fingerprint(entries, roots), media_fingerprint(entries, roots))
+
+    def test_a_display_label_does_not_invalidate_the_decode_cache(self):
+        write_file("label.png", "same bytes")
+        roots = {"input": TMP_ROOT}
+        plain = parse_media_list('[{"filename": "label.png"}]')
+        named = parse_media_list('[{"filename": "label.png", "label": "角色 A"}]')
+        self.assertEqual(media_fingerprint(plain, roots), media_fingerprint(named, roots))
 
     def test_replacing_the_bytes_invalidates_the_key(self):
         write_file("swap.png", "one")

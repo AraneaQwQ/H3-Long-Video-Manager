@@ -11,8 +11,8 @@ own one-list file:
     <output>/h3-lvm-audio-refs/<project>/h3lvm_references.json
 
 Nothing here reads or writes media bytes. A preset stores exactly what a card already
-stores - a {filename, subfolder, type} path, plus an audio window - so it costs a few
-hundred bytes however big the media is. Each list goes through the same parser the node
+stores - a {filename, subfolder, type} path, an optional display label, plus an audio
+window - so it costs a few hundred bytes however big the media is. Each list goes through the same parser the node
 uses, so a preset can never hold something the loader would reject nor be longer than the
 slots it would have to fill.
 

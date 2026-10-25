@@ -138,3 +138,15 @@ execute(cls, positive, latent, frame_idx, vae=None, audio_vae=None, image=None, 
   PermissionError（环境限制，不是实现问题）。
 - 未验证（必须用户实测）：0.80 / 0.60 / 0.00 对成片画面的实际影响、卡片上强度徽标与详情编辑的手感；
   本机没有安装 ComfyUI-H3Studio，所以「与它共存」只有代码层的拒绝路径，没有实测。
+
+## 8. v2 双通道：一采与二采（2026-10-25）
+
+- v2 新增 `positive`（一采 A）与 `positive_b`（二采 B）两个可选 conditioning 输入，以及对应的两个输出。
+  两个通道共用同一时间轴、latent、视频 VAE 与音频 VAE，但分别在各自的上游 conditioning 上调用原生 Add Guide；
+  不合并两条条件链，也不把一采新增的 keyframe 写进二采。
+- **激活一采 Guide**（`enable_a`）默认开启，**激活二采 Guide**（`enable_b`）默认关闭，因此既有 v2 工作流仍只执行一采。
+  停用的通道不校验或编码 Guide，其输入 positive 原样透传；只用二采时一采输入可留空。两个开关计入 v2 执行指纹。
+- 每个素材每个通道只解码一次媒体文件，但激活两个通道时会分别调用原生 VAE 编码，计算量按通道数增加。
+  逐图强度仍只标记该通道本次新增的图片 keyframe，音频、上游条件和稳定版 v1 的行为不变。
+- 自动验证：`tests/test_guide_nodes.py` **57 项**，完整既定 Python 入口 **658 项，0 跳过**。
+  真实 ComfyUI 的双通道端口、开关手操与双采样成片仍需用户验收。

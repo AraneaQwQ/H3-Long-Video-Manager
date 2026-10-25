@@ -104,11 +104,11 @@ const LABELS = {
 };
 
 const TOOLTIPS = {
-    media_files: "由下方卡片面板写入的 JSON 列表；卡片顺序就是 ref_image_0..8 / ref_audio_0..2 的槽位顺序。手写 API 时也可以直接填文件名列表。",
+    media_files: "由下方卡片面板写入的 JSON 列表；卡片顺序就是 ref_image_0..8 / ref_audio_0..2 的槽位顺序。可选 label 只是卡片自定义名称，不改变接口编号或输出内容。手写 API 时也可以直接填文件名列表。",
     target_megapixels: "每张图的目标像素量（百万像素）。每张图按自己的比例算尺寸并对齐 32 像素网格，不裁切；卡片上显示真实输出尺寸和真实 MP。改这个数会立刻重算卡片上的尺寸。",
     resampling_method: "缩放用的重采样算法：Lanczos 质量最好、缩小首选（较慢）；Bicubic 质量与速度折中；Bilinear 更快更柔和；Nearest 保留像素硬边，适合像素风素材。界面选哪个，后端就用哪个。",
     upscale_small_images: "关闭时，小图不会被放大到目标 MP，但仍会调整到 32 的倍数，以满足 H3 输入尺寸要求；最终尺寸可能略有变化。开启时，小于目标面积的图也按目标面积放大。",
-    project_name: "「存为项目预设 / 载入项目预设」读写哪个项目文件夹。预设里只有参考素材的路径与排列（含哪些卡片被跳过），不复制文件；这个字段不影响本节点输出的像素。",
+    project_name: "「存为项目预设 / 载入项目预设」读写哪个项目文件夹。预设保存参考素材路径、自定义名称与排列（含哪些卡片被跳过），不复制文件；这个字段不影响本节点输出的像素。",
 };
 
 app.registerExtension({
@@ -259,13 +259,13 @@ function installRefPanel(node, spec) {
     const loadPresetBtn = document.createElement("button");
     loadPresetBtn.className = "h3lvm-refresh-btn";
     loadPresetBtn.textContent = "📥 载入项目预设";
-    loadPresetBtn.title = "按保存时的排列顺序和跳过状态恢复参考卡片，预设外的卡片会被移除；只读取路径，不复制文件";
+    loadPresetBtn.title = "按保存时的自定义名称、排列顺序和跳过状态恢复参考卡片，预设外的卡片会被移除；只读取路径，不复制文件";
     loadPresetBtn.disabled = true;
 
     const savePresetBtn = document.createElement("button");
     savePresetBtn.className = "h3lvm-refresh-btn";
     savePresetBtn.textContent = "📤 存为项目预设";
-    savePresetBtn.title = "把当前卡片保存为当前项目的预设，含排列顺序与跳过状态；只保存路径，不复制文件";
+    savePresetBtn.title = "把当前卡片保存为当前项目的预设，含自定义名称、排列顺序与跳过状态；只保存路径，不复制文件";
 
     const clearBtn = document.createElement("button");
     clearBtn.className = "h3lvm-refresh-btn h3ref-clear";
@@ -459,6 +459,7 @@ function installRefPanel(node, spec) {
                 return;
             }
             await refreshPreset();
+            await menu.refresh();
             updateStatus(`已保存到项目「${data.name || project}」的预设（${data.saved} 个，只存路径）`);
         } catch (error) {
             if (!signal.aborted) console.warn('[H3 Ref Loader] preset save failed:', error);
@@ -569,6 +570,31 @@ function installRefPanel(node, spec) {
 
         const meta = document.createElement("div");
         meta.className = "h3lvm-meta";
+        const nameInput = document.createElement("input");
+        nameInput.className = "h3ref-name";
+        nameInput.type = "text";
+        nameInput.value = entry.label || "";
+        nameInput.placeholder = parked ? "自定义卡片名称" : slotTitle(spec.kind, slot);
+        nameInput.title = "给这张卡片起一个便于识别的名称，例如角色名、声线或用途；留空恢复默认槽位名称。不会改变 ref_image / ref_audio 接口编号。";
+        nameInput.setAttribute("aria-label", "卡片自定义名称");
+        nameInput.draggable = false;
+        for (const type of ["pointerdown", "mousedown", "click"]) {
+            nameInput.addEventListener(type, event => event.stopPropagation());
+        }
+        nameInput.addEventListener("dragstart", event => {
+            event.preventDefault();
+            event.stopPropagation();
+        });
+        nameInput.addEventListener("change", () => setCardLabel(deckIndex, nameInput.value));
+        nameInput.addEventListener("keydown", event => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                nameInput.blur();
+            } else if (event.key === "Escape") {
+                nameInput.value = entry.label || "";
+                nameInput.blur();
+            }
+        });
         const labelEl = document.createElement("div");
         labelEl.className = "h3lvm-seg-label";
         labelEl.textContent = parked
@@ -577,7 +603,7 @@ function installRefPanel(node, spec) {
         const infoEl = document.createElement("div");
         infoEl.className = "h3lvm-seg-info";
         infoEl.textContent = spec.kind === "image" ? "读取尺寸中…" : "读取音频信息中…";
-        meta.append(labelEl, infoEl);
+        meta.append(nameInput, labelEl, infoEl);
         card.appendChild(meta);
 
         // A parked card keeps its window (so 放回 brings back the same clip) but has no
@@ -605,6 +631,24 @@ function installRefPanel(node, spec) {
         }
         card.appendChild(acts);
         return card;
+    }
+
+    function setCardLabel(deckIndex, value) {
+        const current = entries[deckIndex];
+        if (!current) return;
+        try {
+            const next = replaceEntry(entries, deckIndex, { ...current, label: value });
+            entries = next;
+            commit();
+            const updated = entries[deckIndex];
+            const input = cardFor(current, deckIndex)?.querySelector(".h3ref-name");
+            if (input) input.value = updated.label || "";
+            updateStatus(updated.label ? `已命名为「${updated.label}」` : "已清除自定义名称");
+        } catch (error) {
+            const input = cardFor(current, deckIndex)?.querySelector(".h3ref-name");
+            if (input) input.value = current.label || "";
+            updateStatus(`名称无效：${error.message}`);
+        }
     }
 
     function actionButton(text, title, onClick, disabled) {
@@ -840,14 +884,14 @@ function installRefPanel(node, spec) {
                 "卡片顺序 = ref_image_0..8 的槽位顺序；空槽输出 None，H3 会跳过。",
                 "所有图片按比例整体缩放到 32 像素网格，不裁切、不补边；卡片上显示的就是节点真实产出的尺寸。",
             "关闭「放大小图」时，小图只对齐 32 网格、不放大到目标 MP，卡片会标「未放大，仅对齐网格」。",
-            "拖动卡片调换槽位顺序；↻ 替换文件，⊘ 跳过（移到后排、不占槽位），↩ 放回，✕ 移除。",
+            "顶部输入框可自定义卡片名称；拖动卡片调换槽位顺序，替换文件会保留名称；⊘ 跳过，↩ 放回，✕ 移除。",
             ];
         }
         return [
             "卡片顺序 = ref_audio_0..2 的槽位顺序；空槽输出 None，H3 会跳过。",
             "每张卡片都能填开始时间与时长（秒）：只有这一段交给 H3。开始时间填负数是从片尾往前算，时长填 0 表示一直到片尾。",
             "波形里的蓝色区间就是会被输出的部分，灰色不会；▶ 只试听这一段，点波形可以定位。不重采样、不混音，采样率与声道原样交给 H3。",
-            "拖动卡片调换槽位顺序；↻ 替换文件，⊘ 跳过（移到后排、不占槽位），↩ 放回，✕ 移除。",
+            "顶部输入框可自定义卡片名称；拖动卡片调换槽位顺序，替换文件会保留名称；⊘ 跳过，↩ 放回，✕ 移除。",
         ];
     }
 

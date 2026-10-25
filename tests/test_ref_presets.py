@@ -180,6 +180,17 @@ class TestPresetRoundTrip(LibraryFixture):
         loaded = load_references(AUDIO, "P")
         self.assertEqual((loaded[LIST_KEY][0]["start"], loaded[LIST_KEY][0]["duration"]), (1.5, 2.0))
 
+    def test_custom_card_labels_survive_a_preset(self):
+        save_references(IMAGE, "P", json.dumps([
+            {"filename": "hero.png", "label": "主角 小林"},
+            {"filename": "rival.png", "label": "反派", "skip": True},
+        ]))
+        stored = self.raw()[LIST_KEY]
+        self.assertEqual([item["label"] for item in stored], ["主角 小林", "反派"])
+        loaded = load_references(IMAGE, "P")[LIST_KEY]
+        self.assertEqual([item["label"] for item in loaded], ["主角 小林", "反派"])
+        self.assertIs(loaded[1].get("skip"), True)
+
     def test_the_panel_json_is_accepted_as_is(self):
         # The panel posts serializeMedia() output, i.e. a JSON string, not a list, and
         # a subfolder may live in either half of the path - both are inside the bin.

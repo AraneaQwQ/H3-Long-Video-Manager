@@ -49,7 +49,13 @@ export function slotRangeText(kind, used, max) {
     return `${filled} · 空槽输出 None`;
 }
 
-// --- One entry: { filename, subfolder, type } ---
+// --- One entry: { filename, subfolder, type, label? } ---
+export function normalizeCardLabel(value) {
+    if (value === undefined || value === null || value === "") return "";
+    if (typeof value !== "string") throw new Error("卡片名称必须是文本");
+    return value.trim().replace(/\s+/g, " ");
+}
+
 export function normalizeEntry(item, index = 0) {
     const raw = typeof item === "string" ? { filename: item } : item;
     if (!raw || typeof raw !== "object") {
@@ -73,6 +79,8 @@ export function normalizeEntry(item, index = 0) {
     if (!MEDIA_TYPES.includes(type)) type = "input";
 
     const entry = { filename: name, subfolder, type };
+    const label = normalizeCardLabel(raw.label);
+    if (label) entry.label = label;
     // "skip" is a parked card: the file stays in the list so the panel can show it
     // and bring it back, but it holds no slot. Absent means active, which keeps
     // every workflow saved before this feature byte-identical.
@@ -177,6 +185,8 @@ export function serializeMedia(entries) {
             subfolder: entry.subfolder || "",
             type: entry.type || "input",
         };
+        const label = normalizeCardLabel(entry.label);
+        if (label) item.label = label;
         if (isSkipped(entry)) item.skip = true;
         // Key order is fixed here too, and a zero is left out: an untrimmed card keeps
         // the exact bytes it had before trim existed.
@@ -229,7 +239,10 @@ export function removeEntry(entries, index) {
 export function replaceEntry(entries, index, item) {
     const out = [...(entries ?? [])];
     if (index < 0 || index >= out.length) return out;
-    out[index] = normalizeEntry(item, index);
+    const replacement = normalizeEntry(item, index);
+    const hasLabel = item && typeof item === "object" && Object.prototype.hasOwnProperty.call(item, "label");
+    if (out[index].label && !hasLabel) replacement.label = out[index].label;
+    out[index] = replacement;
     return out;
 }
 

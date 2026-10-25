@@ -30,7 +30,7 @@ Cut any long video into H3-compatible segments (each satisfying the `17n + 5` fr
 
 | **H3 Segment Picker** | Input: project name + segment ID → `IMAGE`, `AUDIO`, `frame_count`, `segment_id` (feeds H3 directly) |
 | **H3 Guide Timeline** | Input: `positive` + H3 AV latent + both VAEs + one guide list → image/audio guides placed on a two-lane timeline → `positive` (equal to a hand-wired chain of native Add Guide nodes) |
-| **H3 Guide Timeline v2** | Same timeline and the same single `positive` output, plus a per-image guide strength (0.00-1.00, default 1.00; `0.00` keeps the card but leaves the conditioning); audio keeps native behaviour |
+| **H3 Guide Timeline v2** | Shared timeline with independent first-pass / second-pass `positive` channels and Guide switches, plus per-image guide strength (0.00-1.00, default 1.00; `0.00` keeps the card but leaves the conditioning); audio keeps native behaviour |
 
 ### Key features
 
@@ -581,6 +581,10 @@ default `1.00`, range `0.00-1.00`, step `0.05`. This is a second node (`H3 Guide
 rename - the stable node, its document format, its cache behaviour and its saved workflows are
 untouched, and both nodes can sit in the same ComfyUI.
 
+- Two optional conditioning inputs feed separate first-pass (A) and second-pass (B) outputs. The shared
+  timeline, latent and VAEs are applied independently to each enabled channel. **激活一采 Guide** defaults on
+  and **激活二采 Guide** defaults off, preserving existing v2 workflows; a disabled channel passes its input
+  through unchanged, and B can run by itself with A left unconnected.
 - `1.00` runs the native Add Guide chain exactly as before; nothing in the model is rewritten.
 - Below `1.00` that one image condition is noise-augmented harder, and its latent is blended toward
   noise with the same coefficient (`strength x VISUAL_COND_TIMESTEP`), so the finished picture is less
@@ -753,7 +757,7 @@ H3-Long-Video-Manager/
 
 | **H3 Segment Picker** | 从库中读取 → 输出 `IMAGE`、`AUDIO`、`frame_count`、`segment_id`（前两项直接喂 H3） |
 | **H3 Guide 时间轴** | 输入：`positive` + H3 AV latent + 两个 VAE + 一个 Guide 列表 → 在双轨时间轴上放图片/音频 Guide → 输出 `positive`（与手动串联原生 Add Guide 等价） |
-| **H3 Guide 时间轴 v2** | 与「H3 Guide 时间轴」同样的时间轴和同样的单个 `positive` 输出，另外每张图片可单独设置引导强度（0.00-1.00，默认 1.00；`0.00` 保留卡片但不加入 conditioning）；音频保持原生行为 |
+| **H3 Guide 时间轴 v2** | 共用时间轴的一采 / 二采双 `positive` 通道与独立 Guide 开关，另外每张图片可单独设置引导强度（0.00-1.00，默认 1.00；`0.00` 保留卡片但不加入 conditioning）；音频保持原生行为 |
 
 ### 核心特性
 
@@ -1166,6 +1170,9 @@ base64。关闭编辑器或删除节点都不会删除素材，因为别的工�
 它是第二个节点（`H3 Guide Timeline v2`），不是把旧节点改名——旧节点、它的数据格式、缓存行为和已保存的工作流都不变，
 两个节点可以同时出现在 ComfyUI 里。
 
+- 两个可选 conditioning 输入分别对应一采（A）与二采（B）输出。两个通道共用时间轴、latent 和 VAE，但各自独立添加 Guide。
+  **激活一采 Guide** 默认开启、**激活二采 Guide** 默认关闭，现有 v2 工作流保持原来的单通道行为；停用的通道原样透传，
+  只用二采时一采输入可以留空。
 - `1.00` 走原生 Add Guide 原路径，模型侧什么都不改写。
 - 低于 `1.00` 时只有这一张图片条件被更强地加噪，并且它的 latent 用同一个系数（`strength x VISUAL_COND_TIMESTEP`）
   向噪声混合：这张图对画面的约束变弱，动作与场景衔接的自由度变大。它不是「保留多少像素」的百分比。
