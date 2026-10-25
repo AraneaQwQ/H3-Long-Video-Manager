@@ -28,6 +28,7 @@ if _PLUGIN_ROOT not in sys.path:
     sys.path.insert(0, _PLUGIN_ROOT)
 
 from tests._media_clip import have_ffmpeg, make_broken, make_clip
+from tests._temp_dir import make_temp_dir
 
 try:
     import av  # noqa: F401
@@ -57,6 +58,7 @@ from tests._plugin_import import load as _load_plugin
 
 segment_store = _load_plugin("comfyui.segment_store")
 server_api = _load_plugin("comfyui.server_api")
+source_preview = _load_plugin("comfyui.source_preview")
 uvs = _load_plugin("comfyui.uploaded_video_store")
 vd = _load_plugin("comfyui.video_decode")
 
@@ -91,7 +93,7 @@ if not ROUTES:
 @unittest.skipUnless(READY, "needs PyAV and aiohttp and ffmpeg on PATH")
 class ApiFixture(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.case = tempfile.mkdtemp(prefix="h3lvm_api_")
+        self.case = make_temp_dir(prefix="h3lvm_api_")
         uvs.set_base_dir_override(os.path.join(self.case, "uploads"))
         segment_store.set_base_dir_override(os.path.join(self.case, "bin"))
         self.app = web.Application()
@@ -271,6 +273,95 @@ class TestUploadRoutes(ApiFixture):
         refused = await self.get("/h3_lvm/uploads?project=hurt")
         self.assertEqual(refused.status, 400)
         self.assertIn(uvs.INDEX_NAME, (await refused.json())["error"])
+
+
+class TestUploadPreviewRoutes(ApiFixture):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.cache_dir = os.path.join(self.case, "temp")
+        cache_patcher = mock.patch.object(
+            source_preview.folder_paths, "get_temp_directory", return_value=self.cache_dir)
+        cache_patcher.start()
+        self.addCleanup(cache_patcher.stop)
+        source_preview.clear_source_previews()
+        self.addCleanup(source_preview.clear_source_previews)
+
+    async def test_project_and_id_authorize_the_original_upload(self):
+        self.assertEqual((await self.upload("show", self.clip("original.mp4"))).status, 200)
+        created = await self.post_json("/h3_lvm/uploads/preview", {
+            "project": "show", "segment_id": 1,
+        })
+        self.assertEqual(created.status, 200)
+        data = await created.json()
+        path, _ = uvs.resolve_upload("show", 1)
+        self.assertEqual(data["name"], "original.mp4")
+        self.assertEqual(data["segment_id"], 1)
+        self.assertNotIn(path, data["url"])
+        response = await self.client.get(data["url"])
+        self.assertEqual(response.status, 200)
+        with open(path, "rb") as handle:
+            self.assertEqual(await response.read(), handle.read())
+
+    async def test_upload_preview_keeps_origin_json_and_record_checks(self):
+        self.assertEqual((await self.upload("secure", self.clip())).status, 200)
+        payload = {"project": "secure", "segment_id": 1}
+        refused = await self.post_json("/h3_lvm/uploads/preview", payload, origin=False)
+        self.assertEqual(refused.status, 403)
+        refused = await self.post_json(
+            "/h3_lvm/uploads/preview", payload, content_type="text/plain")
+        self.assertEqual(refused.status, 415)
+        refused = await self.post_json("/h3_lvm/uploads/preview", {
+            "project": "secure", "segment_id": 99,
+            "custom_path": self.clip("not-authorizable.mp4"),
+        })
+        self.assertEqual(refused.status, 400)
+        self.assertIn("没有编号 99", (await refused.json())["error"])
+
+    async def test_upload_hevc_is_sent_straight_to_the_compatible_preview(self):
+        self.assertEqual((await self.upload("hevc", self.clip())).status, 200)
+        with mock.patch.object(source_preview, "probe_video", return_value={
+                "codec_name": "hevc", "width": 64, "height": 36}):
+            created = await self.post_json("/h3_lvm/uploads/preview", {
+                "project": "hevc", "segment_id": 1,
+            })
+        self.assertEqual(created.status, 200)
+        data = await created.json()
+        self.assertTrue(data["proxy_recommended"])
+        self.assertEqual(data["codec_name"], "hevc")
+
+    async def test_upload_proxy_is_h264_cached_and_never_changes_the_source(self):
+        source = self.clip("proxy.mp4", audio=True)
+        self.assertEqual((await self.upload("proxy", source)).status, 200)
+        path, _ = uvs.resolve_upload("proxy", 1)
+        with open(path, "rb") as handle:
+            original = handle.read()
+        created = await self.post_json("/h3_lvm/uploads/preview", {
+            "project": "proxy", "segment_id": 1,
+        })
+        data = await created.json()
+        self.assertEqual((await self.client.get(data["url"] + "&proxy=1")).status, 404)
+        with mock.patch.object(
+                source_preview.subprocess, "run",
+                wraps=source_preview.subprocess.run) as runner:
+            converted = await self.post_json(data["proxy_url"], {})
+            self.assertEqual(converted.status, 200)
+            proxy = await converted.json()
+            response = await self.client.get(proxy["url"])
+            self.assertEqual(response.status, 200)
+            self.assertGreater(len(await response.read()), 0)
+            again = await self.post_json(data["proxy_url"], {})
+            self.assertEqual((await again.json())["url"], proxy["url"])
+            self.assertEqual(runner.call_count, 1)
+        cache = os.path.join(self.cache_dir, "h3-lvm-source-preview")
+        files = [os.path.join(cache, name) for name in os.listdir(cache) if name.endswith(".mp4")]
+        self.assertEqual(len(files), 1)
+        with av.open(files[0]) as container:
+            self.assertEqual(container.streams.video[0].codec_context.name, "h264")
+            self.assertEqual(container.streams.video[0].codec_context.pix_fmt, "yuv420p")
+            self.assertEqual(container.streams.video[0].average_rate, 24)
+            self.assertEqual(len(container.streams.audio), 1)
+        with open(path, "rb") as handle:
+            self.assertEqual(handle.read(), original)
 
 
 class TestOldRoutesStillWork(ApiFixture):

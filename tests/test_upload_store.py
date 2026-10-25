@@ -23,6 +23,7 @@ if _PLUGIN_ROOT not in sys.path:
 
 from tests._media_clip import (have_ffmpeg, make_audio_only, make_broken, make_clip,
                                make_gradient)
+from tests._temp_dir import make_temp_dir
 
 try:
     import av  # noqa: F401
@@ -50,7 +51,7 @@ class StoreFixture(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.parent = tempfile.mkdtemp(prefix="h3lvm_uploads_")
+        cls.parent = make_temp_dir(prefix="h3lvm_uploads_")
 
     @classmethod
     def tearDownClass(cls):
@@ -58,7 +59,7 @@ class StoreFixture(unittest.TestCase):
 
     def setUp(self):
         # A fresh root per test: "the library is empty" is a claim worth testing.
-        self.case = tempfile.mkdtemp(prefix="case_", dir=self.parent)
+        self.case = make_temp_dir(prefix="case_", parent=self.parent)
         self.root = os.path.join(self.case, "uploads")
         self.bin = os.path.join(self.case, "bin")
         set_base_dir_override(self.root)

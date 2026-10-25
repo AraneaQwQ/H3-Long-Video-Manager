@@ -490,6 +490,13 @@
     text-align: center;
 }
 
+.h3lvm-modal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+}
+
 .h3lvm-modal-close {
     align-self: center;
     background: #1e293b;
@@ -500,6 +507,11 @@
     cursor: pointer;
     font-size: 12px;
     transition: all 0.2s;
+}
+
+.h3lvm-modal-close:disabled {
+    opacity: .5;
+    cursor: wait;
 }
 
 .h3lvm-modal-close:hover {

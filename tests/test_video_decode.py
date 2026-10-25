@@ -14,7 +14,6 @@ import os
 import re
 import shutil
 import sys
-import tempfile
 import unittest
 from unittest import mock
 
@@ -25,7 +24,8 @@ if _PLUGIN_ROOT not in sys.path:
     sys.path.insert(0, _PLUGIN_ROOT)
 
 from tests._media_clip import (have_ffmpeg, make_audio_only, make_broken, make_clip,
-                               make_gradient, make_vfr_clip)
+                               make_gradient, make_stereo_clip, make_vfr_clip)
+from tests._temp_dir import make_temp_dir
 
 try:
     import av  # noqa: F401
@@ -52,7 +52,7 @@ class ClipFixture(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmpdir = tempfile.mkdtemp(prefix="h3lvm_decode_")
+        cls.tmpdir = make_temp_dir(prefix="h3lvm_decode_")
 
     @classmethod
     def tearDownClass(cls):
@@ -129,6 +129,15 @@ class TestDecode(ClipFixture):
             self.assertEqual(info["frame_count"], 48, "%d fps must become 2 s of 24 fps" % fps)
             self.assertEqual(info["frame_count"], image.shape[0])
 
+    def test_dropped_source_frames_skip_pixel_conversion(self):
+        path = self.clip("skip_convert.mp4", fps=60, duration=1.0)
+        real_from_numpy = video_decode.torch.from_numpy
+        with mock.patch.object(video_decode.torch, "from_numpy", wraps=real_from_numpy) as convert:
+            image, _audio, info = decode_video(path)
+        self.assertEqual(info["frame_count"], 24)
+        self.assertEqual(image.shape[0], 24)
+        self.assertEqual(convert.call_count, 24)
+
     def test_slower_source_is_padded_up(self):
         path = self.clip("src12.mp4", fps=12, duration=2.0)
         image, audio, info = decode_video(path)
@@ -155,6 +164,16 @@ class TestDecode(ClipFixture):
         self.assertEqual(info["audio_samples"], audio["waveform"].shape[-1])
         seconds = info["audio_samples"] / float(info["audio_sample_rate"])
         self.assertAlmostEqual(seconds, info["duration_sec"], places=3)
+
+    def test_stereo_audio_keeps_channels_and_pitch(self):
+        path = make_stereo_clip(os.path.join(self.tmpdir, "stereo.mp4"))
+        _image, audio, _info = decode_video(path)
+        self.assertEqual(audio["waveform"].shape[:2], (1, 2))
+        seconds = audio["waveform"].shape[-1] / float(audio["sample_rate"])
+        for channel, expected in enumerate((440, 880)):
+            wave = audio["waveform"][0, channel]
+            crossings = int(((wave[:-1] <= 0) & (wave[1:] > 0)).sum())
+            self.assertAlmostEqual(crossings / seconds, expected, delta=15)
 
     def test_silent_source_yields_no_audio(self):
         path = self.clip("mute.mp4", fps=24, duration=1.0)

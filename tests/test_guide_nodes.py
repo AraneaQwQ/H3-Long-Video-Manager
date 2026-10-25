@@ -24,6 +24,7 @@ import unittest
 import wave
 
 import torch
+from tests._temp_dir import make_temp_dir
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
@@ -66,7 +67,7 @@ INPUTS = None
 
 def setUpModule():
     global TMP_ROOT, INPUTS
-    TMP_ROOT = tempfile.mkdtemp(prefix="h3lvm_guide_nodes_")
+    TMP_ROOT = make_temp_dir(prefix="h3lvm_guide_nodes_")
     INPUTS = os.path.join(TMP_ROOT, "input")
     os.makedirs(INPUTS, exist_ok=True)
 

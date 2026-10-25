@@ -34,6 +34,19 @@ def make_clip(path: str, fps: int = 24, duration: float = 1.0, audio: bool = Fal
     return path
 
 
+def make_stereo_clip(path: str, fps: int = 60, duration: float = 2.0) -> str:
+    """Two audible channels with different pitches catch packed/planar mix-ups."""
+    cmd = [FFMPEG, "-y", "-loglevel", "error", "-f", "lavfi",
+           "-i", "testsrc=duration=%s:size=64x36:rate=%s" % (duration, fps),
+           "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=%s" % duration,
+           "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=%s" % duration,
+           "-filter_complex", "[1:a][2:a]amerge=inputs=2[a]",
+           "-map", "0:v", "-map", "[a]", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", path]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return path
+
+
 def make_gradient(path: str, fps: int = 24, frames: int = 48, size=(64, 36)) -> str:
     """A clip whose red channel counts up with the frame number.
 
@@ -89,5 +102,5 @@ def make_broken(path: str) -> str:
     return path
 
 
-__all__ = ["FFMPEG", "have_ffmpeg", "make_clip", "make_gradient", "make_vfr_clip", "make_audio_only",
-           "make_broken"]
+__all__ = ["FFMPEG", "have_ffmpeg", "make_clip", "make_stereo_clip", "make_gradient",
+           "make_vfr_clip", "make_audio_only", "make_broken"]

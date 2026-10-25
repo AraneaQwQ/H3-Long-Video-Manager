@@ -16,6 +16,7 @@ import torch
 
 from ..core.models import MotionContextConfig, MOTION_CONTEXT_OPTIONS, SourceVideoInfo, WorkingVideoConfig
 from ..core.manifest import build_manifest
+from ..core.frame_rate import resample_video
 from ..core.h3_grid import is_valid_h3_frame_count
 from ..core.person_crop import crop_video_to_person
 from ..core.smart_split import (
@@ -39,6 +40,8 @@ from .ref_nodes import H3AudioReferenceLoader, H3ImageReferenceLoader
 # thing that touches the native Add Guide node, so a ComfyUI without it fails there
 # and nowhere else.
 from .guide_nodes import H3GuideTimeline, H3GuideTimelineV2
+from .video_loader_node import H3VideoLoader
+from .stream_nodes import H3LongVideoManagerV2, H3SmartSplitV2
 
 logger = logging.getLogger(__name__)
 CORE_AVAILABLE = True
@@ -179,7 +182,8 @@ class H3LongVideoManager(io.ComfyNode):
             category='H3/Video',
             inputs=[
                 io.Image.Input('video'),
-                io.Int.Input('fps', default=24, min=1, max=240, tooltip='源视频帧率，用于时长和音频计算'),
+                io.Int.Input('fps', default=24, min=1, max=240,
+                    tooltip='输入素材的真实源帧率。节点会先按真实时长转换为 24fps，再裁切和保存；60fps 不会再被当作 24fps 慢放'),
                 io.Float.Input('segment_duration', default=6.0, min=0.5, max=120.0, step=0.001,
                     tooltip='每段输出的固定时长（含 Motion Context 重叠帧）；实际帧数会向下取到 17n+5，例如 6.0s@24fps → 141 帧 = 5.875s'),
                 io.Combo.Input('motion_context_frames', options=['0', '5', '22', '39', '56'], default='22'),
@@ -222,17 +226,22 @@ class H3LongVideoManager(io.ComfyNode):
             raise TypeError(f"Expected IMAGE tensor [F,H,W,C], got {type(video).__name__}")
 
         fps = int(fps)
+        source_frames = int(video.shape[0])
+        source_duration_sec = source_frames / float(fps)
         expand_percent = max(0, min(100, int(person_crop_expand_percent)))
-        work_video = video
+        work_video = resample_video(video, fps, TARGET_FPS)
         if person_crop:
             work_video, _crop_rect = crop_video_to_person(
                 work_video, expand_percent=expand_percent
             )
 
-        total_frames = work_video.shape[0]
+        total_frames = int(work_video.shape[0])
         src_h, src_w = work_video.shape[1], work_video.shape[2]
-        duration_sec = total_frames / fps
-        print(f"[H3 LVM] input video: {total_frames} frames, {src_w}x{src_h}, fps={fps}, duration={duration_sec:.2f}s")
+        print(f"[H3 LVM] input video: {source_frames} frames, {src_w}x{src_h}, "
+              f"fps={fps}, duration={source_duration_sec:.2f}s")
+        if source_frames != total_frames:
+            print(f"[H3 LVM] frame-rate conform: {source_frames} frames @ {fps}fps -> "
+                  f"{total_frames} frames @ {TARGET_FPS}fps (same wall-clock duration)")
         if audio is not None:
             wf = audio.get("waveform") if isinstance(audio, dict) else None
             sr = audio.get("sample_rate", 44100) if isinstance(audio, dict) else 44100
@@ -242,12 +251,12 @@ class H3LongVideoManager(io.ComfyNode):
         # --- Build manifest ---
         source_info = SourceVideoInfo(
             file_path="input", width=src_w, height=src_h,
-            fps=fps, frame_count=total_frames,
-            duration_seconds=duration_sec,
+            fps=fps, frame_count=source_frames,
+            duration_seconds=source_duration_sec,
         )
 
         working_config = WorkingVideoConfig(
-            target_fps=fps,
+            target_fps=TARGET_FPS,
             scale_percent=scale_percent if scale_percent < 100.0 else None,
         )
 
@@ -295,13 +304,13 @@ class H3LongVideoManager(io.ComfyNode):
         if segment_id < 1 or segment_id > total_segments:
             raise ValueError(
                 f"segment_id={segment_id} out of range [1, {total_segments}]. "
-                f"Source: {total_frames} frames @ {fps}fps → "
+                f"Source: {source_frames} frames @ {fps}fps → "
                 f"{manifest.working_info.total_frames} frames @ {manifest.working_info.fps}fps → "
                 f"{total_segments} segments of {manifest.slice_frames or manifest.segment_duration_frames} frames each"
             )
 
-        # --- Timeline (1:1, no conversion) ---
-        src_fps = float(fps)
+        # Video and audio are now sliced on the converted 24 fps timeline.
+        src_fps = float(working_fps)
 
         # Target resolution (after scale)
         target_w = manifest.working_info.width
@@ -624,7 +633,8 @@ class H3SmartSplit(io.ComfyNode):
             category='H3/Video',
             inputs=[
                 io.Image.Input('video'),
-                io.Int.Input('fps', default=24, min=1, max=240, tooltip='源视频帧率，用于时长和音频计算'),
+                io.Int.Input('fps', default=24, min=1, max=240,
+                    tooltip='输入素材的真实源帧率。节点会先按真实时长转换为 24fps，再检测镜头、裁切和保存；60fps 不会再被当作 24fps 慢放'),
                 io.Combo.Input('detection_sensitivity', options=['low', 'medium', 'high'], default='medium',
                     tooltip='镜头切点检测灵敏度：漏切选 high，误切过多选 low。只影响检测，不改变“不丢帧/不重复/不补帧”的切分结果'),
                 io.Combo.Input('motion_context_frames', options=['0', '5', '22', '39', '56'], default='0',
@@ -656,16 +666,21 @@ class H3SmartSplit(io.ComfyNode):
             raise ValueError(f"Expected IMAGE tensor [F,H,W,C], got shape {list(video.shape)}")
 
         fps = int(fps)
-        total_frames = int(video.shape[0])
-        src_h, src_w = int(video.shape[1]), int(video.shape[2])
-        print(f"[H3 Smart Split] input video: {total_frames} frames, {src_w}x{src_h}, "
-              f"fps={fps}, duration={total_frames / float(fps):.2f}s")
+        source_frames = int(video.shape[0])
+        work_video = resample_video(video, fps, TARGET_FPS)
+        total_frames = int(work_video.shape[0])
+        src_h, src_w = int(work_video.shape[1]), int(work_video.shape[2])
+        print(f"[H3 Smart Split] input video: {source_frames} frames, {src_w}x{src_h}, "
+              f"fps={fps}, duration={source_frames / float(fps):.2f}s")
+        if source_frames != total_frames:
+            print(f"[H3 Smart Split] frame-rate conform: {source_frames} frames @ {fps}fps -> "
+                  f"{total_frames} frames @ {TARGET_FPS}fps (same wall-clock duration)")
         if total_frames <= 0:
             raise ValueError("H3 Smart Split: 输入视频没有帧，无法检测镜头。")
 
         # --- 1. Detect on the FULL timeline, never on a pre-sliced one ---
         try:
-            cuts, detect_meta = detect_scene_cuts(video, total_frames, fps, detection_sensitivity)
+            cuts, detect_meta = detect_scene_cuts(work_video, total_frames, TARGET_FPS, detection_sensitivity)
         except ImportError as exc:
             raise RuntimeError(str(exc)) from exc
         print(f"[H3 Smart Split] scene detection: {detect_meta['method']} "
@@ -687,7 +702,7 @@ class H3SmartSplit(io.ComfyNode):
         for seg in segments:
             print(f"  Seg {seg['segment_id'] + 1} (scene {seg['scene_id'] + 1}): "
                   f"main=[{seg['main_start']},{seg['main_end']}) ={seg['main_frames']}f "
-                  f"({seg['main_frames'] / float(fps):.3f}s), context={seg['context_frames']}f, "
+                  f"({seg['main_frames'] / float(TARGET_FPS):.3f}s), context={seg['context_frames']}f, "
                   f"extract=[{seg['extract_start']},{seg['extract_end']}) ={seg['extract_frames']}f")
         print(f"[H3 Smart Split] {sum(s['main_frames'] for s in segments)}/{total_frames} source "
               "frames covered: no dropped frame, no duplicated main frame, no padding, no 17n+5")
@@ -696,13 +711,14 @@ class H3SmartSplit(io.ComfyNode):
         if segment_id < 1 or segment_id > total_segments:
             raise ValueError(
                 f"segment_id={segment_id} out of range [1, {total_segments}]. "
-                f"Source: {total_frames} frames @ {fps}fps -> {total_segments} smart segments "
+                f"Source: {source_frames} frames @ {fps}fps -> {total_frames} frames @ "
+                f"{TARGET_FPS}fps -> {total_segments} smart segments "
                 f"(cuts at {cuts})"
             )
 
         # --- Resolution scaling: the Manager's own dimension math ---
         working = WorkingVideoConfig(
-            target_fps=fps,
+            target_fps=TARGET_FPS,
             scale_percent=scale_percent if scale_percent < 100.0 else None,
         )
         target_w, target_h = working.compute_working_dimensions(src_w, src_h)
@@ -711,16 +727,16 @@ class H3SmartSplit(io.ComfyNode):
         def _emit(seg):
             """Slice one smart segment with the Manager's extraction helpers."""
             start, end = int(seg["extract_start"]), int(seg["extract_end"])
-            seg_video = _slice_and_scale(video, start, end,
+            seg_video = _slice_and_scale(work_video, start, end,
                                         target_w if need_scale else None,
                                         target_h if need_scale else None)
-            seg_audio, waveform, sr = _slice_audio(audio, start, end, float(fps))
+            seg_audio, waveform, sr = _slice_audio(audio, start, end, float(TARGET_FPS))
             if seg_audio is not None and waveform is not None:
-                expected_samples = int((end - start) / float(fps) * sr)
+                expected_samples = int((end - start) / float(TARGET_FPS) * sr)
                 if waveform.shape[-1] < expected_samples:
                     seg_audio = _pad_silent_audio(seg_audio, expected_samples)
             if seg_audio is None:
-                seg_audio = _make_silent_audio((end - start) / float(fps))
+                seg_audio = _make_silent_audio((end - start) / float(TARGET_FPS))
             return seg_video, seg_audio
 
         # --- Save all segments into the existing Project Segment Store ---
@@ -751,7 +767,7 @@ class H3SmartSplit(io.ComfyNode):
                         seg_index_1based=seg_id_1based,
                         video=seg_video,
                         audio=seg_audio,
-                        fps=fps,
+                        fps=TARGET_FPS,
                         save_mp4=save_preview_mp4,
                         save_dtype=save_dtype,
                         # Cover = first frame of the MAIN range, not of the
@@ -798,7 +814,8 @@ class H3SmartSplit(io.ComfyNode):
 
 
 NODE_LIST = [
-    H3LongVideoManager, H3SmartSplit, H3SegmentPicker,
+    H3VideoLoader, H3LongVideoManager, H3SmartSplit, H3SegmentPicker,
+    H3LongVideoManagerV2, H3SmartSplitV2,
     H3ImageReferenceLoader, H3AudioReferenceLoader, H3GuideTimeline,
     H3GuideTimelineV2,
 ]

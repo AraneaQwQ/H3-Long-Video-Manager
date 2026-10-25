@@ -19,6 +19,8 @@ import tempfile
 import types
 import unittest
 
+from tests._temp_dir import make_temp_dir
+
 # Ensure plugin root is importable
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO not in sys.path:
@@ -79,7 +81,7 @@ class LibraryFixture(unittest.TestCase):
     """A throwaway output folder; nothing here touches the real media folders."""
 
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="h3lvm_refs_")
+        self._tmpdir = make_temp_dir(prefix="h3lvm_refs_")
         set_base_dir_override(self._tmpdir)
 
     def tearDown(self):

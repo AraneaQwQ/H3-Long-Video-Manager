@@ -144,7 +144,10 @@ def tensor_to_pil(frame: torch.Tensor):
         frame = frame.permute(1, 2, 0)
     if frame.shape[-1] == 4:
         frame = frame[..., :3]
-    arr = frame.detach().clamp(0, 1).mul(255).to(torch.uint8).contiguous().cpu().numpy()
+    if frame.dtype == torch.uint8:
+        arr = frame.detach().contiguous().cpu().numpy()
+    else:
+        arr = frame.detach().clamp(0, 1).mul(255).to(torch.uint8).contiguous().cpu().numpy()
     return Image.fromarray(arr)
 
 
@@ -174,6 +177,16 @@ def _load_tensors(path: str) -> Dict[str, torch.Tensor]:
     return torch.load(path, map_location="cpu")
 
 
+MP4_CHUNK_FRAMES = 8
+
+
+def _raw_video_chunks(images: torch.Tensor):
+    for start in range(0, int(images.shape[0]), MP4_CHUNK_FRAMES):
+        chunk = _decode_video(images[start:start + MP4_CHUNK_FRAMES])
+        yield (chunk.detach().clamp(0, 1).mul(255).to(torch.uint8)
+               .contiguous().cpu().numpy().tobytes())
+
+
 def _encode_mp4(images: torch.Tensor, audio: Optional[Dict[str, Any]], fps: int, out_path: str) -> bool:
     """Best-effort MP4 encode via ffmpeg (rawvideo stdin pipe + optional WAV audio)."""
     if images is None or not isinstance(images, torch.Tensor) or images.ndim != 4 or len(images) == 0:
@@ -188,13 +201,6 @@ def _encode_mp4(images: torch.Tensor, audio: Optional[Dict[str, Any]], fps: int,
     if H % 2:
         H -= 1
     imgs = images[:, :H, :W, :]
-    # A segment on disk may be packed int8; rawvideo needs 0..1 float bytes.
-    imgs = _decode_video(imgs)
-    try:
-        raw = imgs.detach().clamp(0, 1).mul(255).to(torch.uint8).contiguous().cpu().numpy().tobytes()
-    except Exception as e:
-        logger.warning("[H3 LVM] mp4 raw-bytes extraction failed: %s", e)
-        return False
 
     temp_wav = None
     cmd = [ffmpeg_bin, "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
@@ -228,14 +234,24 @@ def _encode_mp4(images: torch.Tensor, audio: Optional[Dict[str, Any]], fps: int,
             temp_wav = None
 
     cmd.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", out_path])
+    proc = None
     try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        proc.communicate(input=raw)
-        return proc.returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 0
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for raw in _raw_video_chunks(imgs):
+                proc.stdin.write(raw)
+        finally:
+            proc.stdin.close()
+        returncode = proc.wait()
+        return returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 0
     except Exception as e:
         logger.warning("[H3 LVM] mp4 encode exception: %s", e)
         return False
     finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait()
         if temp_wav and os.path.exists(temp_wav):
             try:
                 os.remove(temp_wav)
@@ -267,7 +283,11 @@ def _encode_video(video: torch.Tensor, save_dtype: str) -> torch.Tensor:
     """Pack a float [0,1] video tensor for disk."""
     src = video.detach().cpu()
     if normalize_save_dtype(save_dtype) == "fp16":
+        if src.dtype == torch.uint8:
+            return src.to(torch.float16).div(255.0).contiguous()
         return src.to(torch.float16).contiguous()
+    if src.dtype == torch.uint8:
+        return src.to(torch.int16).sub(INT8_OFFSET).to(torch.int8).contiguous()
     if src.dtype in (torch.float32, torch.float64):
         src = src.clamp(0.0, 1.0).mul(255.0).round().sub(INT8_OFFSET)
     return src.to(torch.int8).contiguous()
@@ -764,14 +784,16 @@ def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
         "context_frames": int(metas[0].get("context_frames") or 0),
     })
 
+    cover_index = min(max(int(metas[0].get("context_frames") or 0), 0),
+                      max(0, int(parts[0].shape[0]) - 1))
     merged = save_segment(
         project, ids[0], merged_video, audio, fps,
         save_mp4=any(bool(m.get("mp4")) for m in metas),
         meta=carried,
         save_dtype=save_dtype,
         # The merged head is the first segment's head, so its cover still fits.
-        thumbnail_frame=int(metas[0].get("context_frames") or 0),
-        cover_source=_decode_video(parts[0]),
+        thumbnail_frame=0,
+        cover_source=_decode_video(parts[0][cover_index:cover_index + 1]),
     )
 
     for seg_id in ids[1:]:

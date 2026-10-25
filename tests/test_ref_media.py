@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 
+from tests._temp_dir import make_temp_dir
 from core.ref_media import (
     MAX_REF_AUDIOS, MAX_REF_IMAGES, active_entries, fill_slots, is_skipped,
     media_fingerprint, media_kind, parse_media_list, resolve_media_path, split_entries,
@@ -17,7 +18,7 @@ TMP_ROOT = None
 
 def setUpModule():
     global TMP_ROOT
-    TMP_ROOT = tempfile.mkdtemp(prefix="h3lvm_ref_media_")
+    TMP_ROOT = make_temp_dir(prefix="h3lvm_ref_media_")
 
 
 def tearDownModule():

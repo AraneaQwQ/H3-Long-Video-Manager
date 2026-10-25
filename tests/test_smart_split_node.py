@@ -20,6 +20,7 @@ if REPO not in sys.path:
 import torch
 
 from core.smart_split import scenedetect_available
+from tests._temp_dir import make_temp_dir
 
 from tests.test_node_schema import LOAD_ERROR, NODES
 
@@ -65,7 +66,7 @@ def _frame_value(index, frames=120, cut=60):
 class TestSmartSplitNode(unittest.TestCase):
 
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="h3lvm_smart_")
+        self._tmpdir = make_temp_dir(prefix="h3lvm_smart_")
         set_base_dir_override(self._tmpdir)
 
     def tearDown(self):

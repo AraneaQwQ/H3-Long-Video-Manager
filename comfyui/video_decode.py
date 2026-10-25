@@ -275,6 +275,8 @@ def probe_video(path: str) -> Dict[str, Any]:
         return {
             "width": int(stream.width),
             "height": int(stream.height),
+            "codec_name": str(getattr(getattr(stream, "codec_context", None), "name", "") or ""),
+            "pix_fmt": str(getattr(getattr(stream, "codec_context", None), "pix_fmt", "") or ""),
             "source_fps": round(fps, 6) if fps else None,
             "source_fps_num": num,
             "source_fps_den": den,
@@ -419,6 +421,11 @@ def _decode_frames(path: str, target_fps: int,
                 origin = seconds
             span = _frame_span(frame, stream, source_rate, target_fps)
             target = int(math.ceil((seconds + span - origin) * target_fps - 1e-6))
+            if (int(getattr(frame, "width", width)) != width
+                    or int(getattr(frame, "height", height)) != height):
+                raise MediaError("这个视频在播放过程中改变了分辨率，无法作为一段连续输出。")
+            if target <= filled:
+                continue
             array = pixels(frame)
             if shape is None:
                 shape = array.shape
@@ -460,17 +467,21 @@ def _decode_frames(path: str, target_fps: int,
 def _audio_to_channels(frame) -> Optional[np.ndarray]:
     """One resampled audio frame as int16 [channels, samples].
 
-    PyAV hands back planar or packed depending on the codec; the channel axis is the one
-    whose length equals the channel count, which is the check that works for both.
+    Packed frames interleave channels inside each plane; planar frames already have one
+    row per channel. Treating packed stereo as one mono row doubles its apparent pitch.
     """
     array = np.asarray(frame.to_ndarray())
     if array.size == 0:
         return None
-    if array.ndim == 1:
-        array = array.reshape(1, -1)
     channels = int(getattr(frame, "channels", 0) or 0)
-    if channels and array.shape[0] != channels and array.shape[1] == channels:
-        array = array.T
+    planar = bool(getattr(getattr(frame, "format", None), "is_planar", False))
+    if channels > 1 and not planar:
+        array = array.reshape(-1, channels).T
+    else:
+        if array.ndim == 1:
+            array = array.reshape(1, -1)
+        if channels and array.ndim == 2 and array.shape[0] != channels and array.shape[1] == channels:
+            array = array.T
     return array
 
 
@@ -493,8 +504,8 @@ def _decode_audio(path: str, seconds: float) -> Optional[Dict[str, Any]]:
         rate = int(getattr(stream, "rate", 0) or 44100)
         layout = getattr(getattr(stream, "layout", None), "name", None)
         try:
-            resampler = (av.AudioResampler(format="s16", layout=layout, rate=rate) if layout
-                         else av.AudioResampler(format="s16", rate=rate))
+            resampler = (av.AudioResampler(format="s16p", layout=layout, rate=rate) if layout
+                         else av.AudioResampler(format="s16p", rate=rate))
         except (AttributeError, TypeError, ValueError):
             resampler = None
         chunks: List[np.ndarray] = []

@@ -22,8 +22,11 @@ Cut any long video into H3-compatible segments (each satisfying the `17n + 5` fr
 
 | Node | Role |
 |------|------|
+| **H3 Video Loader** | Reads a server-side video directly (no browser upload), converts to 24 fps and optionally scales during decode → `IMAGE`, `AUDIO`, `frame_count`, `fps` |
 | **H3 Long Video Manager** | Input: video + audio → all segments saved to bin + selected segment live → `IMAGE`, `AUDIO`, `frame_count`, `total_segments` |
 | **H3 Smart Split** | Input: video + audio → PySceneDetect finds the real shot cuts → every shot saved to the SAME bin + selected shot live → `IMAGE`, `AUDIO`, `frame_count`, `total_segments` |
+| **H3 Long Video Manager v2** | Independent file-streaming version: fixed-length cuts directly from a selected disk path, bounded source-video memory, original-video preview, same bin and four outputs |
+| **H3 Smart Split v2** | Independent file-streaming version: one low-memory detection pass and one segmented decode pass, original-video preview, same bin and four outputs |
 
 | **H3 Segment Picker** | Input: project name + segment ID → `IMAGE`, `AUDIO`, `frame_count`, `segment_id` (feeds H3 directly) |
 | **H3 Guide Timeline** | Input: `positive` + H3 AV latent + both VAEs + one guide list → image/audio guides placed on a two-lane timeline → `positive` (equal to a hand-wired chain of native Add Guide nodes) |
@@ -31,11 +34,13 @@ Cut any long video into H3-compatible segments (each satisfying the `17n + 5` fr
 
 ### Key features
 
+- **Real 24 fps conform** — Manager and Smart Split use `fps` as the source video's actual frame rate, convert the input to a 24 fps timeline before cutting or shot detection, and keep the original wall-clock duration. A 60 fps input therefore plays at normal speed instead of being reinterpreted as slow motion; 24 fps input passes through unchanged
+- **Streaming v2 producers** — the two v2 nodes read the source file themselves and keep only the current segment plus Motion Context in memory. The stable v1 nodes, their tensor inputs and their behavior remain available unchanged
 - **Fixed-length segments** — every full-length segment is exactly the same length: 每段时长 snapped down to a valid H3 count, so 6.0s @ 24fps gives 141 frames = 5.875s for every clip, never 6.6s here and 7.3s there
 - **17n+5 grid alignment** — every full-length segment is a valid H3 frame count (no auto-snap surprises)
 - **Nothing is lost at the end** — the last segment takes whatever frames are left, Motion Context included, with no rounding at all: no frame is duplicated, no black frame is invented, nothing is dropped. 1962 frames @ 6s/MC22 → 16 clips of 141 frames + one of 58 frames = 1962, exactly
 - **The odd tail is H3's problem, not yours** — a tail that is not on the 17n+5 grid is passed to MiniMax H3 as-is; the model decides how to handle it, so no frames of your video silently disappear
-- **Or cut on real shots** — `H3 Smart Split` is a second producer for the same bin: PySceneDetect finds the actual shot boundaries in the connected video and every main range is stored exactly as detected. No 17n+5 snapping, no padding, no dropped or duplicated frame; the last shot is whatever length it is
+- **Or cut on real shots** — `H3 Smart Split` is a second producer for the same bin: PySceneDetect finds the actual shot boundaries on the converted 24 fps timeline and every main range is stored exactly as detected. No 17n+5 snapping, no padding, no dropped or duplicated frame within that timeline; the last shot is whatever length it is
 - **Motion Context is optional there** — Smart Split defaults to 0 and only widens the extraction range, it never moves a detected cut
 
 - **Motion Context aware** — extraction range includes MC context frames for continuity
@@ -117,11 +122,11 @@ Restart ComfyUI, hard-refresh browser (`Ctrl+F5`).
 >
 > Without it the Manager, the Picker and the segment bin behave exactly as before; Smart
 > Split stops with an error that prints the same command for the running interpreter.>
-> **Uploaded videos need PyAV**: the Picker's **投放视频** (uploaded video) library decodes
+> **Disk-decoded videos need PyAV**: H3 Video Loader and the Picker's **投放视频** (uploaded video) library decode
 > with `av`, the same FFmpeg-inside-Python the Manager already uses, so no `ffmpeg` on
 > `PATH` is needed. It is not pinned in `requirements.txt` because a normal ComfyUI
-> install already ships it; if it is missing, the cut-bin mode keeps working and the
-> upload mode stops with an error that prints `pip install av`.
+> install already ships it; if it is missing, the cut-bin mode keeps working and these
+> disk-decode paths stop with an error that prints `pip install av`.
 
 
 ### Storage layout
@@ -155,12 +160,74 @@ bytes are decoded when the node runs, one card at a time.
 
 ### Node parameters
 
+#### H3 Video Loader
+
+`H3 视频加载器（24fps）` reads an existing file from the ComfyUI server's disk. Its file
+combo deliberately has **no upload button**: selecting a video does not send it through
+the browser or ComfyUI's upload-size limit. Choose a file below `input` (nested folders
+included), or paste an absolute path into `本地完整路径`; the explicit path takes priority.
+The source file is never copied, transcoded or rewritten.
+
+The **📁 选择视频（路径）** button opens the plugin's own server file browser. Enter
+and leave folders, filter the current directory, refresh after copying new files, and
+select one video to see its size, resolution, duration, source fps and audio flag before
+confirming. Confirmation only writes the input-relative path into the existing widget;
+it does not upload or copy anything. The dialog floats above the canvas and never resizes
+the node. The original combo and absolute-path field remain available.
+
+Execution uses PyAV presentation timestamps to produce a 24 fps `IMAGE` timeline and a
+matching `AUDIO`. `输出分辨率` caps the long side **during decode**, before frames are
+accumulated, so 4K/60 fps material does not first become a full-size float32 tensor. The
+four outputs are `IMAGE`, `AUDIO`, `frame_count` and `fps`; connect `fps` to Manager or
+Smart Split and their source-rate input receives the correct 24. A silent source gets a
+matching silent audio track. This still returns a complete `IMAGE`: use a smaller decode
+size for long or high-resolution sources, since the output must fit in memory.
+
+#### H3 Long Video Manager v2 / H3 Smart Split v2
+
+These are separate nodes, not replacements for the stable versions. Choose a video below
+`input` or paste an absolute path, then run the v2 node directly—no upstream `IMAGE` loader
+is needed. Both convert the file to 24 fps during streaming, save the same segment format
+to the same projects, and return `IMAGE`, `AUDIO`, `frame_count`, `total_segments`.
+Both are ComfyUI output nodes, so they can run and save the bin with **no downstream
+connection**. The four outputs remain optional for workflows that need the selected clip.
+
+Manager v2 decodes once and cuts fixed-length segments. Smart Split v2 uses one downscaled
+analysis pass for shot detection, then a second pass to save each shot. Only the current
+segment, its Motion Context and the selected output segment are retained; the source video
+never becomes one full-length float32 tensor. Manager v2 currently omits v1's optional
+person-crop controls; keep using v1 when that feature is required.
+
+For CFR sources at their original output size, these nodes stream RGB through FFmpeg with
+`fps=24:round=up`, which preserves the established PyAV frame selection while avoiding its
+per-frame conversion overhead. VFR, scaled output, a missing FFmpeg executable or a startup
+failure retains the general PyAV path. This is an optional speedup, not a new required
+dependency; a decode failure after frames have started is reported rather than restarted
+in a way that could duplicate frames.
+
+**📁 选择视频…** directly opens the native Windows dialog on the computer running ComfyUI.
+It can select a video on any local drive and returns its absolute path; the file is not
+restricted to `input`, uploaded or copied. Cancelling keeps the current selection. When
+the browser and ComfyUI are on different computers, remember that this dialog opens on
+the server—paste a server-accessible path instead. There is no separate compact file
+browser in the v2 panel.
+
+**▶ 原视频预览** first tries the source directly without uploading or creating an `IMAGE`.
+A same-origin request creates a two-hour read-only ticket and `aiohttp.FileResponse` serves
+HTTP Range requests. HEVC/H.265 sources automatically use a compatible preview instead;
+other playback errors trigger the same fallback, and **🔄 兼容预览** is available manually
+for a black picture without an error event. The proxy is H.264/yuv420p with AAC audio, capped
+at 1280 px on its long side, and cached under ComfyUI's temp directory by source path, size
+and modification time. The first conversion processes the whole source on demand; later
+previews reuse it. Neither the source file nor the formal 24 fps cutting path is changed.
+The player uses `preload="metadata"`, does not autoplay, and releases its URL when closed.
+
 #### H3 Long Video Manager
 
 | Parameter | Default | Shown on the node | Notes |
 |-----------|---------|-----------------|-------|
 | `project_name` | H3_LVM | 📦 项目素材库 | Bin folder name. The canvas dropdown is hidden — the panel below the parameters owns the same menu (switch / `＋ 新建项目…` / `🗑 删除当前项目…`) and writes through this field |
-| `fps` | 24 | 源视频帧率 | Source video frame rate |
+| `fps` | 24 | 源视频帧率 | Actual source video frame rate. The node converts to 24 fps by nearest-time frame sampling before cutting, preserving wall-clock duration and audio sync. `IMAGE` has no fps metadata, so set this to the connected video's real rate |
 | `segment_duration` | 6.0s | 每段时长（秒） | Fixed length of every full segment, Motion Context included; snapped down to 17n+5, so 6.0s @ 24fps → 141 frames = 5.875s. The last segment takes whatever frames are left and is not snapped |
 | `motion_context_frames` | 22 | Motion Context 帧数 | MC context (0/5/22/39/56); the menu shows `22 帧（默认）` and friends |
 | `segment_id` | 1 | 输出片段编号 | Which segment to output live |
@@ -224,7 +291,7 @@ keeps the width the user chose.
 | Parameter | Default | Shown on the node | Notes |
 |-----------|---------|-----------------|-------|
 | `project_name` | H3_LVM | 📦 项目素材库 | The same bin as the Manager. The canvas dropdown is hidden; the panel menu (switch / create / delete) writes through this field |
-| `fps` | 24 | 源视频帧率 | Source frame rate. Detection runs on the connected tensor, so this is also the frame → time scale |
+| `fps` | 24 | 源视频帧率 | Actual source video frame rate. Conversion to 24 fps happens before shot detection and cutting, preserving wall-clock duration and audio sync. `IMAGE` has no fps metadata, so set this to the connected video's real rate |
 | `detection_sensitivity` | medium | 镜头切点灵敏度 | `low` = 4.5, `medium` = 3.0, `high` = 2.0 for `AdaptiveDetector.adaptive_threshold` — the same three values the reference Director uses. It only decides where the cut lands |
 | `motion_context_frames` | 0 | Motion Context 帧数 | 0/5/22/39/56. Widens the extraction range only, never moves a cut. Default 0 because a real shot boundary is not a seam that needs hiding |
 | `segment_id` | 1 | 输出片段编号 | Which shot to output live (1 = first shot) |
@@ -546,6 +613,10 @@ untouched, and both nodes can sit in the same ComfyUI.
 | `GET /h3_lvm/ref_plan?w=&h=&mp=&upscale=0|1` | `{"width", "height", "actual_megapixels", "area_error", "ratio_error", "mode"}` — the 32-grid size the reference loader will really produce for that source, target and upscale setting; `mode` is `target_mp` or `grid_align` and is what puts the "not upscaled" note on the card |
 | `POST /h3_lvm/delete` | body `{"project": <name>, "segment_id": N}` → `{"deleted": N}` |
 | `POST /h3_lvm/merge` | body `{"project": <name>, "segment_ids": [3, 4, 5]}` → `{"project": ..., "merged_id": 3, "merged_from": [3, 4, 5], "dropped_overlap_frames": N, "renumbered": [{"from": 6, "to": 4}], "segment": {...}}` — joins consecutive segments; a Chinese 400 for a non-consecutive selection or mismatched fps/size |
+| `GET /h3_lvm/video_files?directory=<input-relative-folder>` | One directory for H3 Video Loader's server file browser: immediate subfolders and videos with path / size / mtime; absolute paths and escaping `input` are refused |
+| `GET /h3_lvm/video_file_info?path=<input-relative-video>` | Probe the selected input video for the browser's confirmation details; cannot probe an arbitrary disk path |
+| `POST /h3_lvm/source_preview` + `GET /h3_lvm/source_preview?ticket=...` | Same-origin JSON creates a short-lived ticket for the selected v2 source; GET streams only that authorized file with HTTP Range, never a caller-supplied disk path |
+| `POST /h3_lvm/system_video_picker` | Same-origin request opens the native dialog on a Windows ComfyUI host and returns the selected absolute path; no file bytes or `input`-only restriction |
 | `GET /h3_lvm/uploads?project=<name>&output_size=<option>&custom_max_side=<pixels>` | The upload library's cards: `{"project_name", "videos": [...]}` — each card carries `segment_id`, `storage_name`, `original_name`, `thumbnail`, `cover_url`, `video_url`, `width`, `height`, `source_fps`, `variable_fps`, `duration_sec`, `has_audio`, `out_fps`, `size_bytes`, `browser_preview`, plus `out_width` / `out_height` / `out_scaled` for the size the decode will really produce with that setting; a card whose file was deleted outside ComfyUI is listed with `missing_file: true` instead of disappearing |
 | `POST /h3_lvm/uploads/import` | multipart form with the `project` field **before** the `file` part; bytes are streamed into a `.upload_*` temp file and the card is only registered after the probe succeeds → the card record. Over 2 GiB is a 413, and a rejected or interrupted file leaves no index ghost and no leftover bytes |
 | `POST /h3_lvm/uploads/delete` | body `{"project": <name>, "segment_id": N}` → `{"deleted": N}` — that card, its file and its cover only; the cards after it move up one number, so the library stays 1..N; already gone is a Chinese 404 |
@@ -584,6 +655,7 @@ H3-Long-Video-Manager/
 │   ├── ref_nodes.py                   # 图片/音频参考加载器（固定编号槽位）
 │   ├── ref_presets.py                 # 参考库：图片/音频各一套（只存路径，不复制媒体）
 │   ├── guide_nodes.py                 # H3 Guide 时间轴 + v2（逐条调用原生 Add Guide）
+│   ├── video_loader_node.py           # Disk-first H3 视频加载器（无浏览器上传，24fps IMAGE/AUDIO）
 │   ├── h3_strength_patch.py       # v2 逐图引导强度的模型适配（只改 H3 的加噪与时间标签）
 │   ├── nodes_v1.py                    # backup (pre-audio)
 │   ├── nodes_v2.py                    # backup (pre-save-bin)
@@ -628,6 +700,8 @@ H3-Long-Video-Manager/
 │   ├── guide_timeline.css             # 时间轴与编辑器外壳（卡片区沿用 h3lvm_picker.css）
 │   ├── guide_state.js                 # Guide 列表与时间轴几何规则（pure, node --test）
 │   ├── guide_timeline.js              # Guide 时间轴编辑器（两轨 + 卡片区）
+│   ├── video_loader.js                # H3 视频加载器：服务器文件浏览器（只写路径）
+│   ├── video_loader.css               # 文件浏览器与节点选择条样式
 │   └── extension.js                   # (placeholder, intentionally empty)
 └── tests/
     ├── __init__.py
@@ -640,6 +714,8 @@ H3-Long-Video-Manager/
     ├── test_project_menu.py           # Project menu (list/create/delete) tests    ├── test_upload_store.py           # 投放视频库：两库隔离 / 稳定 ID / 索引损坏 / 路径安全
     ├── test_upload_api.py             # Upload API: import, delete, scope, size cap
     ├── test_video_decode.py           # Probe, 24 fps sampling, silent audio, covers
+    ├── test_video_loader.py           # Disk paths, no-upload schema, cache + real 60 fps decode
+    ├── test_video_loader_api.py       # File browser real HTTP listing/probe + traversal refusal
     ├── test_picker_dual_mode.py       # Old graphs stay on the cut bin; uploads round-trip
     ├── _media_clip.py                 # Test helper: a tiny generated clip
     ├── _plugin_import.py              # Test helper: import the plugin with or without ComfyUI
@@ -669,8 +745,11 @@ H3-Long-Video-Manager/
 
 | 节点 | 作用 |
 |------|------|
+| **H3 视频加载器（24fps）** | 直接读取服务器磁盘视频（不经过浏览器上传）→ 转 24fps、可在解码时缩放 → 输出 `IMAGE`、`AUDIO`、`frame_count`、`fps` |
 | **H3 Long Video Manager** | 接入视频 → 分段 → 全部存库 → 实时输出选中段 → 输出 `IMAGE`、`AUDIO`、`frame_count`、`total_segments` |
 | **H3 Smart Split** | 接入视频 → PySceneDetect 找出真实镜头切点 → 每个镜头全部存进**同一个库** → 实时输出选中段 → 输出 `IMAGE`、`AUDIO`、`frame_count`、`total_segments` |
+| **H3 Long Video Manager v2** | 独立流式版：直接选择磁盘视频 → 定长裁切 → 原视频内存有界 → 同一个素材库与四个输出，支持原视频预览 |
+| **H3 Smart Split v2** | 独立流式版：第一遍低内存检测镜头，第二遍逐镜头解码保存 → 同一个素材库与四个输出，支持原视频预览 |
 
 | **H3 Segment Picker** | 从库中读取 → 输出 `IMAGE`、`AUDIO`、`frame_count`、`segment_id`（前两项直接喂 H3） |
 | **H3 Guide 时间轴** | 输入：`positive` + H3 AV latent + 两个 VAE + 一个 Guide 列表 → 在双轨时间轴上放图片/音频 Guide → 输出 `positive`（与手动串联原生 Add Guide 等价） |
@@ -678,11 +757,13 @@ H3-Long-Video-Manager/
 
 ### 核心特性
 
+- **真正转换为 24fps** — Manager 和 Smart Split 都把 `fps` 视为输入素材的真实源帧率，先按真实时长转换为 24fps，再裁切或检测镜头。60fps 视频不会再被直接当成 24fps 慢放；24fps 输入原样通过
+- **v2 流式裁切** — 两个 v2 节点自己读取文件，只保留当前段和 Motion Context；稳定版 v1 的张量输入、节点 ID 与行为完全保留，可继续用于旧工作流
 - **定长分段** — 每个整段长度完全一致：每段时长向下吸附到合法 H3 帧数，6.0s @ 24fps 就是每段 141 帧 = 5.875s，不会再出现一段 6.6s、一段 7.3s
 - **17n+5 网格对齐** — 每个整段都是合法 H3 帧数，不会自动 snap 导致时长偏移
 - **结尾一帧都不丢** — 最后一段直接吃掉剩下的全部帧（含 Motion Context 重叠帧），完全不做对齐：不重复任何帧、不补黑帧、也不丢任何帧。1962 帧 @ 6s/MC22 → 16 段 141 帧 + 1 段 58 帧 = 1962，正好
 - **末尾的零头交给 H3 判断** — 最后一段的帧数不在 17n+5 上，也原样交给 MiniMax H3，由模型自己处理，你的视频不会悄悄少几帧
-- **也可以按真实镜头切** — `H3 Smart Split` 是同一个素材库的第二个产出节点：PySceneDetect 在接入的视频里找出真实镜头边界，每个正文区间按检测结果原样保存。不做 17n+5 吸附、不补帧、不丢帧、不重复主帧，最后一个镜头有多长就是多长
+- **也可以按真实镜头切** — `H3 Smart Split` 是同一个素材库的第二个产出节点：PySceneDetect 在转换后的 24fps 时间轴上找出真实镜头边界，每个正文区间按检测结果原样保存。在这条时间轴内不做 17n+5 吸附、不补帧、不丢帧、不重复主帧，最后一个镜头有多长就是多长
 - **这里的 Motion Context 是可选的** — Smart Split 默认 0，而且它只放大提取范围，绝不会移动切点
 
 - **Motion Context 感知** — 提取范围包含 MC 上下文帧，保证接续连贯
@@ -764,10 +845,10 @@ git clone https://github.com/AraneaQwQ/H3-Long-Video-Manager.git
 >
 > 没有这个包，Manager、Picker 和素材库的行为完全不变；Smart Split 会停下并把同一个命令
 > 打印成错误信息，命令里的 python 就是当前运行的那个。>
-> **投放视频需要 PyAV**：Picker 的**投放视频**库用 `av` 解码，和 Manager 用的是同一套
+> **磁盘视频解码需要 PyAV**：H3 视频加载器和 Picker 的**投放视频**库用 `av` 解码，和 Manager 用的是同一套
 > 「装在 Python 环境里的 FFmpeg」，不需要在 `PATH` 上另装 `ffmpeg`。它没有写进
 > `requirements.txt`，因为正常的 ComfyUI 环境本来就带这个包；真的缺了，裁切片段模式照常
-> 工作，投放视频模式会停下并打印 `pip install av`。
+> 工作，这些磁盘解码路径会停下并打印 `pip install av`。
 
 
 ### 存储结构
@@ -799,12 +880,51 @@ Motion Context 的重叠帧会在每一段里再存一份，所以一次运行�
 
 ### 节点参数
 
+#### H3 视频加载器（24fps）
+
+这个节点直接读取运行 ComfyUI 的电脑上的视频文件。文件选单刻意**不带上传按钮**：
+选视频不会经过浏览器，也不会触发 ComfyUI 的上传大小限制。可以选 `input` 文件夹里的
+视频（包括子文件夹），也可以在「本地完整路径」粘贴绝对路径；填写完整路径时优先使用它。
+源文件不会被复制、转码或改写。
+
+节点上的 **📁 选择视频（路径）** 按钮会打开插件自己的服务器文件浏览器：可以进入
+子目录、返回上一级、筛选当前目录、刷新新复制的文件；选中视频后先查看文件大小、
+分辨率、时长、源帧率和音轨信息，再确认。确认只把相对于 input 的路径写进原有字段，
+不上传、不复制。弹窗浮在画布上，不改变节点尺寸。原来的下拉框和完整路径输入仍保留。
+
+执行时用 PyAV 按画面时间戳输出 24fps 的 `IMAGE` 和对应 `AUDIO`。「输出分辨率」在
+**解码过程中**限制最长边，先缩小再累积帧，避免 4K/60fps 素材先变成完整的全尺寸
+float32 张量。四个输出是 `IMAGE`、`AUDIO`、`frame_count`、`fps`；把 `fps` 直接接到
+Manager 或 Smart Split 的源帧率输入，就会得到正确的 24。无音轨视频会输出等长静音。
+它仍然输出完整 `IMAGE`，所以超长或高分辨率视频仍需适当降低解码尺寸，确保内存放得下。
+
+#### H3 Long Video Manager v2 / H3 Smart Split v2
+
+这是两个新增独立节点，不会替换或迁移稳定版。直接选择 `input` 内视频或粘贴完整路径后运行，
+无需在上游接视频加载器。两者都在流式解码时转换为 24fps，写入同一个素材库，并输出
+`IMAGE`、`AUDIO`、`frame_count`、`total_segments`。
+两个 v2 都声明为 ComfyUI 输出节点：**不连接任何下游也能直接运行并存库**；四个输出
+接口保留，只有需要把选中片段交给后续节点时才连接。
+
+Manager v2 单遍解码并定长裁切；Smart Split v2 第一遍低分辨率检测镜头，第二遍按镜头保存。
+只保留当前段、Motion Context 和选中的输出段，不会把整条源视频变成完整 float32 张量。
+Manager v2 暂不包含 v1 的人物裁切控件；需要该功能时继续使用 v1。
+
+**📁 选择视频…** 直接在运行 ComfyUI 的 Windows 电脑上打开系统选框，可选择任意磁盘
+位置的视频并返回绝对路径，**不限制在 input，也不上传或复制文件**。取消选择会保留当前
+视频。如果浏览器和 ComfyUI 不在同一台电脑，弹窗会出现在服务器上，此时请粘贴服务器
+可读取的路径。v2 面板不再提供另一套自制简洁文件浏览器。
+
+**▶ 原视频预览** 不上传、不转码、不生成 `IMAGE`。同源请求先创建两小时只读票据，
+后台再通过 HTTP Range 按需读取该文件。预览默认只加载元数据、不自动播放，关闭时暂停并
+释放地址。浏览器仍需支持原视频的封装与编码；预览不能播放不影响 PyAV 裁切。
+
 #### H3 Long Video Manager
 
 | 参数 | 默认值 | 节点上显示为 | 说明 |
 |------|--------|--------------|------|
 | `project_name` | H3_LVM | 📦 项目素材库 | 库文件夹名。节点上的下拉框已隐藏——参数下面的面板里有同一个菜单（切换 / `＋ 新建项目…` / `🗑 删除当前项目…`），直接写这个字段 |
-| `fps` | 24 | 源视频帧率 | 源视频帧率（H3 生成的视频一般是 24） |
+| `fps` | 24 | 源视频帧率 | 输入素材的真实帧率。节点先按最近时间帧采样转换为 24fps，再裁切，保持真实时长和音画同步。`IMAGE` 不携带帧率元数据，因此这里必须填写所接视频的真实帧率 |
 | `segment_duration` | 6.0s | 每段时长（秒） | 每个整段的固定长度，已包含 Motion Context 重叠帧；向下吸附到 17n+5，因此 6.0s @ 24fps → 141 帧 = 5.875s。最后一段取剩余全部帧，不做吸附 |
 | `motion_context_frames` | 22 | Motion Context 帧数 | MC 上下文（0/5/22/39/56），菜单里显示为 `22 帧（默认）` 等 |
 | `segment_id` | 1 | 输出片段编号 | 实时输出哪一段 |
@@ -836,7 +956,7 @@ Motion Context 的重叠帧会在每一段里再存一份，所以一次运行�
 | 参数 | 默认值 | 节点上显示为 | 说明 |
 |------|--------|--------------|------|
 | `project_name` | H3_LVM | 📦 项目素材库 | 与 Manager 同一个素材库。节点上的下拉框已隐藏，面板顶部的同一个菜单（切换 / 新建 / 删除）直接写这个字段 |
-| `fps` | 24 | 源视频帧率 | 源视频帧率。检测跑在接入的张量上，所以它同时也是帧号 ↔ 时间的换算基准 |
+| `fps` | 24 | 源视频帧率 | 输入素材的真实帧率。节点先转换为 24fps，再检测镜头和裁切，保持真实时长和音画同步。`IMAGE` 不携带帧率元数据，因此这里必须填写所接视频的真实帧率 |
 | `detection_sensitivity` | medium | 镜头切点灵敏度 | 对应 `AdaptiveDetector.adaptive_threshold`：低 4.5 / 中 3.0 / 高 2.0，与参考实现 Director 完全一致。它只决定切在哪里，不改变切分规则 |
 | `motion_context_frames` | 0 | Motion Context 帧数 | 0/5/22/39/56。只放大提取范围，不会移动切点。默认 0，因为真实镜头边界不是需要掩盖的接缝 |
 | `segment_id` | 1 | 输出片段编号 | 实时输出第几个镜头（1 = 第一个镜头） |
@@ -1072,6 +1192,8 @@ base64。关闭编辑器或删除节点都不会删除素材，因为别的工�
 | `GET /h3_lvm/ref_plan?w=&h=&mp=&upscale=0|1` | `{"width", "height", "actual_megapixels", "area_error", "ratio_error", "mode"}` — 参考图加载器对该源图、目标 MP 与放大开关实际会产出的 32 网格尺寸（卡片上的尺寸就来自这里）；`mode` 是 `target_mp` 或 `grid_align`，卡片上「未放大」的说明就由它决定 |
 | `POST /h3_lvm/delete` | 请求 `{"project": <库名>, "segment_id": N}` → `{"deleted": N}` |
 | `POST /h3_lvm/merge` | 请求 `{"project": <库名>, "segment_ids": [3, 4, 5]}` → `{"project": ..., "merged_id": 3, "merged_from": [3, 4, 5], "dropped_overlap_frames": N, "renumbered": [{"from": 6, "to": 4}], "segment": {...}}` — 只接受编号连续的片段；选择不连续或帧率/分辨率不一致会返回中文 400 |
+| `GET /h3_lvm/video_files?directory=<input内相对目录>` | H3 视频加载器的服务器文件浏览器：列出当前层子目录和视频的路径、大小、mtime；拒绝绝对路径与离开 input 的路径 |
+| `GET /h3_lvm/video_file_info?path=<input内相对视频>` | 读取确认前显示的视频信息；只能探测 input 内文件，不能借接口读取任意磁盘路径 |
 | `GET /h3_lvm/uploads?project=<项目名>&output_size=<选项>&custom_max_side=<像素>` | 投放视频库的卡片：`{"project_name", "videos": [...]}` — 每条带 `segment_id`、`storage_name`、`original_name`、`thumbnail`、`cover_url`、`video_url`、`width`、`height`、`source_fps`、`variable_fps`、`duration_sec`、`has_audio`、`out_fps`、`size_bytes`、`browser_preview`，并按这个设置附带 `out_width` / `out_height` / `out_scaled`（运行时真正会解码出的尺寸）；在 ComfyUI 外面被删掉的文件不会让卡片消失，而是带 `missing_file: true` |
 | `POST /h3_lvm/uploads/import` | multipart 表单，`project` 字段必须在 `file` **之前**；字节流式写入 `.upload_*` 临时文件，探测通过后才登记卡片 → 返回卡片记录。超过 2 GiB 返回 413；被拒绝或中断的上传不会留下索引幽灵，也不会留下半个文件 |
 | `POST /h3_lvm/uploads/delete` | 请求 `{"project": <项目名>, "segment_id": N}` → `{"deleted": N}` — 只删这张卡片、它的文件和封面；后面的卡片编号依次顺延，库保持 1..N 连续；已经不在了返回中文 404 |

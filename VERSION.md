@@ -3,6 +3,99 @@
 > 版本铁规：每次改动前，把旧版本完整快照存入 `archive/<日期>-<commit 短 hash>/`，并在本文件顶部追加一条说明。
 > 只有用户的明确命令才能删改 `archive/` 中的旧版本。
 
+## 2026-10-25 · 近期性能、流式 v2 与预览修复打包提交
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-25-9368107-pre-push` 保存打包前完整开发树（108 个源码/文档/测试文件，逐文件哈希 `mismatch: 0`）。远端 `origin/main` 已 fetch 核对，仍为 `9368107`，没有需要合并的新提交。
+- 本次打包范围：性能优化两轮、真实源帧率到 24fps 的转换、H3 Video Loader、Manager / Smart Split 独立流式 v2、立体声音频修复、v2 原视频与 Picker 投放视频 H.264 兼容预览、CFR 原始尺寸 FFmpeg 流式快速路径，以及对应文档和测试。稳定版节点、裁切算法、Motion Context、Join Match 等继承行为不在本轮改动范围内。
+- 验证基线：完整既定测试入口 **649/649 通过，0 跳过**；开发副本 20 个 `web/*.js` 语法检查 0 失败；真实 HEVC 经投放库生成 H.264/yuv420p 代理并完整解码 832 帧，源文件不变。用户已明确反馈 Picker 黑屏修复测试通过；其他真实界面手操与成片效果仍以各条记录中的验收边界为准。
+- 本次由用户明确要求提交并推送 `origin/main`，不创建新 tag。下列 2026-10-24 条目中的「未提交 / 不提交、不推送」是各轮开发当时的记录，均随本次打包进入 `main`，不表示仍然躺在本地。
+
+## 2026-10-24 · Segment Picker 投放视频兼容预览（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-24-9368107-picker-preview` 保存本轮前完整开发树（188 个文件，含既有 Python 缓存；逐文件哈希 `mismatch: 0`）。
+- 代码路径确认的根因：投放卡片把原始 `/view` 地址直接交给浏览器 `<video>`，此前为 Manager / Smart Split v2 完成的 HEVC 兼容代理没有接入 Picker，因此 H.265 / HEVC 等浏览器不支持的视频仍可能黑屏。
+- 新增同源 JSON `POST /h3_lvm/uploads/preview`：只接受投放库项目名与当前视频编号，通过 `resolve_upload()` 解析已入库文件并创建短期只读票据；不接受磁盘路径。代理仍复用 `source_preview.py` 的按需 H.264/yuv420p + AAC 转码、缓存、并发锁、原子替换与 HTTP Range，不开放任意路径 GET。
+- Picker 的 HEVC 与浏览器不支持的封装自动使用兼容预览；普通格式优先直接播放，播放错误自动回退，也可手动点击「🔄 兼容预览」。转码只生成 ComfyUI temp 下的临时副本，不改上传原文件、项目索引、正式 `decode_video` 或 24fps 输出。裁切片段库、Manager / Smart Split、Motion Context 与四个输出不变。
+- 自动验证：新增真实 HTTP 专项 **4/4 通过**，覆盖项目/编号授权、同源与 JSON 校验、未知编号拒绝、HEVC 推荐、H.264/yuv420p 代理、音轨保留、缓存只转码一次、源字节不变；完整既定测试入口 **649/649 通过，0 跳过**，开发副本 20 个 `web/*.js` 逐个 `node --check` 为 0 失败。
+- 真实素材验证：用户此前提供的 27.747 秒 HEVC 抖音视频经「复制到临时投放库 → 项目/编号授权 → 代理」实际生成 H.264/yuv420p，**832 帧全部解码成功**，上传文件和原片的 SHA-256 均未改变。真实浏览器播放和视觉交互仍由用户人工验收。
+- 已同步运行副本 `E:\ai\ComfyUI-aki-v3\ComfyUI\custom_nodes\H3-Long-Video-Manager`：108 个开发/运行文件，`mismatch: 0`、`stale: 0`；运行时导入正常，10 个节点注册。此次改了 Python 路由与前端，需彻底重启 ComfyUI 后 `Ctrl+F5`。不提交、不推送、不发布版本。
+
+## 2026-10-24 · Manager / Smart Split v2 CFR 流式解码提速（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-24-9368107-ffmpeg-stream` 保存本轮前运行副本。基准与候选边界记录于 `work/stream_v2_speed_baseline.md`：真实 27.747 秒 HEVC 当前原始尺寸裁切 7.745s，其中视频迭代 6.011s；FFmpeg 默认可选帧不同，只有 `fps=24:round=up` 在 CFR 测试中得到一致结果，VFR / 缩放不允许直接替换。
+- `comfyui/stream_video.py` 新增 CFR + 原始尺寸 FFmpeg rawvideo 快速路径：`setpts=PTS-STARTPTS,fps=24:round=up`，每帧直接 `readinto` 可写 NumPy uint8 数组，不生成整部视频、不使用只读 torch 缓冲。进程在生成器关闭、帧数上限或异常时回收；启动失败回退 PyAV，已经产出帧后的失败明确报错，绝不从头重读造成重复帧。
+- VFR、缩放输出和 FFmpeg 不在 PATH 时完整保留原 PyAV 实现。Manager / Smart Split 第二遍传入已经取得的 `source_info`，不增加一次视频探测；Smart 的低分辨率检测仍走 PyAV。节点 ID、接口、24fps 口径、分段、Motion Context、音频、存储格式与 v1 均未改变。
+- 自动验证：60fps、12fps、VFR、缩放、启动失败和 FFmpeg 缺失回退等流式专项通过；完整既定测试入口 **645/645 通过，0 跳过**。真实 HEVC 新快速路径与原 PyAV **666/666 帧逐字节一致**。
+- 同机同片完整 Manager v2 基准：总耗时 **7.745s → 3.025s（约 2.56×）**，视频迭代 **6.011s → 0.769s（约 7.82×）**；存盘仍约 1.8s，因此不能把管道提速倍率当成所有机器、所有素材的整节点承诺。真实 ComfyUI 内手操和长素材表现由用户验收。
+
+## 2026-10-24 · v2 原视频 H.264 兼容预览（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-24-9368107-preview-proxy` 保存本轮前运行副本。用户提供的黑屏视频经 `ffprobe` 确认为 HEVC/H.265 Main、576×1024、30fps、yuv420p；原预览把源文件直接交给浏览器，因此与浏览器 HEVC 支持不足相符。
+- `comfyui/source_preview.py` 保持短期只读票据授权，新增按需 H.264/yuv420p + AAC 代理：最长边不超过 1280、不提升分辨率、不改变源帧率，`libx264 veryfast / CRF 23`，源文件绝不改写。缓存位于 ComfyUI temp 的 `h3-lvm-source-preview`，键包含源 realpath、大小、mtime 与代理格式版本；同 key 并发共用锁，临时文件完整后才 `os.replace`，重复打开不重新转码。正式裁切、24fps 和音频路径不变。
+- `server_api.py` 新增同源 JSON `POST /h3_lvm/source_preview_proxy`，只接受既有 ticket，不能接受磁盘路径；代理 GET 仍走原 FileResponse / HTTP Range，未生成时返回错误而不会由 GET 偷偷转码。`probe_video` 只新增 codec / pix_fmt 元数据，不改变解码行为。
+- `web/source_preview.js`：普通格式仍优先源文件直读；HEVC/H.265 直接进入兼容预览，其他格式播放 `error` 自动回退；另有 **🔄 兼容预览** 按钮处理浏览器未抛错误的黑屏。转码期间显示状态，关闭弹窗后的迟到响应不会重设播放器；节点尺寸与布局逻辑不变。
+- 自动验证：预览 API 专项 **10/10 通过**，覆盖真实 H.264 代理、音轨保留、源帧率、缓存只转码一次、源字节不变、HEVC 推荐、票据与同源校验；完整既定测试入口 **641/641 通过，0 跳过**，`source_preview.js` 的 `node --check` 通过。另用用户提供的 27.747 秒 HEVC 文件实际生成代理成功：H.264/yuv420p、576×1024、832 帧。真实浏览器播放与按钮视觉由用户人工验收；首次代理需完整转码，长视频会等待并占用临时磁盘。
+
+## 2026-10-24 · 文件音频立体声解码修复（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-24-9368107-stereo-audio` 保存本轮修复前运行副本的完整文件。根因是 PyAV packed 立体声把左右声道交错在一个平面里，旧代码却把它当成单声道样本；两个声道因此错位，听感、音高和有效声道均异常。24fps 视频转换本身不变速音频。
+- `comfyui/video_decode.py` 的 `_audio_to_channels()` 现在按 `frame.format.is_planar` 区分 packed / planar；packed 多声道先解除交错再返回 `[channels, samples]`。完整 Loader / 投放解码与 Manager v2 / Smart Split v2 分段音频统一使用 `s16p` 平面重采样，保留源采样率、声道与时间轴，不做 `atempo` 或音高变换。
+- 新增真实 60fps、48kHz、左右声道分别为 440Hz / 880Hz 的 AAC 视频用例，同时覆盖完整解码与按时间段解码；修复前两者都错误输出单声道，修复后声道、音高和时长检查通过。完整既定测试入口 **638/638 通过，0 跳过**。实际素材听感由用户人工验收；源视频和旧库均不被自动改写，已经生成的异常片段需重新运行生成。
+
+## 2026-10-24 · Manager / Smart Split 独立流式 v2（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-24-9368107-video-path-label` 保存本轮前的完整工作树（96 文件，逐文件哈希一致）。稳定版 `H3 Long Video Manager` / `H3 Smart Split` 的节点 ID、张量输入、裁切算法与执行行为不变；新节点为 `H3 Long Video Manager v2` / `H3 Smart Split v2`，不自动迁移旧工作流。
+- v2 直接选择 input 视频或完整路径，在解码时转为 24fps。Manager v2 单遍流式定长裁切；Smart Split v2 第一遍逐帧低内存检测，第二遍按镜头保存。新增 `core/stream_segments.py`、`comfyui/stream_video.py`、`comfyui/stream_nodes.py`，仅保留当前段、MC 重叠与选中输出段，避免完整长视频 float32 IMAGE。Manager v2 暂不提供 v1 的人物裁切控件。
+- 两个 v2 的 schema 均增加 `is_output_node=True`：不连接任何下游输出也能直接点运行，完成裁切和存库；原有四个输出接口保留。稳定版 v1 仍不是输出节点，执行行为不变。保存开启时原有 NaN 指纹继续保证每次运行都真正执行，不被缓存跳过。
+- 片段仍写原项目索引与 safetensors 结构，17n+5、末段、Motion Context 和四个输出不变。`segment_store.py` 增加 uint8 输入支持：int8 直接平移存储，fp16 才转换；原 float 路径保留。真实文件测试验证保存后读取与 v2 选中输出逐值一致。
+- v2 面板复用现有项目菜单和卡片墙，新增来源控制条与 **▶ 原视频预览**。预览用同源 POST 创建两小时只读票据，GET 只允许票据对应的文件，`FileResponse` 支持 HTTP Range；浏览器 `preload="metadata"`、不自动播放，关闭时暂停、清除 src 并 load。没有任意路径 GET、不复制、不转码、不生成 IMAGE；浏览器不支持的编码只影响预览，不影响 PyAV 执行。
+- 来源控制条按后续用户反馈只保留一个 **📁 选择视频…**：点击直接用 tkinter 打开 Windows 系统选框，不再进入自制简洁文件浏览器。可选任意磁盘视频并返回绝对路径，不受 input 限制，不上传、不复制；取消保留当前选择，重复打开会被拒绝。远程浏览器需注意弹窗出现在服务器端，此时粘贴服务器可读取路径。原生弹窗手操由用户验收。
+- 自动验证：流式视频 / 分段 / 节点 / 预览 API 专项 **23/23 通过**；加入系统选框后完整 `unittest discover` **636/636 通过，0 跳过**。前端 `node --check` 全量 0 失败，模块 import 检查通过，Guide 状态 103、参考状态 46、Picker 模式规则测试全部通过。真实 ComfyUI 布局、系统选框、原视频播放和长素材峰值内存尚待用户人工验收；不提交、不推送、不标记版本。
+- 已同步运行副本 `E:\ai\ComfyUI-aki-v3\ComfyUI\custom_nodes\H3-Long-Video-Manager`：108 个开发/运行文件，`mismatch: 0`、`stale: 0`；独立运行时导入确认 `NODE_LIST: 10`，两个稳定版与两个流式 v2 同时注册。需彻底重启 ComfyUI 加载新 Python 节点和预览路由，再硬刷浏览器。
+
+## 2026-10-24 · 视频加载器服务器文件浏览器（未提交）
+
+- 按钮文案按用户反馈由「选择视频（不上传）」改为 **「选择视频（路径）」**；改动前快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-24-9368107-video-browser`（96 文件，逐文件哈希一致）。仅显示文案变化，行为与测试范围不变。
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-24-9368107-video-loader` 保存本轮前的加载器完整工作树（93 文件，逐文件哈希一致）。
+- 节点新增 **📁 选择视频（路径）** 和独立浮层文件浏览器：进入/返回目录、当前目录筛选、刷新、单选确认；选中后显示文件大小、分辨率、时长、源帧率和音轨信息。确认只写原有 `video` 相对路径并清空 `custom_path`，不上传、不复制、不改变节点尺寸。保留下拉框和完整路径输入；不增加常驻文件列表或内部拖拽功能。
+- 新增只读 `GET /h3_lvm/video_files` 与 `GET /h3_lvm/video_file_info`，以 realpath + commonpath 限制在 input 内；目录接口只读目录项，信息接口只探测选中的单个文件，不能读取任意磁盘路径。
+- 前端 `web/video_loader.js` / `video_loader.css` 使用原生 dialog 浮层、统一悬停/选中/焦点反馈；未修改 ComfyUI 前端。`node --check` 通过。
+- 自动验证：浏览器与接口专项 **11/11 通过**（含真实 aiohttp 路由、60fps 视频信息、一级目录返回、绝对路径与 `..` 越界拒绝）；完整 `unittest discover` **610/610 通过，0 跳过**。文件浏览器真实 ComfyUI 手操与视觉尚待用户验收。
+- 已同步运行副本 `E:\ai\ComfyUI-aki-v3\ComfyUI\custom_nodes\H3-Long-Video-Manager` 供用户人工测试：96 个开发/运行文件，`mismatch: 0`、`stale: 0`。需彻底重启 ComfyUI 加载 Python 节点与路由，再硬刷浏览器；不提交、不推送、不标记版本。
+
+## 2026-10-24 · 新增 H3 视频加载器（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-24-9368107-fps-conform` 保存本轮前的 24fps 转换修复完整工作树（91 文件，逐文件哈希一致）。
+- 新增独立节点 `H3 Video Loader` / `H3 视频加载器（24fps）`，只加入本插件，不修改 ComfyUI 本体或原生 Load Video。文件选单不声明上传控件，直接读取 `input`（含子目录）或用户粘贴的本地完整路径，从机制上绕开浏览器上传与服务器上传大小限制。
+- 复用 `video_decode.py` 的 PyAV 时间戳解码：输出固定 24fps，60fps 不慢放；分辨率在逐帧解码时缩小，再累积为 IMAGE，源文件不复制、不改写。输出 `IMAGE / AUDIO / frame_count / fps`，其中 fps 固定为 24，可直接连接 Manager / Smart Split；无音轨时输出等长静音。文件 mtime、大小、路径和输出分辨率进入缓存指纹。
+- 边界：该节点仍返回完整 IMAGE，不是无限长视频的流式处理；超长、高分辨率素材需要降低解码尺寸并保证内存足够。后续若做 Manager / Smart Split 文件流式输入，应另行设计，不在本轮暗中改变其接口。
+- 自动验证：`tests/test_video_loader.py` 7 条，含无上传控件、嵌套文件列表、路径优先级、中文校验、缓存、静音补齐，以及真实 60fps 文件的 24fps 与音频同步；专项组合 **24/24 通过**。完整 `unittest discover` **606/606 通过，0 跳过**（TEMP/TMP 定向到仓库可写临时目录，避免沙箱拦截既有越界路径测试的探针文件）。
+- 尚未同步 ComfyUI 运行副本，以免影响用户正在进行的上一轮人工测试；不提交、不推送、不标记版本。
+
+## 2026-10-24 · 源帧率转换修复（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-24-9368107-performance-round2` 保存本轮修改前的第二轮完整工作树（89 文件，逐文件哈希一致）。
+- `H3 Long Video Manager` 与 `H3 Smart Split` 的 `fps` 现在明确表示输入素材的真实源帧率。新增 `core/frame_rate.py`，先按真实时长把输入张量转换为 24fps，再进行人物裁切、定长裁切或镜头检测；60fps 输入不会再被直接当成 24fps 慢放，低帧率输入通过重复邻近帧保持原速度。24fps 输入零复制透传，不使用光流插值。
+- 视频按最近时间帧采样，目标帧数为 `round(源帧数 × 24 / 源帧率)`；音频按转换后的 24fps 时间轴裁切，真实时长不变，不变调。节点 ID、输入数量、输入顺序、四个输出、裁切算法、17n+5、Motion Context 和存储结构均未改变。
+- ComfyUI `IMAGE` 不携带 fps 元数据，无法自动识别源帧率；用户仍需在 `fps` 中正确填写或连接真实源帧率。已经按旧逻辑保存的 60fps 切片不会自动迁移，需用新实现重新运行 Manager / Smart Split，建议使用新项目避免旧卡片混淆。
+- 自动验证：新增 `tests/test_frame_rate.py` 5 条，覆盖 60→24、12→24、24fps 零复制，以及两个节点的转换后裁切和音频同步；专项 **48/48 通过**，完整 `unittest discover` **599/599 通过，0 跳过**。
+- 已同步 ComfyUI 运行副本 `E:\ai\ComfyUI-aki-v3\ComfyUI\custom_nodes\H3-Long-Video-Manager`：91 个开发/运行文件，`mismatch: 0`、`stale: 0`。Python 改动需彻底重启 ComfyUI；尚未做真实 60fps 素材的人工验收，不提交、不推送、不标记版本。
+
+## 2026-10-24 · 性能优化第二轮（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-24-9368107-performance-round1` 保存用户已验收的第一轮完整工作树（88 文件，逐文件哈希一致）。
+- MP4 预览编码改为每次处理并写入 8 帧，不再一次性生成整段 `rawvideo` 字节；packed int8 也只在当前块内解码为 float，避免整段 float32 与整段字节同时占内存。
+- ffmpeg 参数、音频 WAV、输出路径与存储格式不变。stdin 写完后关闭并等待退出；stdout/stderr 直接丢弃以避免管道填满，断管或转换异常时终止并回收仍未退出的进程。
+- 自动验证：`tests/test_mp4_encoding.py` 3 条（真实 ffmpeg 的 8+2 帧写入、帧数/像素/音频流、非零退出、BrokenPipe 清理）；完整 `unittest discover` **594/594 通过，0 跳过**。
+- 尚未做 ComfyUI 内人工操作与大项目峰值内存计时；当前仍未同步运行副本，不提交、不标记版本。
+
+## 2026-10-24 · 性能优化第一轮（未提交）
+
+- 快照：`archive/2026-10-24-9368107-performance/` 保存本轮修改前的完整 `9368107` 基线。
+- 本轮范围：合并封面只解码实际使用的一帧；投放视频降帧时跳过不会被采用的源帧像素转换。裁切算法、Motion Context、存储格式和节点接口不变。
+- 自动验证：专项 `tests.test_merge_segments + tests.test_video_decode` **56/56 通过**（含真实 ffmpeg/PyAV 视频）；完整 `unittest discover` **591/591 通过，0 跳过**；两仓库全部 24 个 `web/*.js` 均通过 `node --check`。测试辅助目录改用普通 `os.mkdir`，避免 Windows 受限沙箱无法写入 `tempfile.mkdtemp` 的 0700 目录；该修正只影响测试基础设施。
+- 尚未做 ComfyUI 内人工操作与实际项目性能计时；当前仍是未提交开发副本，不标记版本。
+
 ## 2026-10-24 · `666f4ac`（当前基线，= tag `v1.5.0`）
 
 - 快照：改动前的状态就是 `ee627c8`（tag `v1.4.0` 之后的文档 commit），已由 `git archive ee627c8` 解到 `archive/2026-10-24-ee627c8/`（87 个文件，与 `git ls-files` 一一对应）。该目录原先存的是本轮在途工作树，那些内容现在全部进了 `666f4ac`，所以按目录名重取干净基线不丢任何东西。提交后的快照在 `archive/2026-10-24-666f4ac/`（87 个文件，由 `git archive v1.5.0` 解出，与提交内容逐字节相同）。

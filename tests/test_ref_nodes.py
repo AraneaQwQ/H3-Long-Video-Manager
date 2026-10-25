@@ -21,6 +21,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, REPO)
 
+from tests._temp_dir import make_temp_dir
 from core.ref_media import trim_audio  # noqa: E402  (the repo path is set up above)
 from core.ref_size import (  # noqa: E402  (the repo path is set up above)
     DEFAULT_RESAMPLE_METHOD, RESAMPLE_LANCZOS, RESAMPLE_METHODS,
@@ -63,7 +64,7 @@ TMP_ROOT = None
 
 def setUpModule():
     global TMP_ROOT
-    TMP_ROOT = tempfile.mkdtemp(prefix="h3lvm_ref_nodes_")
+    TMP_ROOT = make_temp_dir(prefix="h3lvm_ref_nodes_")
 
 
 def tearDownModule():

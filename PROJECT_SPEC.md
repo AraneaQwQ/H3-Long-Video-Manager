@@ -72,7 +72,7 @@ change record: [RAFOLIE_DEVELOPMENT.md](RAFOLIE_DEVELOPMENT.md).
 - [x] Phase 0: Environment Investigation
 - [x] Phase 1: Core Data Models — `core/models.py`
 - [x] Phase 2: Metadata Detection — `core/extraction.py` → `get_video_metadata()` (no separate `metadata.py`)
-- [~] Phase 3: H3 Working Video — resolution scaling via `WorkingVideoConfig` + `scale_percent`; FPS is supplied by the `video_fps` input, no automatic FPS conform
+- [x] Phase 3: H3 Working Video — resolution scaling via `WorkingVideoConfig` + `scale_percent`; the `fps` input declares the actual source rate and `core/frame_rate.py` converts the input to a 24 fps timeline before Manager cutting or Smart Split detection. ComfyUI `IMAGE` carries no fps metadata, so the source rate is not auto-detected
 - [x] Phase 4: Segmentation — `core/h3_grid.py`, `core/segmentation.py`
 - [x] Phase 5: Motion Context Range Calculation — `motion_context_frames` (5/22/39/56) + extraction ranges
 - [x] Phase 6: Segment Manifest — `core/manifest.py`
@@ -90,6 +90,8 @@ change record: [RAFOLIE_DEVELOPMENT.md](RAFOLIE_DEVELOPMENT.md).
 Extra beyond this spec (not part of the original phase list): local segment bin with lossless
 safetensors storage and thumbnails, person-detect crop (`core/person_crop.py`), segment deletion,
 and the `segment_id` echo output for original-vs-regen alignment ([SEGMENT_ID_OUTPUT.md](SEGMENT_ID_OUTPUT.md)).
+Independent Manager / Smart Split v2 nodes also provide file-based 24 fps streaming, bounded
+source-video memory and ticketed HTTP Range source previews; stable v1 tensor nodes remain intact.
 
 ## Key Design Principles
 1. Half-open intervals `[start, end)` throughout

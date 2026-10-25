@@ -14,6 +14,8 @@ import sys
 import tempfile
 import unittest
 
+from tests._temp_dir import make_temp_dir
+
 # Ensure plugin root is importable
 _PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PLUGIN_ROOT not in sys.path:
@@ -36,7 +38,7 @@ class ProjectFixture(unittest.TestCase):
     """A throwaway output folder plus the index writer both test classes need."""
 
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="h3lvm_menu_")
+        self._tmpdir = make_temp_dir(prefix="h3lvm_menu_")
         set_base_dir_override(self._tmpdir)
 
     def tearDown(self):

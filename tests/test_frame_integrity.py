@@ -12,6 +12,7 @@ import unittest
 import tempfile
 
 import numpy as np
+from tests._temp_dir import make_temp_dir
 
 try:
     import av
@@ -33,7 +34,7 @@ class TestFrameIntegrity(unittest.TestCase):
         import av
         from fractions import Fraction
 
-        cls.tmpdir = tempfile.mkdtemp(prefix="h3lvm_test_")
+        cls.tmpdir = make_temp_dir(prefix="h3lvm_test_")
         cls.video_path = os.path.join(cls.tmpdir, "test_frames.mp4")
 
         # Create a 480×270 video at 24 FPS with 1440 frames

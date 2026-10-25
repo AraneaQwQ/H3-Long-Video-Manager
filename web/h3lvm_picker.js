@@ -31,7 +31,6 @@ import {
     MODE_ORDER,
     MODE_SEGMENTS,
     MODE_UPLOADS,
-    browserPreviewHint,
     canBrowserPreview,
     entryForMode,
     followCardAfterDelete,
@@ -615,14 +614,36 @@ function setupPickerUI(node) {
         const playBtn = document.createElement("button");
         playBtn.className = "h3lvm-play-btn";
         playBtn.textContent = "▶";
-        playBtn.title = canBrowserPreview(video) ? "在浏览器里预览原视频" : "这个封装浏览器不能直接播放";
-        playBtn.onclick = (e) => {
+        playBtn.title = "预览视频；浏览器不兼容时自动生成 H.264 临时预览，不改原文件";
+        playBtn.onclick = async (e) => {
             e.stopPropagation();
-            if (!canBrowserPreview(video)) {
-                window.alert(browserPreviewHint(video));
+            if (video.missing_file || !video.video_url) {
+                window.alert("视频文件已丢失，无法预览。请重新上传，或删除这张卡片。");
                 return;
             }
-            openPreview({ ...video, mp4_url: video.video_url }, signal, uploadPreviewText(video));
+            playBtn.disabled = true;
+            playBtn.textContent = "…";
+            try {
+                const response = await api.fetchApi("/h3_lvm/uploads/preview", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ project, segment_id: video.segment_id }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.error || `预览读取失败（HTTP ${response.status}）`);
+                if (signal.aborted) return;
+                openPreview({
+                    ...video,
+                    mp4_url: data.url,
+                    proxy_url: data.proxy_url,
+                    proxy_recommended: data.proxy_recommended || !canBrowserPreview(video),
+                }, signal, uploadPreviewText(video));
+            } catch (error) {
+                if (!signal.aborted) window.alert(`预览读取失败：${error.message}`);
+            } finally {
+                playBtn.disabled = false;
+                playBtn.textContent = "▶";
+            }
         };
         thumbWrap.appendChild(playBtn);
         card.appendChild(thumbWrap);

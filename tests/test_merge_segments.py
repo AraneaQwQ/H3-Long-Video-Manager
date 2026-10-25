@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import os
 import sys
-import tempfile
 import shutil
 import unittest
+from unittest import mock
 
 # Ensure plugin root is importable
 _PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,6 +19,8 @@ if _PLUGIN_ROOT not in sys.path:
 
 import torch
 
+from tests._temp_dir import make_temp_dir
+from comfyui import segment_store
 from comfyui.segment_store import (
     _load_tensors,
     get_project_dir,
@@ -43,7 +45,7 @@ def _first_pixel(video, index):
 
 class MergeTestCase(unittest.TestCase):
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="h3lvm_merge_")
+        self._tmpdir = make_temp_dir(prefix="h3lvm_merge_")
         set_base_dir_override(self._tmpdir)
 
     def tearDown(self):
@@ -109,6 +111,21 @@ class TestMergeShape(MergeTestCase):
         image = Image.open(path).convert("RGB")
         mean = sum(image.getpixel((0, 0))) / 3.0
         self.assertAlmostEqual(mean, 3 * 2.55, delta=3)
+
+    def test_merged_cover_only_decodes_one_frame(self):
+        self.save_shot("C2", 1, 0, 10, context=3)
+        self.save_shot("C2", 2, 7, 10, context=5)
+        seen = []
+        real_decode = segment_store._decode_video
+
+        def tracked_decode(tensor):
+            seen.append(tuple(tensor.shape))
+            return real_decode(tensor)
+
+        with mock.patch.object(segment_store, "_decode_video", tracked_decode):
+            merge_segments("C2", [1, 2])
+
+        self.assertEqual(seen, [(1, 16, 32, 3)])
 
     def test_merge_keeps_the_stored_dtype(self):
         for dtype in ("int8", "fp16"):

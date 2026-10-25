@@ -72,6 +72,14 @@ from .uploaded_video_store import (
     open_partial,
     reorder_uploads,
 )
+from .video_loader_node import list_video_directory, video_file_info
+from .source_preview import (
+    create_compatible_source_preview,
+    create_source_preview,
+    create_upload_preview,
+    source_preview_path,
+)
+from .system_file_picker import choose_system_video
 
 
 
@@ -444,6 +452,102 @@ def register_h3lvm_routes() -> None:
         project = sanitize_project_name(project)
         data = await asyncio.to_thread(list_project, project)
         return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    @routes.get("/h3_lvm/video_files")
+    async def handle_video_files(request):
+        """List one input directory for H3 Video Loader; no upload or file bytes."""
+        try:
+            data = await asyncio.to_thread(
+                list_video_directory, request.rel_url.query.get("directory", ""))
+        except (OSError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    @routes.get("/h3_lvm/video_file_info")
+    async def handle_video_file_info(request):
+        """Probe only the selected file below input, never an arbitrary disk path."""
+        try:
+            data = await asyncio.to_thread(
+                video_file_info, request.rel_url.query.get("path", ""))
+        except (OSError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/h3_lvm/source_preview")
+    async def handle_source_preview_ticket(request):
+        """Create a short-lived ticket for the path explicitly chosen by the user."""
+        blocked = _csrf_block(request)
+        if blocked is not None:
+            return blocked
+        if request.content_type != "application/json":
+            return web.json_response({"error": "Expected JSON"}, status=415)
+        try:
+            payload = await request.json()
+            data = await asyncio.to_thread(
+                create_source_preview,
+                payload.get("video", ""), payload.get("custom_path", ""),
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/h3_lvm/uploads/preview")
+    async def handle_upload_preview_ticket(request):
+        blocked = _csrf_block(request)
+        if blocked is not None:
+            return blocked
+        if request.content_type != "application/json":
+            return web.json_response({"error": "Expected JSON"}, status=415)
+        try:
+            payload = await request.json()
+            data = await asyncio.to_thread(
+                create_upload_preview,
+                payload.get("project", ""), payload.get("segment_id"),
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/h3_lvm/system_video_picker")
+    async def handle_system_video_picker(request):
+        """Open a native dialog on the ComfyUI host, not on a remote browser."""
+        blocked = _csrf_block(request)
+        if blocked is not None:
+            return blocked
+        try:
+            data = await asyncio.to_thread(choose_system_video)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/h3_lvm/source_preview_proxy")
+    async def handle_source_preview_proxy(request):
+        """Build a cached H.264 proxy only for a previously authorized source ticket."""
+        blocked = _csrf_block(request)
+        if blocked is not None:
+            return blocked
+        if request.content_type != "application/json":
+            return web.json_response({"error": "Expected JSON"}, status=415)
+        try:
+            data = await asyncio.to_thread(
+                create_compatible_source_preview, request.rel_url.query.get("ticket", ""))
+        except (OSError, ValueError, RuntimeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
+
+    @routes.get("/h3_lvm/source_preview")
+    async def handle_source_preview(request):
+        """FileResponse streams bytes and handles Range without decoding video."""
+        try:
+            path = await asyncio.to_thread(
+                source_preview_path, request.rel_url.query.get("ticket", ""),
+                request.rel_url.query.get("proxy") == "1")
+        except (OSError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=404)
+        return web.FileResponse(path, headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        })
 
 
 

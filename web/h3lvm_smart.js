@@ -152,7 +152,7 @@ app.registerExtension({
 });
 
 // --- The panel: project menu + the shared card deck ---
-function installSmartPanel(node) {
+export function installSmartPanel(node, { leading = null } = {}) {
     const lifetime = node._h3lvmSmartLifetime ?? new AbortController();
     node._h3lvmSmartLifetime = lifetime;
     const signal = lifetime.signal;
@@ -163,6 +163,7 @@ function installSmartPanel(node) {
 
     const container = document.createElement("div");
     container.className = "h3lvm-container";
+    if (leading) container.appendChild(leading);
 
     // Row 1 - same menu as the Picker and the Manager: switch / create / delete.
     const menu = createProjectMenu({
@@ -187,7 +188,7 @@ function installSmartPanel(node) {
         onRefresh: () => void menu.refresh(),
     });
 
-    addPanel(node, "h3lvm_smart_panel", container, PANEL_H);
+    addPanel(node, "h3lvm_smart_panel", container, PANEL_H + (leading ? 48 : 0));
 
     // The deck belongs to the bin, not to this page visit: opening the workflow again
     // shows the cards right away. The project name is only restored in configure(),

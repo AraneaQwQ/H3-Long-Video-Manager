@@ -19,6 +19,7 @@ if _PLUGIN_ROOT not in sys.path:
 
 import torch
 
+from tests._temp_dir import make_temp_dir
 from comfyui.segment_store import (
     set_base_dir_override,
     sanitize_project_name,
@@ -61,7 +62,7 @@ class TestSaveLoad(unittest.TestCase):
     """Test save_segment → load_segment round-trip."""
 
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="h3lvm_test_")
+        self._tmpdir = make_temp_dir(prefix="h3lvm_test_")
         set_base_dir_override(self._tmpdir)
 
     def tearDown(self):
@@ -145,7 +146,7 @@ class TestSaveLoad(unittest.TestCase):
 
 class TestListProjects(unittest.TestCase):
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="h3lvm_list_")
+        self._tmpdir = make_temp_dir(prefix="h3lvm_list_")
         set_base_dir_override(self._tmpdir)
 
     def tearDown(self):
@@ -168,7 +169,7 @@ class TestListProjects(unittest.TestCase):
 
 class TestListProject(unittest.TestCase):
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="h3lvm_lp_")
+        self._tmpdir = make_temp_dir(prefix="h3lvm_lp_")
         set_base_dir_override(self._tmpdir)
 
     def tearDown(self):
@@ -189,7 +190,7 @@ class TestListProject(unittest.TestCase):
 
 class TestDelete(unittest.TestCase):
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="h3lvm_del_")
+        self._tmpdir = make_temp_dir(prefix="h3lvm_del_")
         set_base_dir_override(self._tmpdir)
 
     def tearDown(self):
@@ -215,7 +216,7 @@ class TestSaveDtype(unittest.TestCase):
     """The int8 / fp16 storage switch."""
 
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="h3lvm_dtype_")
+        self._tmpdir = make_temp_dir(prefix="h3lvm_dtype_")
         set_base_dir_override(self._tmpdir)
 
     def tearDown(self):
@@ -292,7 +293,7 @@ class TestThumbnailFrame(unittest.TestCase):
     """Smart Split needs the cover to be the first MAIN frame, not the MC overlap."""
 
     def setUp(self):
-        self._tmpdir = tempfile.mkdtemp(prefix="h3lvm_thumb_")
+        self._tmpdir = make_temp_dir(prefix="h3lvm_thumb_")
         set_base_dir_override(self._tmpdir)
 
     def tearDown(self):

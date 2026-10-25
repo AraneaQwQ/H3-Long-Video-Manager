@@ -20,6 +20,7 @@ if REPO not in sys.path:
 import torch
 
 from tests._media_clip import have_ffmpeg, make_clip, make_vfr_clip
+from tests._temp_dir import make_temp_dir
 from tests.test_node_schema import LOAD_ERROR, NODES
 
 try:
@@ -48,7 +49,7 @@ class _TwoLibraries(unittest.TestCase):
     """A cut bin and an upload library that share one project name."""
 
     def setUp(self):
-        self.case = tempfile.mkdtemp(prefix="h3lvm_dual_")
+        self.case = make_temp_dir(prefix="h3lvm_dual_")
         bin_store.set_base_dir_override(os.path.join(self.case, "bin"))
         upload_store.set_base_dir_override(os.path.join(self.case, "uploads"))
 
