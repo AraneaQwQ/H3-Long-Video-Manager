@@ -546,29 +546,47 @@ class StrengthSchemaTests(unittest.TestCase):
     def setUp(self):
         self.v1 = GUIDE.H3GuideTimeline.define_schema()
         self.v2 = GUIDE.H3GuideTimelineV2.define_schema()
+        self.v2_b = GUIDE.H3GuideTimelineV2B.define_schema()
 
-    def test_both_nodes_are_registered(self):
+    def test_all_guide_nodes_are_registered(self):
         from h3lvm.comfyui.nodes import NODE_LIST
 
         self.assertIn(GUIDE.H3GuideTimeline, NODE_LIST)
         self.assertIn(GUIDE.H3GuideTimelineV2, NODE_LIST)
-        self.assertEqual(GUIDE.NODE_LIST, [GUIDE.H3GuideTimeline, GUIDE.H3GuideTimelineV2])
+        self.assertIn(GUIDE.H3GuideTimelineV2B, NODE_LIST)
+        self.assertEqual(
+            GUIDE.NODE_LIST,
+            [GUIDE.H3GuideTimeline, GUIDE.H3GuideTimelineV2, GUIDE.H3GuideTimelineV2B])
 
-    def test_two_node_ids_dual_outputs_and_backward_compatible_wiring(self):
+    def test_v2_has_one_execution_channel_and_a_document_output(self):
         self.assertEqual(self.v1.node_id, "H3 Guide Timeline")
         self.assertEqual(self.v2.node_id, "H3 Guide Timeline v2")
         self.assertEqual(self.v2.display_name, "H3 Guide 时间轴 v2")
         self.assertEqual(self.v2.category, self.v1.category)
         self.assertEqual([item.id for item in self.v2.inputs],
-                         ["positive", "positive_b", "latent", "length_seconds", "vae",
-                          "audio_vae", "guides", "enable_a", "enable_b"])
+                         ["positive", "latent", "length_seconds", "vae", "audio_vae", "guides"])
         self.assertEqual([item.optional for item in self.v2.inputs],
-                         [True, True, False, True, True, True, False, False, False])
-        self.assertEqual(self.v2.inputs[-2].default, True)
-        self.assertEqual(self.v2.inputs[-1].default, False)
+                         [False, False, True, True, True, False])
         self.assertEqual(len(self.v2.outputs), 2)
-        self.assertEqual(self.v2.outputs[0].display_name, "一采 positive (A)")
-        self.assertEqual(self.v2.outputs[1].display_name, "二采 positive (B)")
+        self.assertEqual(self.v2.outputs[0].display_name, "positive")
+        self.assertEqual(self.v2.outputs[1].display_name, "共享 Guide 文档")
+        self.assertIs(GUIDE.H3GuideTimelineV2.DOCUMENT_OUTPUT, True)
+        self.assertIs(GUIDE.H3GuideTimelineV2.DUAL_CHANNEL, False)
+
+    def test_second_pass_is_a_shared_document_transfer_node(self):
+        self.assertEqual(self.v2_b.node_id, "H3 Guide Timeline v2 B")
+        self.assertEqual(self.v2_b.display_name, "H3 Guide 时间轴 v2（二采信息传输）")
+        self.assertEqual([item.id for item in self.v2_b.inputs], [
+            "positive", "latent", "shared_guides", "vae", "audio_vae", "enable_guide",
+        ])
+        self.assertEqual([item.optional for item in self.v2_b.inputs],
+                         [False, False, True, True, True, False])
+        self.assertTrue(self.v2_b.inputs[2].force_input)
+        self.assertEqual(self.v2_b.inputs[0].display_name, "二采 positive")
+        self.assertEqual(self.v2_b.inputs[1].display_name, "二采 latent")
+        self.assertTrue(self.v2_b.inputs[-1].default)
+        self.assertEqual(len(self.v2_b.outputs), 1)
+        self.assertEqual(self.v2_b.outputs[0].display_name, "二采 positive")
 
     def test_the_v2_schema_does_not_touch_the_v1_schema(self):
         # v2 edits the schema it got back. Calling either twice must stay clean.
@@ -577,6 +595,12 @@ class StrengthSchemaTests(unittest.TestCase):
         self.assertEqual(again.display_name, "H3 Guide 时间轴")
         self.assertEqual(GUIDE.H3GuideTimeline.STRENGTH_ENABLED, False)
         self.assertEqual(GUIDE.H3GuideTimelineV2.STRENGTH_ENABLED, True)
+
+    def test_return_types_follow_each_schema_in_node_loader_order(self):
+        self.assertEqual(list(GUIDE.H3GuideTimeline.RETURN_TYPES), ["CONDITIONING"])
+        self.assertEqual(list(GUIDE.H3GuideTimelineV2.RETURN_TYPES), ["CONDITIONING", "STRING"])
+        self.assertEqual(list(GUIDE.H3GuideTimelineV2B.RETURN_TYPES), ["CONDITIONING"])
+        self.assertEqual(GUIDE.H3GuideTimelineV2.RETURN_TYPES[1], "STRING")
 
     def test_every_strength_value_has_its_own_cache_key(self):
         """0.00 and 0.05 are their own runs; 1.00 is the same run as "no field".
@@ -607,15 +631,18 @@ class StrengthSchemaTests(unittest.TestCase):
                          GUIDE.H3GuideTimeline.fingerprint_inputs(
                              guides_json([image_entry("a.png", 0)])))
 
-    def test_channel_switches_have_their_own_cache_keys(self):
-        document = guides_json([image_entry("a.png", 0)])
-        v2 = GUIDE.H3GuideTimelineV2.fingerprint_inputs
-        default = v2(document)
-        self.assertEqual(default, v2(document, enable_a=True, enable_b=False))
-        self.assertNotEqual(default, v2(document, enable_a=False, enable_b=False))
-        self.assertNotEqual(default, v2(document, enable_a=True, enable_b=True))
-        self.assertNotEqual(v2(document, enable_a=False, enable_b=True),
-                            v2(document, enable_a=True, enable_b=False))
+    def test_view_arguments_are_ignored_and_b_switch_controls_its_cache_key(self):
+        shared = guides_json([image_entry_strength("a.png", 0, 0.8)])
+        self.assertEqual(
+            GUIDE.H3GuideTimelineV2.fingerprint_inputs(shared),
+            GUIDE.H3GuideTimelineV2.fingerprint_inputs(shared, length_seconds=12.0))
+        second = GUIDE.H3GuideTimelineV2B.fingerprint_inputs
+        enabled = second(shared_guides=shared)
+        disabled = second(shared_guides="{not json", enable_guide=False)
+        self.assertEqual(enabled, second(shared_guides=shared, enable_guide=True))
+        self.assertEqual(disabled, second(shared_guides=shared, enable_guide=False))
+        self.assertNotEqual(enabled, disabled)
+        self.assertNotEqual(enabled, second(shared_guides=guides_json([])))
 
 
 @unittest.skipIf(LOAD_ERROR is not None, "comfy_api unavailable: %s" % LOAD_ERROR)
@@ -811,89 +838,58 @@ class StrengthExecutionTests(unittest.TestCase):
 
 
 @unittest.skipIf(LOAD_ERROR is not None, "comfy_api unavailable: %s" % LOAD_ERROR)
-class DualChannelExecutionTests(unittest.TestCase):
+class SharedSecondPassExecutionTests(unittest.TestCase):
     def setUp(self):
         self._roots = GUIDE._media_roots
         GUIDE._media_roots = lambda: {"input": INPUTS}
         self.vae, self.audio_vae = FakeVideoVae(), FakeAudioVae()
         make_gray("mid.png", (64, 64), 0.5)
-        make_wav("line.wav", seconds=2.0, sample_rate=48000)
 
     def tearDown(self):
         GUIDE._media_roots = self._roots
 
-    def run_node(self, entries, first, second, enable_a=True, enable_b=False):
-        return GUIDE.H3GuideTimelineV2.execute(
-            positive=first, positive_b=second, latent=av_latent(),
-            guides=guides_json(entries), vae=self.vae, audio_vae=self.audio_vae,
-            enable_a=enable_a, enable_b=enable_b)
-
-    def frames(self, out, channel):
-        return out.result[channel][0][1]["minimax_keyframes"]
-
-    def test_both_channels_keep_their_own_upstream_conditions(self):
+    def test_first_pass_document_drives_the_independent_second_pass(self):
         from comfy.ldm.minimax.model import VISUAL_COND_TIMESTEP
 
-        first, second = conditioning(), conditioning()
-        first[0][1]["ref"] = "first-pass"
-        second[0][1]["ref"] = "second-pass"
-        out = self.run_node([
-            audio_entry("line.wav", 12, end_sample=48000),
-            image_entry_strength("mid.png", 48, 0.8),
-        ], first, second, enable_b=True)
-        self.assertEqual(len(out.result), 2)
-        self.assertEqual(out.result[0][0][1]["ref"], "first-pass")
-        self.assertEqual(out.result[1][0][1]["ref"], "second-pass")
-        for channel in (0, 1):
-            frames = self.frames(out, channel)
-            self.assertEqual([frame["resolved_frame_index"] for frame in frames], [12, 48])
-            self.assertEqual(frames[1]["noise_aug"], round(0.8 * VISUAL_COND_TIMESTEP, 6))
-        self.assertIsNot(self.frames(out, 0)[1], self.frames(out, 1)[1])
-        self.assertEqual(len(self.vae.calls), 2)
-        self.assertEqual(len(self.audio_vae.calls), 2)
+        document = guides_json(
+            [image_entry_strength("mid.png", 48, 0.8)], view_state={"zoom": 3})
+        first = GUIDE.H3GuideTimelineV2.execute(
+            conditioning(), av_latent(), document, vae=self.vae, audio_vae=self.audio_vae)
+        self.assertEqual(len(first.result), 2)
+        self.assertEqual(first.result[1], document)
 
-    def test_each_switch_independently_runs_or_passes_through(self):
-        first, second = conditioning(), conditioning()
-        entries = [image_entry("mid.png", 48)]
-        first_only = self.run_node(entries, first, second)
-        self.assertEqual(len(self.frames(first_only, 0)), 1)
-        self.assertIs(first_only.result[1], second)
+        second = GUIDE.H3GuideTimelineV2B.execute(
+            positive=conditioning(), latent=av_latent(width=192, height=96, length=141),
+            shared_guides=first.result[1], vae=self.vae, audio_vae=self.audio_vae,
+            enable_guide=True)
+        self.assertEqual(len(second.result), 1)
+        frames = second.result[0][0][1]["minimax_keyframes"]
+        self.assertEqual([frame["resolved_frame_index"] for frame in frames], [48])
+        self.assertEqual(frames[0]["noise_aug"], round(0.8 * VISUAL_COND_TIMESTEP, 6))
+        self.assertEqual(self.vae.calls, [(1, 128, 128, 3), (1, 96, 192, 3)])
+        self.assertEqual(second.ui["h3_guide_timeline"][0]["frame_count"], 141)
 
-        first, second = conditioning(), conditioning()
-        second_only = self.run_node(entries, first, second, enable_a=False, enable_b=True)
-        self.assertIs(second_only.result[0], first)
-        self.assertEqual(len(self.frames(second_only, 1)), 1)
-        self.assertEqual(len(self.vae.calls), 2)
-
-    def test_second_channel_can_run_without_a_first_positive(self):
-        second = conditioning()
-        out = self.run_node([image_entry("mid.png", 48)], None, second,
-                            enable_a=False, enable_b=True)
-        self.assertIsNone(out.result[0])
-        self.assertEqual(len(self.frames(out, 1)), 1)
-        self.assertEqual(len(self.vae.calls), 1)
-
-    def test_an_active_channel_requires_its_own_positive(self):
-        with self.assertRaises(ValueError) as ctx:
-            self.run_node([image_entry("mid.png", 48)], conditioning(), None,
-                          enable_a=False, enable_b=True)
-        self.assertIn("二采通道已启用", str(ctx.exception))
-        self.assertIn("positive", str(ctx.exception))
+    def test_disabled_second_pass_passes_through_before_validation_or_encoding(self):
+        positive = conditioning()
+        out = GUIDE.H3GuideTimelineV2B.execute(
+            positive=positive, latent={"samples": None}, shared_guides="{not json",
+            vae=self.vae, audio_vae=self.audio_vae, enable_guide=False)
+        self.assertIs(out.result[0], positive)
         self.assertEqual(self.vae.calls, [])
+        self.assertEqual(self.audio_vae.calls, [])
+        self.assertTrue(GUIDE.H3GuideTimelineV2B.validate_inputs(
+            shared_guides="{not json", enable_guide=False))
 
-    def test_two_disabled_channels_do_not_validate_or_encode_guides(self):
-        first, second = conditioning(), conditioning()
-        asked = []
-        saved = GUIDE.install_strength_patch
-        GUIDE.install_strength_patch = lambda: asked.append(1)
-        try:
-            out = self.run_node([image_entry_strength("missing.png", 9999, 0.7)],
-                                first, second, enable_a=False, enable_b=False)
-        finally:
-            GUIDE.install_strength_patch = saved
-        self.assertIs(out.result[0], first)
-        self.assertIs(out.result[1], second)
-        self.assertEqual(asked, [])
+    def test_enabled_second_pass_defers_missing_document_error_to_execution(self):
+        with self.assertRaises(ValueError) as ctx:
+            GUIDE.H3GuideTimelineV2B.execute(
+                positive=conditioning(), latent=av_latent(),
+                vae=self.vae, audio_vae=self.audio_vae, enable_guide=True)
+        self.assertIn("共享 Guide 文档", str(ctx.exception))
+        self.assertIn("启用二采 Guide", str(ctx.exception))
+        self.assertTrue(GUIDE.H3GuideTimelineV2B.validate_inputs(
+            positive=None, latent=None, shared_guides=None,
+            vae=None, audio_vae=None, enable_guide=True))
         self.assertEqual(self.vae.calls, [])
         self.assertEqual(self.audio_vae.calls, [])
 
@@ -960,9 +956,14 @@ class OldDocumentTests(unittest.TestCase):
         GUIDE._media_roots = self._roots
 
     def test_an_old_document_runs_on_both_nodes_unchanged(self):
-        for node in (GUIDE.H3GuideTimeline, GUIDE.H3GuideTimelineV2):
-            out = node.execute(conditioning(), av_latent(), self.OLD_DOCUMENT,
-                               vae=self.vae, audio_vae=self.audio_vae)
+        cases = (
+            (GUIDE.H3GuideTimeline, {"guides": self.OLD_DOCUMENT}),
+            (GUIDE.H3GuideTimelineV2, {"guides": self.OLD_DOCUMENT}),
+            (GUIDE.H3GuideTimelineV2B, {"shared_guides": self.OLD_DOCUMENT}),
+        )
+        for node, kwargs in cases:
+            out = node.execute(conditioning(), av_latent(),
+                               vae=self.vae, audio_vae=self.audio_vae, **kwargs)
             frames = out.result[0][0][1]["minimax_keyframes"]
             self.assertEqual([frame["resolved_frame_index"] for frame in frames], [48])
             self.assertNotIn("noise_aug", frames[0])

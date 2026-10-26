@@ -13,8 +13,8 @@ What is deliberately NOT here (see GUIDE_TIMELINE.md for the full contract):
 - no fixed row of 32 media sockets - the list is walked at run time.
 - no snapping to 17n+5 or the Motion Context options - the native node does not
   snap, so neither do we.
-- no guide_list socket - nothing in this plugin produces one yet, so the merge
-  point stays internal (core.guide_timeline.merge_guides).
+- the v2 first-pass node can expose its document to the independent second-pass
+  node; that link carries editor data, not conditioning or a latent.
 
 Execution is the native node, called once per guide, each result feeding the next.
 That is what makes "same guides, same frames" equal to a hand-wired chain: the
@@ -57,6 +57,7 @@ GUIDE_NODE_ID = "H3 Guide Timeline"
 # v2 is a second node, not a rename: the stable id above keeps its document format
 # and its execution, and old workflows keep pointing at it.
 GUIDE_NODE_V2_ID = "H3 Guide Timeline v2"
+GUIDE_NODE_V2_B_ID = "H3 Guide Timeline v2 B"
 
 # The empty document, not "[]": the panel and the node always see the same shape,
 # and a saved workflow carries the version it was written with.
@@ -256,6 +257,8 @@ class H3GuideTimeline(io.ComfyNode):
     # so the stable node cannot drift while v2 grows a feature.
     STRENGTH_ENABLED = False
     DUAL_CHANNEL = False
+    DOCUMENT_OUTPUT = False
+    SHARED_DOCUMENT_INPUT = False
     LOG_TAG = GUIDE_NODE_ID
 
     @classmethod
@@ -277,11 +280,15 @@ class H3GuideTimeline(io.ComfyNode):
         return sort_for_execution(parsed)
 
     @classmethod
-    def _node_output(cls, first, second, parsed: list, frame_count: int) -> io.NodeOutput:
+    def _node_output(cls, first, second, parsed: list, frame_count: int,
+                     document=DEFAULT_GUIDES) -> io.NodeOutput:
         ui = _ui_document(parsed, frame_count, cls.STRENGTH_ENABLED)
+        results = [first]
         if cls.DUAL_CHANNEL:
-            return io.NodeOutput(first, second, ui=ui)
-        return io.NodeOutput(first, ui=ui)
+            results.append(second)
+        if cls.DOCUMENT_OUTPUT:
+            results.append(document)
+        return io.NodeOutput(*results, ui=ui)
 
     @classmethod
     def _validate(cls, parsed: list, frame_count: int, spans: dict, image_frames: dict) -> list:
@@ -333,7 +340,7 @@ class H3GuideTimeline(io.ComfyNode):
         )
 
     @classmethod
-    def validate_inputs(cls, guides, length_seconds=0.0):
+    def validate_inputs(cls, guides, length_seconds=0.0, **_):
         try:
             cls._parse(guides)
         except ValueError as exc:
@@ -341,7 +348,7 @@ class H3GuideTimeline(io.ComfyNode):
         return True
 
     @classmethod
-    def fingerprint_inputs(cls, guides):
+    def fingerprint_inputs(cls, guides, **_):
         """Execution identity: the guide list plus the real bytes behind each file.
 
         Deliberately not the widget string - the panel also stores the selected card
@@ -357,22 +364,26 @@ class H3GuideTimeline(io.ComfyNode):
     @classmethod
     def execute(cls, positive=None, latent=None, guides=DEFAULT_GUIDES, length_seconds=0.0,
                 vae=None, audio_vae=None, positive_b=None, enable_a=True,
-                enable_b=False) -> io.NodeOutput:
+                enable_b=False, latent_b=None, shared_guides=None) -> io.NodeOutput:
         return cls._run(positive, latent, guides, length_seconds=length_seconds,
                         vae=vae, audio_vae=audio_vae, positive_b=positive_b,
-                        enable_a=enable_a, enable_b=enable_b)
+                        enable_a=enable_a, enable_b=enable_b, latent_b=latent_b,
+                        shared_guides=shared_guides)
 
     @classmethod
     def _run(cls, positive=None, latent=None, guides=DEFAULT_GUIDES, length_seconds=0.0,
              vae=None, audio_vae=None, positive_b=None, enable_a=True,
-             enable_b=False) -> io.NodeOutput:
+             enable_b=False, latent_b=None, shared_guides=None) -> io.NodeOutput:
+        if cls.SHARED_DOCUMENT_INPUT and shared_guides is not None:
+            guides = shared_guides
         parsed = cls._parse(guides)
         ordered = cls._ordered(parsed)
         channels = [{"name": "一采", "active": not cls.DUAL_CHANNEL or enable_a,
-                     "conditioning": positive}]
+                     "conditioning": positive, "latent": latent}]
         if cls.DUAL_CHANNEL:
             channels.append({"name": "二采", "active": bool(enable_b),
-                             "conditioning": positive_b})
+                             "conditioning": positive_b,
+                             "latent": latent_b if latent_b is not None else latent})
             missing = [channel["name"] for channel in channels
                        if channel["active"] and channel["conditioning"] is None]
             if missing:
@@ -387,15 +398,20 @@ class H3GuideTimeline(io.ComfyNode):
                       % (cls.LOG_TAG, len(muted)))
             else:
                 print("[%s] 没有启用且已放置的 Guide，positive 原样透传" % cls.LOG_TAG)
-            return cls._node_output(channels[0]["conditioning"], second, parsed, 0)
+            return cls._node_output(channels[0]["conditioning"], second, parsed, 0, guides)
         if not active_channels:
             print("[%s] 一采与二采 Guide 均已停用，两路 positive 原样透传" % cls.LOG_TAG)
-            return cls._node_output(channels[0]["conditioning"], second, parsed, 0)
+            return cls._node_output(channels[0]["conditioning"], second, parsed, 0, guides)
 
         native, table = _native_add_guide()
-        frame_count, why = _latent_frame_count(latent, table)
-        if not frame_count:
-            raise ValueError(why)
+        for channel in active_channels:
+            channel_frames, why = _latent_frame_count(channel["latent"], table)
+            if not channel_frames:
+                if cls.DUAL_CHANNEL:
+                    raise ValueError("%s：%s" % (channel["name"], why))
+                raise ValueError(why)
+            channel["frame_count"] = channel_frames
+        frame_count = active_channels[0]["frame_count"]
 
         # Counted from what actually runs, not from the document: a 0.00 image card is
         # never encoded, so it must not be the reason the node asks for a video VAE.
@@ -434,7 +450,14 @@ class H3GuideTimeline(io.ComfyNode):
             except (ValueError, OSError, RuntimeError) as exc:
                 problems.append("%s 的素材不可用：%s" % (guide["label"], exc))
 
-        problems.extend(cls._validate(parsed, frame_count, spans, image_frames))
+        for channel in active_channels:
+            channel_problems = cls._validate(
+                parsed, channel["frame_count"], spans, image_frames)
+            if cls.DUAL_CHANNEL:
+                problems.extend("%s：%s" % (channel["name"], problem)
+                                for problem in channel_problems)
+            else:
+                problems.extend(channel_problems)
         if problems:
             raise ValueError("Guide 校验未通过：\n  - " + "\n  - ".join(problems))
 
@@ -462,7 +485,7 @@ class H3GuideTimeline(io.ComfyNode):
                 conditioned = channel["conditioning"]
                 before = _keyframe_ids(conditioned) if cls.STRENGTH_ENABLED else None
                 result = native.execute(
-                    conditioned, latent, int(guide["frame_index"]),
+                    conditioned, channel["latent"], int(guide["frame_index"]),
                     vae=vae, audio_vae=audio_vae, image=image, audio=audio)
                 conditioned = result[0] if isinstance(result, io.NodeOutput) else result
                 channel["conditioning"] = conditioned
@@ -484,7 +507,7 @@ class H3GuideTimeline(io.ComfyNode):
                  "/".join(str(count) for count in keyframe_counts),
                  " (per-image strength)" if per_image else "", channel_note))
         second = channels[1]["conditioning"] if cls.DUAL_CHANNEL else None
-        return cls._node_output(channels[0]["conditioning"], second, parsed, frame_count)
+        return cls._node_output(channels[0]["conditioning"], second, parsed, frame_count, guides)
 
 
 
@@ -498,8 +521,12 @@ class H3GuideTimelineV2(H3GuideTimeline):
     """
 
     STRENGTH_ENABLED = True
-    DUAL_CHANNEL = True
+    DOCUMENT_OUTPUT = True
     LOG_TAG = GUIDE_NODE_V2_ID
+    _RETURN_TYPES = None
+    _RETURN_NAMES = None
+    _OUTPUT_IS_LIST = None
+    _OUTPUT_TOOLTIPS = None
 
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -513,28 +540,11 @@ class H3GuideTimelineV2(H3GuideTimeline):
             "强度只作用于本节点新建的图片条件：首尾帧、上游已有的 Guide、普通参考图和全部音频条件都保持原生参数。"
             "强度范围 0.00-1.00、步进 0.05，音频没有强度项。两个 VAE 端口和接线方式与旧节点一致，可以一直连着，"
             "执行时按实际生效的素材决定是否调用：强度 0.00 的图片不需要视频 VAE。"
-            "当前 ComfyUI 无法启用逐图强度时本节点会明确报错，不会静默退回全局强度。")
-        schema.inputs[0].optional = True
-        schema.inputs[0].display_name = "一采 positive (A)"
-        schema.inputs[0].tooltip = "一采参考转视频节点的 positive；停用一采 Guide 时原样透传。"
-        schema.inputs.insert(1, io.Conditioning.Input(
-            "positive_b", display_name="二采 positive (B)", optional=True,
-            tooltip="二采参考转视频节点的 positive；停用二采 Guide 时原样透传。"))
-        schema.inputs.extend([
-            io.Boolean.Input(
-                "enable_a", display_name="激活一采 Guide", default=True,
-                label_on="开启", label_off="关闭",
-                tooltip="开启后，把本节点的时间轴 Guide 加入一采 positive；关闭则一采原样透传。"),
-            io.Boolean.Input(
-                "enable_b", display_name="激活二采 Guide", default=False,
-                label_on="开启", label_off="关闭",
-                tooltip="开启后，把本节点的时间轴 Guide 加入二采 positive；关闭则二采原样透传。"),
-        ])
-        schema.outputs[0].display_name = "一采 positive (A)"
-        schema.outputs.append(io.Conditioning.Output(display_name="二采 positive (B)"))
-        schema.description += (
-            "双通道共用同一时间轴、latent 与 VAE：一采 Guide 默认开启，二采 Guide 默认关闭，"
-            "可分别启用。停用的通道不添加 Guide，其 positive 原样透传；只使用二采时一采输入可以留空。")
+            "当前 ComfyUI 无法启用逐图强度时本节点会明确报错，不会静默退回全局强度。"
+            "本节点只负责一采；二采使用独立的信息传输节点，避免跨采样阶段形成依赖环。")
+        schema.outputs.append(io.String.Output(
+            display_name="共享 Guide 文档",
+            tooltip="连接到「H3 Guide 时间轴 v2（二采信息传输）」的共享 Guide 文档输入；只传编辑数据，不传 conditioning 或 latent。"))
         for item in schema.inputs:
             if getattr(item, "id", None) == "guides":
                 item.tooltip = (
@@ -544,10 +554,75 @@ class H3GuideTimelineV2(H3GuideTimeline):
                     "改强度会重新编码，改选中卡片、缩放或滚动时间轴不会。")
         return schema
 
+class H3GuideTimelineV2B(H3GuideTimelineV2):
+    """Apply the first-pass v2 document to an independent second-pass condition."""
+
+    DOCUMENT_OUTPUT = False
+    LOG_TAG = GUIDE_NODE_V2_B_ID
+    _RETURN_TYPES = None
+    _RETURN_NAMES = None
+    _OUTPUT_IS_LIST = None
+    _OUTPUT_TOOLTIPS = None
+
     @classmethod
-    def fingerprint_inputs(cls, guides, enable_a=True, enable_b=False):
-        base = super().fingerprint_inputs(guides)
-        return "%s|guide_a=%d|guide_b=%d" % (base, bool(enable_a), bool(enable_b))
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id=GUIDE_NODE_V2_B_ID,
+            display_name="H3 Guide 时间轴 v2（二采信息传输）",
+            description=(
+                "把一采 v2 的共享 Guide 文档应用到独立的二采 positive / latent。"
+                "本节点没有编辑器、时间轴或本地 Guide 文档；素材、时间位置和逐图强度都在一采 v2 中编辑。"
+                "关闭「启用二采 Guide」时不读取文档、不校验 latent、不调用 VAE，positive 原样透传。"),
+            category="H3/Guide",
+            inputs=[
+                io.Conditioning.Input(
+                    "positive", display_name="二采 positive",
+                    tooltip="二采 Reference to Video 的 positive；关闭 Guide 或没有生效素材时原样透传。"),
+                io.Latent.Input(
+                    "latent", display_name="二采 latent",
+                    tooltip="二采 MiniMax H3 AV latent，尺寸、帧数与音频轨长度均从本输入读取。"),
+                io.String.Input(
+                    "shared_guides", display_name="共享 Guide 文档", optional=True, force_input=True,
+                    tooltip="连接一采 v2 的「共享 Guide 文档」输出。本端口只传编辑数据，不传 conditioning 或 latent。"),
+                io.Vae.Input("vae", optional=True, tooltip="视频 VAE：共享文档中有实际生效的图片 Guide 时必须连接。"),
+                io.Vae.Input("audio_vae", optional=True, tooltip="音频 VAE：共享文档中有实际生效的音频 Guide 时必须连接。"),
+                io.Boolean.Input(
+                    "enable_guide", display_name="启用二采 Guide", default=True,
+                    label_on="开启", label_off="关闭",
+                    tooltip="开启后应用共享 Guide；关闭后不读取文档、不编码，二采 positive 原样透传。"),
+            ],
+            outputs=[io.Conditioning.Output(display_name="二采 positive")],
+        )
+
+    @classmethod
+    def validate_inputs(cls, shared_guides=None, enable_guide=True, **_):
+        if not enable_guide or shared_guides is None:
+            return True
+        try:
+            cls._parse(shared_guides)
+        except ValueError as exc:
+            return str(exc)
+        return True
+
+    @classmethod
+    def fingerprint_inputs(cls, shared_guides=None, enable_guide=True, **_):
+        if not enable_guide:
+            return "guide_disabled"
+        if shared_guides is None:
+            return "guide_enabled|missing_shared_document"
+        return super().fingerprint_inputs(shared_guides) + "|guide_enabled=1"
+
+    @classmethod
+    def execute(cls, positive=None, latent=None, shared_guides=None,
+                vae=None, audio_vae=None, enable_guide=True) -> io.NodeOutput:
+        if not enable_guide:
+            return io.NodeOutput(positive)
+        if shared_guides is None:
+            raise ValueError(
+                "%s：请连接一采 v2 的「共享 Guide 文档」，或关闭「启用二采 Guide」。"
+                % cls.LOG_TAG)
+        return cls._run(positive, latent, shared_guides,
+                        vae=vae, audio_vae=audio_vae)
 
 
-NODE_LIST = [H3GuideTimeline, H3GuideTimelineV2]
+NODE_LIST = [H3GuideTimeline, H3GuideTimelineV2, H3GuideTimelineV2B]

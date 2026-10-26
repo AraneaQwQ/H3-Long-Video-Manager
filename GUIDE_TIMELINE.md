@@ -142,11 +142,71 @@ execute(cls, positive, latent, frame_idx, vae=None, audio_vae=None, image=None, 
 ## 8. v2 双通道：一采与二采（2026-10-25）
 
 - v2 新增 `positive`（一采 A）与 `positive_b`（二采 B）两个可选 conditioning 输入，以及对应的两个输出。
-  两个通道共用同一时间轴、latent、视频 VAE 与音频 VAE，但分别在各自的上游 conditioning 上调用原生 Add Guide；
-  不合并两条条件链，也不把一采新增的 keyframe 写进二采。
+  后续新增可选 `latent_b`（二采 B）：两个通道共用时间轴、视频 VAE 与音频 VAE，但分别在自己的 AV latent 上
+  读取宽高、视频帧数与音频轨长度，并在各自的上游 conditioning 上调用原生 Add Guide；不合并两条条件链，
+  也不把一采新增的 keyframe 写进二采。`latent_b` 未连接时回退到一采 `latent`，兼容已有双通道工作流。
 - **激活一采 Guide**（`enable_a`）默认开启，**激活二采 Guide**（`enable_b`）默认关闭，因此既有 v2 工作流仍只执行一采。
-  停用的通道不校验或编码 Guide，其输入 positive 原样透传；只用二采时一采输入可留空。两个开关计入 v2 执行指纹。
+  每个开关同时控制该通道的 positive 与 latent：停用后不校验 latent、不校验或编码 Guide，其输入 positive 原样透传；
+  只用二采时一采 positive 与 latent 都可留空。两个开关计入 v2 执行指纹，latent 本身仍由 ComfyUI 的正式输入缓存键管理。
 - 每个素材每个通道只解码一次媒体文件，但激活两个通道时会分别调用原生 VAE 编码，计算量按通道数增加。
   逐图强度仍只标记该通道本次新增的图片 keyframe，音频、上游条件和稳定版 v1 的行为不变。
-- 自动验证：`tests/test_guide_nodes.py` **57 项**，完整既定 Python 入口 **658 项，0 跳过**。
+- 自动验证：`tests/test_guide_nodes.py` **60 项**，完整既定 Python 入口 **661 项，0 跳过**；
+  新增独立 latent 尺寸编码、仅二采无一采 latent、分通道长度校验与停用二采忽略无效 latent 的回归覆盖。
   真实 ComfyUI 的双通道端口、开关手操与双采样成片仍需用户验收。
+
+## 9. 串行二采：共享文档与独立执行节点（2026-10-26）
+
+- 真实日志确认：同一个 v2 节点若一边向一采输出 conditioning，另一边又接收依赖一采采样 / 放大结果的
+  二采输入，ComfyUI 会按整个节点建立依赖图并形成环。开关只控制执行，不能删除已连接输入的图依赖。
+- 现有 `H3 Guide Timeline v2` 的 ID、一采 / 二采接口和执行保持兼容，追加 `共享 Guide 文档` STRING 输出。
+  新增 `H3 Guide Timeline v2 B`（显示名「H3 Guide 时间轴 v2（二采）」）：只有独立的二采 positive、latent、
+  VAE 与一个 positive 输出，执行和缓存均不依赖一采节点的 conditioning 或 latent。
+- 一采 v2 的共享文档输出连接独立二采节点的 `shared_guides` 后，后端以该文档执行，前端两个编辑器直接
+  读写一采节点的同一个 guides widget；任一节点编辑都会同步其他已连接节点。未连接时二采节点使用自己的文档，
+  也可单独作为普通 v2 执行节点。文档连接只从一采流向二采，不形成反向依赖。
+- 当前串行工作流接线：一采 v2 的 A 输出仍接一采 Motion Context；新增独立二采节点接收二采 Reference to Video
+  的 positive / LATENT，输出接二采 Motion Context；再连接两个节点的「共享 Guide 文档」。不要再把二采
+  Reference to Video 接回一采 v2 的旧 `positive_b` / `latent_b`，旧通道仅用于两路输入相互独立的并行流程。
+- `fingerprint_inputs` 现在接受并忽略 `length_seconds` 等视图参数；共享文档的内容与素材字节仍决定执行指纹，
+  视图状态不改变指纹。独立二采支持逐图强度、0.00 不编码、旧文档读取和只连接共享文档时的本地文档回退。
+- 自动验证：Guide 节点专项 **64/64**，完整既定 Python 入口 **665/665，0 跳过**；共享链接前端专项 **6/6**、
+  原 Guide 状态 **106/106**，20 个 `web/*.js` 语法检查全部通过。真实 ComfyUI 的依赖环、编辑器同步与成片仍需用户验收。
+
+## 10. 当前接口：一采单通道与二采信息传输（2026-10-26）
+
+本节取代第 8、9 节中的双通道与双编辑器接口说明；那两节只保留为开发历史。
+
+- `H3 Guide Timeline v2` 的节点 ID 不变，但已删除 `positive_b`、`latent_b`、二采 positive 输出及
+  `enable_a` / `enable_b`。现在只有一组 `positive / latent`、一个 positive 输出和一个「共享 Guide 文档」输出。
+  共享文档固定位于输出槽 1，positive 固定位于输出槽 0。
+- `H3 Guide Timeline v2 B` 的节点 ID 不变，显示名改为 **H3 Guide 时间轴 v2（二采信息传输）**。
+  输入依次为二采 positive、二采 latent、`shared_guides`、视频 VAE、音频 VAE、`enable_guide`；输出只有二采 positive。
+- 二采信息传输节点没有编辑器、时间轴、本地 `guides` 或 `length_seconds`。唯一内容来源是一采 v2 的共享文档；
+  开启开关但未连接共享文档时给出中文错误。关闭开关时在文档解析、latent 校验和 VAE 编码之前直接透传 positive。
+- 二采仍复用 v2 的图片强度、0.00 跳过编码、音频处理和原生 Add Guide 链。开关与共享文档共同计入缓存指纹，
+  视图状态不参与指纹。稳定版 v1 的节点 ID、接口、文档和执行路径不变。
+- 这次端口删减会改变旧工作流的槽位契约。彻底重启 ComfyUI 并 `Ctrl+F5` 后，需要重接相关连线；旧连线若引用
+  已删除的输出槽，会在 ComfyUI 校验阶段报 `list index out of range`，这不是 VAE 或 Guide 素材错误。
+- 自动验证：Guide 节点专项 **56/56**，完整 Python 入口 **657/657，0 跳过**；Guide 前端状态 **106/106**，
+  20 个 `web/*.js` 语法检查全部通过。运行副本独立进程已核验三个节点的真实 schema；浏览器重接、手操与成片由用户验收。
+
+## 11. V3 RETURN_TYPES 继承缓存修复（2026-10-26）
+
+- 真实 prompt 中二采传输节点的 `shared_guides` 已正确连接 v2 输出槽 1，但执行器仍报 `list index out of range`。
+  按节点加载顺序复现发现：v2 schema 有两个输出，实际 `RETURN_TYPES` 却继承 v1 的一个输出。
+- 原因是 ComfyUI V3 的输出缓存通过类属性保存；父类初始化后，子类读取到非空的继承缓存，跳过自己的输出初始化。
+  `object_info` 直接展示 schema，所以网页看到的两个输出与执行器看到的一个输出不一致。
+- v2 和二采传输节点现在分别初始化自己的输出缓存。真实加载顺序下：v1 为 `['CONDITIONING']`，v2 为
+  `['CONDITIONING', 'STRING']`，二采传输节点为 `['CONDITIONING']`。已经接正确的共享文档线不需要重接。
+- 自动验证：Guide 专项 **57/57**，完整 Python 入口 **658/658，0 跳过**；Guide 前端状态 **106/106**，
+  20 个 `web/*.js` 语法检查全部通过。真实 ComfyUI 重启后的原工作流由用户验收。
+
+## 12. 已连接共享文档的校验阶段语义（2026-10-26）
+
+- ComfyUI 的输入校验先于上游执行。已连接的 `shared_guides` 在这个阶段尚未有字符串值，读为 `None`
+  不代表用户没有连接，不能据此拒绝输入。
+- 二采传输节点因此在 `shared_guides is None` 时不在自定义校验中报错；真正未连接时，`execute` 仍会
+  明确提示连接共享文档或关闭二采 Guide。实际文档字符串可用时仍会做格式解析。
+- 使用真实 Guide 文档和真实节点类，通过 ComfyUI 原 `execution.validate_inputs` 重放同样的共享链接，
+  结果为 `GUIDE_B_VALID True`、`GUIDE_B_ERRORS []`。完整 Python 回归 **658/658，0 跳过**，
+  Guide 专项 **57/57**，前端状态 **106/106**。未把该结果当作完整两采成片验收。

@@ -581,10 +581,15 @@ default `1.00`, range `0.00-1.00`, step `0.05`. This is a second node (`H3 Guide
 rename - the stable node, its document format, its cache behaviour and its saved workflows are
 untouched, and both nodes can sit in the same ComfyUI.
 
-- Two optional conditioning inputs feed separate first-pass (A) and second-pass (B) outputs. The shared
-  timeline, latent and VAEs are applied independently to each enabled channel. **激活一采 Guide** defaults on
-  and **激活二采 Guide** defaults off, preserving existing v2 workflows; a disabled channel passes its input
-  through unchanged, and B can run by itself with A left unconnected.
+- The v2 editor has one `positive` / `latent` execution pair. Its outputs are `positive` in slot 0 and
+  **共享 Guide 文档** in slot 1; there are no in-node second-pass inputs, outputs or enable switches.
+- For a **sequential** first-pass → second-pass workflow, use `H3 Guide Timeline v2 B`
+  (**H3 Guide 时间轴 v2（二采信息传输）**) after the second-pass Reference to Video node. It has no editor,
+  timeline or local guide document: connect the first v2 node's **共享 Guide 文档** output to `shared_guides`,
+  then connect the second-pass positive, latent and VAEs. **启用二采 Guide** applies that shared document when on;
+  when off it bypasses document validation and VAE encoding and passes positive through unchanged.
+- Workflows saved with the removed in-node A/B dual-channel sockets must be rewired after updating. If an old
+  link still points at a removed output slot, delete and reconnect that link (or replace the old node) before running.
 - `1.00` runs the native Add Guide chain exactly as before; nothing in the model is rewritten.
 - Below `1.00` that one image condition is noise-augmented harder, and its latent is blended toward
   noise with the same coefficient (`strength x VISUAL_COND_TIMESTEP`), so the finished picture is less
@@ -757,7 +762,7 @@ H3-Long-Video-Manager/
 
 | **H3 Segment Picker** | 从库中读取 → 输出 `IMAGE`、`AUDIO`、`frame_count`、`segment_id`（前两项直接喂 H3） |
 | **H3 Guide 时间轴** | 输入：`positive` + H3 AV latent + 两个 VAE + 一个 Guide 列表 → 在双轨时间轴上放图片/音频 Guide → 输出 `positive`（与手动串联原生 Add Guide 等价） |
-| **H3 Guide 时间轴 v2** | 共用时间轴的一采 / 二采双 `positive` 通道与独立 Guide 开关，另外每张图片可单独设置引导强度（0.00-1.00，默认 1.00；`0.00` 保留卡片但不加入 conditioning）；音频保持原生行为 |
+| **H3 Guide 时间轴 v2** | 单组 `positive / latent` 的图片、音频时间轴，每张图片可单独设置引导强度（0.00-1.00，默认 1.00；`0.00` 保留卡片但不加入 conditioning）；音频保持原生行为。第二个输出是「共享 Guide 文档」，交给 **H3 Guide 时间轴 v2（二采信息传输）** 应用到独立二采条件；传输节点无编辑器，只有一个启用开关 |
 
 ### 核心特性
 
@@ -1170,9 +1175,14 @@ base64。关闭编辑器或删除节点都不会删除素材，因为别的工�
 它是第二个节点（`H3 Guide Timeline v2`），不是把旧节点改名——旧节点、它的数据格式、缓存行为和已保存的工作流都不变，
 两个节点可以同时出现在 ComfyUI 里。
 
-- 两个可选 conditioning 输入分别对应一采（A）与二采（B）输出。两个通道共用时间轴、latent 和 VAE，但各自独立添加 Guide。
-  **激活一采 Guide** 默认开启、**激活二采 Guide** 默认关闭，现有 v2 工作流保持原来的单通道行为；停用的通道原样透传，
-  只用二采时一采输入可以留空。
+- v2 编辑器只有一组 `positive / latent` 执行接口。输出槽 0 是 `positive`，输出槽 1 是「共享 Guide 文档」；
+  不再提供节点内的二采输入、二采 positive 输出或一采 / 二采开关。
+- **串行一采→二采**请使用 `H3 Guide Timeline v2 B`（**H3 Guide 时间轴 v2（二采信息传输）**），放在二采
+  Reference to Video 之后。它没有编辑器、时间轴或本地 Guide 文档：把一采 v2 的「共享 Guide 文档」接到
+  `shared_guides`，再连接二采 positive、latent 与 VAE。**启用二采 Guide** 开启时应用共享文档；关闭时不校验文档、
+  不调用 VAE，positive 原样透传。
+- 旧版节点内 A/B 双通道接口已经移除。旧工作流若仍引用被删除的输出槽，会出现输出槽校验错误；更新后必须重新接线，
+  必要时删除旧节点并重新添加，不能沿用旧连线直接运行。
 - `1.00` 走原生 Add Guide 原路径，模型侧什么都不改写。
 - 低于 `1.00` 时只有这一张图片条件被更强地加噪，并且它的 latent 用同一个系数（`strength x VISUAL_COND_TIMESTEP`）
   向噪声混合：这张图对画面的约束变弱，动作与场景衔接的自由度变大。它不是「保留多少像素」的百分比。

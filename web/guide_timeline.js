@@ -69,6 +69,7 @@ const GUIDE_NODE_V2 = "H3 Guide Timeline v2";
 // The stable node and the strength node share this one file. The panel difference is a
 // single control, so it is one flag below rather than a second copy of 3000 lines.
 const GUIDE_NODES = new Set([GUIDE_NODE, GUIDE_NODE_V2]);
+const GUIDE_STRENGTH_NODES = new Set([GUIDE_NODE_V2]);
 const GUIDES_FIELD = "guides";
 
 // A constant, not a measured value: pressing 刷新 or 打开编辑器 must not resize the
@@ -139,6 +140,7 @@ app.registerExtension({
             this._h3guideDispose?.();
             return originalRemoved ? originalRemoved.apply(this, arguments) : undefined;
         };
+
     },
 });
 
@@ -172,10 +174,11 @@ function installGuideNode(node) {
     const signal = lifetime.signal;
 
     const widgetFor = (name) => node.widgets?.find((item) => item.name === name);
+    const documentWidget = () => widgetFor(GUIDES_FIELD);
     // v2 only: per-image guide strength. Everything else is the same panel, so this flag is
     // the whole difference. It is read from the node type, not from the document, because a
     // v1 node must not grow the control just because a v2 document was pasted into it.
-    const perImageStrength = String(node.type || "").trim() === GUIDE_NODE_V2;
+    const perImageStrength = GUIDE_STRENGTH_NODES.has(String(node.type || "").trim());
 
     // Declared before the first readDoc() call: readDoc writes it, so a let below that
     // call would be in the temporal dead zone and the whole panel would fail to build.
@@ -299,10 +302,15 @@ function installGuideNode(node) {
     addPanel(node, "h3guide_panel", container, NODE_PANEL_H);
 
 
+    function afterWidgetWrite(dirty) {
+        node.setDirtyCanvas?.(true, true);
+        if (dirty) node.graph?.setChanged?.();
+    }
+
     function readDoc() {
         try {
             parseError = null;
-            return parseDocument(widgetFor(GUIDES_FIELD)?.value);
+            return parseDocument(documentWidget()?.value);
         } catch (error) {
             parseError = String(error?.message || error);
             console.warn("[H3 Guide Timeline] the guide list is not readable:", error);
@@ -311,12 +319,11 @@ function installGuideNode(node) {
     }
 
     function resetDocumentToEmpty() {
-        const widget = widgetFor(GUIDES_FIELD);
+        const widget = documentWidget();
         if (!widget) return;
         widget.value = DEFAULT_DOCUMENT;
         widget.callback?.(widget.value);
-        node.setDirtyCanvas?.(true, true);
-        node.graph?.setChanged?.();
+        afterWidgetWrite(true);
         doc = readDoc();
         renderSummary();
         if (root) renderAll();
@@ -325,7 +332,7 @@ function installGuideNode(node) {
     // dirty=false is for view_state only (which card is selected, the zoom, the
     // scroll): those must not mark the workflow modified and must not re-encode.
     function writeDoc({ dirty = true } = {}) {
-        const widget = widgetFor(GUIDES_FIELD);
+        const widget = documentWidget();
         if (!widget) return;
         if (parseError) {
             // Unreadable original text: keep it until the user chooses to replace it.
@@ -339,8 +346,7 @@ function installGuideNode(node) {
             return;
         }
         widget.callback?.(widget.value);
-        node.setDirtyCanvas?.(true, true);
-        if (dirty) node.graph?.setChanged?.();
+        afterWidgetWrite(dirty);
     }
 
     // ---------- how long the video is ----------
@@ -510,6 +516,7 @@ function installGuideNode(node) {
 
     function openEditor() {
         if (root) return;
+        doc = readDoc();
         buildEditor();
         renderAll();
         openBtn.classList.add("on");
@@ -3234,6 +3241,7 @@ function installGuideNode(node) {
     node._h3guideResolved = (frames) => {
         const value = Math.max(0, Math.trunc(Number(frames) || 0));
         if (!value) return;
+        doc = readDoc();
         doc.resolved_frame_count = value;
         doc.resolved_source = "run";
         writeDoc({ dirty: false });

@@ -3,6 +3,47 @@
 > 版本铁规：每次改动前，把旧版本完整快照存入 `archive/<日期>-<commit 短 hash>/`，并在本文件顶部追加一条说明。
 > 只有用户的明确命令才能删改 `archive/` 中的旧版本。
 
+## 2026-10-26 · Guide 二采共享文档链接校验修复（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-26-guide-v2-validation-linked-input-pre` 保存本轮前 108 个仓库文件，逐文件哈希 `mismatch: 0`。
+- 真实 prompt `a5f50b0a-276f-4ac6-950c-d377f2941b3f` 证实用户已连接共享文档。ComfyUI 在校验阶段不会先执行上游节点，`get_input_data` 对已链接但尚未求值的 `shared_guides` 给出 `None` 是正常行为；此前校验器误把它当成“未连接”，并因映射校验而对六个输入重复展示同一错误。
+- 二采传输节点现在在 `shared_guides is None` 时跳过文档内容校验，把真正未连接的情况留给执行入口给出中文错误；获得实际字符串时仍解析校验，`enable_guide=False` 的直接透传和缓存行为不变。
+- 使用真实 Guide 文档、真实 v1/v2/B 节点类及同样的 `v2 槽1 → shared_guides` 链接，在 ComfyUI 原 `execution.validate_inputs` 中最小重放：`GUIDE_B_VALID True`、`GUIDE_B_ERRORS []`、`V2_RETURN_TYPES ['CONDITIONING', 'STRING']`。这不是完整采样或成片测试。
+- 自动验证：Guide 专项 **57/57 通过**，完整 Python 入口 **658/658 通过，0 跳过**；Guide 前端状态 **106/106 通过**。已同步运行副本；重启 ComfyUI 后验证原工作流，不需要改线。不提交、不推送、不创建 tag。
+
+## 2026-10-26 · Guide v2 执行器 RETURN_TYPES 继承缓存修复（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-26-guide-v2-return-types-cache-pre` 保存本轮前 108 个仓库文件，逐文件哈希 `mismatch: 0`。
+- 真实历史 prompt 证实新二采节点 `5885` 的共享文档已正确连接 v2 输出槽 1；直接输入及 51 个上游节点的 `object_info` 槽位检查均合法。按 ComfyUI 节点加载顺序独立复现后确认：v2 schema 是 `['CONDITIONING', 'STRING']`，执行器实际 `RETURN_TYPES` 却错误继承稳定版 v1 的 `['CONDITIONING']`，因此读取共享文档槽 1 时抛出 `list index out of range`。不是用户接线错误，也不是 VAE 或素材问题。
+- v2 与二采传输节点现在分别隔离 V3 输出缓存（`_RETURN_TYPES`、`_RETURN_NAMES`、`_OUTPUT_IS_LIST`、`_OUTPUT_TOOLTIPS`），避免父类已初始化的缓存跳过子类输出初始化。节点 ID、schema、连线和执行语义不变，稳定版 v1 不变。
+- 新增真实加载顺序回归：依次读取 v1、v2、二采传输节点的 `RETURN_TYPES`，断言分别为 1、2、1 个输出，且 v2 槽 1 为 STRING。修复后独立进程核对与 schema 完全一致。
+- 自动验证：Guide 专项 **57/57 通过**，完整 Python 入口 **658/658 通过，0 跳过**；Guide 前端状态 **106/106 通过**，20 个 `web/*.js` 语法检查全部通过。真实 ComfyUI 仍需重新启动后验证原 prompt；已经接正确的线无需重接。不提交、不推送、不创建 tag。
+
+## 2026-10-26 · Guide v2 单通道与二采信息传输精简（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-26-guide-v2-slim-transfer-pre` 保存本轮前完整开发树及当时共享前端测试（108 个仓库文件，逐文件哈希 `mismatch: 0`）。
+- `H3 Guide Timeline v2` 保持节点 ID，删除 `positive_b`、`latent_b`、二采 positive 输出和 `enable_a` / `enable_b`；现为一组 `positive / latent`，输出槽 0 为 positive、输出槽 1 为「共享 Guide 文档」。稳定版 v1 的 schema 和执行路径不变。
+- `H3 Guide Timeline v2 B` 保持节点 ID，显示名改为「H3 Guide 时间轴 v2（二采信息传输）」。只保留二采 positive、latent、共享文档、两个 VAE 与 `enable_guide`；不再注册编辑器、时间轴或本地 guides。关闭开关时在解析与编码前透传 positive；开启但未连接共享文档时中文报错；开关和共享文档计入缓存指纹。
+- 截图中的 `conditioning: list index out of range` 属于旧连线引用不存在的输出槽。更新后必须彻底重启 ComfyUI、`Ctrl+F5` 并重接相关连线，必要时重新添加节点；不能把旧槽位连线当作新接口直接运行。
+- 自动验证：Guide 节点专项 **56/56 通过**，完整 Python 入口 **657/657 通过，0 跳过**；Guide 前端状态 **106/106 通过**，20 个 `web/*.js` 语法检查全部通过。覆盖单通道 schema、输出槽顺序、共享文档执行、独立二采 latent 与强度、关闭开关不校验不编码、开启缺文档报错、开关缓存键及旧文档兼容。
+- 已同步运行副本 `E:\ai\ComfyUI-aki-v3\ComfyUI\custom_nodes\H3-Long-Video-Manager`，本轮实现/测试/文档文件哈希一致；独立进程导入成功并直接核验 v1、v2、二采传输节点的输入输出 schema。真实浏览器重接、手操和两采成片由用户验收；不提交、不推送、不创建 tag。
+
+## 2026-10-26 · Guide v2 共享文档与独立二采执行节点（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-26-guide-v2-shared-executors-pre` 保存本轮前完整开发树（108 个源码/文档/测试文件，逐文件哈希 `mismatch: 0`），累积包含上一轮尚未提交的二采独立 latent 修改。
+- 根据真实 ComfyUI 日志中的依赖环，保留现有 `H3 Guide Timeline v2` 的节点 ID 与并行双通道兼容接口，追加只含编辑器 JSON 的「共享 Guide 文档」输出；新增独立 `H3 Guide Timeline v2 B` / 「H3 Guide 时间轴 v2（二采）」，以独立 positive、latent 和 VAE 路径执行二采。
+- 一采到二采只新增单向文档依赖；两个节点的前端编辑器跟随共享连接读写同一份文档，不把二采 positive / latent 接回一采节点。原节点内二采通道保留给输入相互独立的并行工作流，串行一采→二采改用独立二采节点。同步补齐 `fingerprint_inputs` 对视图参数的兼容，消除 `length_seconds` 警告。
+- 自动验证：Guide 节点专项 **64/64 通过**，完整既定 Python 入口 **665/665 通过，0 跳过**；共享链接前端专项 **6/6**、原 Guide 状态 **106/106**，20 个 `web/*.js` 语法检查全部通过。覆盖共享文档优先、独立二采 latent 与强度、无共享连接回退、旧文档、缓存视图参数和空输出槽等边界。
+- 已同步运行副本 `E:\ai\ComfyUI-aki-v3\ComfyUI\custom_nodes\H3-Long-Video-Manager`，108 个开发/运行文件 `missing: 0`、`mismatch: 0`；独立进程导入成功，11 个节点注册并包含 `H3 Guide Timeline v2 B`。本轮修改 Python schema、执行和前端，必须彻底重启 ComfyUI 后 `Ctrl+F5`。真实连线、依赖环消除、编辑器双向同步与两采成片由用户验收；不提交、不推送、不创建 tag。
+
+## 2026-10-26 · Guide v2 二采独立 latent 与通道总开关（未提交）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-26-6094e46-guide-v2-second-latent` 保存本轮前完整开发树（108 个源码/文档/测试文件，逐文件哈希 `mismatch: 0`），基线为 `6094e46`。
+- `H3 Guide Timeline v2` 新增可选 `latent_b`（二采 latent B），原 `latent` 改标为一采 latent A。两路分别读取自己的视频宽高、帧数和音频轨长度并调用原生 Add Guide；`latent_b` 未连接时回退到一采 latent，兼容已有工作流。只用二采时一采 positive 与 latent 均可留空。
+- **激活二采 Guide** 同时控制二采 positive 与 latent：关闭时两者都不校验、不读取、不参与编码，二采 positive 原样透传；一采开关采用同样语义。稳定版 v1 的节点 ID、schema、接口与执行行为不变，时间轴仍只有一条。
+- 自动验证：Guide 节点专项 **60/60 通过**，完整既定 Python 入口 **661/661 通过，0 跳过**。新增独立 latent 尺寸编码、仅二采无一采 latent、按各通道 latent 长度校验三条用例，并在开关回归中验证停用二采会忽略无效 `latent_b`。全量测试使用工作区内 TEMP，避免沙箱误拦截既有的路径逃逸探针。
+- 已同步运行副本 `E:\ai\ComfyUI-aki-v3\ComfyUI\custom_nodes\H3-Long-Video-Manager`。本轮修改 Python schema 与执行代码，必须彻底重启 ComfyUI 后 `Ctrl+F5`；真实连线、开关手操与双采样成片由用户验收。不提交、不推送、不创建 tag。
+
 ## 2026-10-26 · Guide v2 移除空状态 VAE / 透传提醒（提交并推送 main）
 
 - 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-26-b6cab67-guide-v2-empty-note` 保存本轮前完整开发树（108 个源码/文档/测试文件，逐文件哈希 `mismatch: 0`）。
