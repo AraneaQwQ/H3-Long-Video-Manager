@@ -44,7 +44,7 @@ export function installManagerPanel(node, { leading = null } = {}) {
         projectField: PROJECT_FIELD,
         segmentField: SEGMENT_FIELD,
         footerLines: [
-            "👉 点卡片＝切换输出片段编号 · ▶＝预览 · 删除片段与卡片大小在「H3 Segment Picker」",
+            "👉 点卡片＝切换输出片段编号 · ▶＝预览 · 🗑＝永久删除",
         ],
         onRefresh: () => void menu.refresh(),
     });

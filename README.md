@@ -253,9 +253,10 @@ graphs saved before this change load unchanged.
 Segment Picker: the 项目素材库 menu on top (switch / create / delete a bin, with the live segment
 count), then a tool row (`🔄 刷新`, `🔗 合并模式`, `卡片大小` 100%–400%, `🎬 素材库` status), then the card deck. The deck is always open — there is
 no collapse button. It reads the selected bin and shows every segment in it, ordered by 片段编号 — thumbnail, 片段编号, frame count
-and duration, a ▶ button for the MP4 preview, and clicking a card sets 输出片段编号. Segments that this
+and duration, ▶ for the MP4 preview and 🗑 for permanent deletion; clicking a card sets 输出片段编号. Segments that this
 node's last run produced carry a small `本次` badge, and the status line names them
-(`库内 17 段 · 本次生成 6 段（片段 1–6）`). Deleting a card in the Segment Picker removes it here too.
+(`库内 17 段 · 本次生成 6 段（片段 1–6）`). Deleting a card in the Manager, Smart Split (including v2),
+or Segment Picker removes it from every panel.
 Nothing is saved: the ids come from the `h3_lvm/changed` event the node already sends after saving,
 so a page reload simply shows the bin without the badge.
 Thumbnails follow the frame orientation: landscape fills the box (`object-fit: cover`), portrait (9:16) is
@@ -952,7 +953,7 @@ Manager v2 暂不包含 v1 的人物裁切控件；需要该功能时继续使�
 但 widget 本身被隐藏（`options.hidden`），因为面板顶部已经有同一个菜单——一个设置只留一个控件。隐藏的 widget
 仍按位置序列化，所以改动前保存的工作流打开后参数不会错位。
 
-**Manager 面板** — 参数下面是与 H3 Segment Picker 同一套视觉的面板：顶部是项目素材库菜单（切换 / 新建 / 删除项目，右侧实时显示片段数），接着是工具行（`🔄 刷新`、`🔗 合并模式`、`卡片大小` 100%–400%、`🎬 素材库` 状态），再下面是常开的卡片网格（没有折叠按钮）。卡片区读的是当前选中的素材库，按片段编号顺序显示库内**全部**片段：缩略图、片段编号、帧数和时长，带 ▶ 按钮播放 MP4 预览，点卡片就是把该段设为「输出片段编号」。本节点上一次运行产出的片段带一个 `本次` 小标记，状态行会写清楚（`库内 17 段 · 本次生成 6 段（片段 1–6）`）。在 Segment Picker 里删除片段，这里同步消失。这里不保存任何状态：本次编号来自节点保存后本来就会发的 `h3_lvm/changed` 事件，刷新页面后只剩素材库本身、没有标记。缩略图按画面方向自适应：横屏铺满，竖屏（9:16）整帧显示并在后面垫一层同帧模糊副本，卡片尺寸不变。
+**Manager 面板** — 参数下面是与 H3 Segment Picker 同一套视觉的面板：顶部是项目素材库菜单（切换 / 新建 / 删除项目，右侧实时显示片段数），接着是工具行（`🔄 刷新`、`🔗 合并模式`、`卡片大小` 100%–400%、`🎬 素材库` 状态），再下面是常开的卡片网格（没有折叠按钮）。卡片区读的是当前选中的素材库，按片段编号顺序显示库内**全部**片段：缩略图、片段编号、帧数和时长，带 ▶ 按钮播放 MP4 预览和 🗑 永久删除按钮，点卡片就是把该段设为「输出片段编号」。本节点上一次运行产出的片段带一个 `本次` 小标记，状态行会写清楚（`库内 17 段 · 本次生成 6 段（片段 1–6）`）。在 Manager、Smart Split（含 v2）或 Segment Picker 中删除片段，其他面板都会同步移除该卡片。这里不保存任何状态：本次编号来自节点保存后本来就会发的 `h3_lvm/changed` 事件，刷新页面后只剩素材库本身、没有标记。缩略图按画面方向自适应：横屏铺满，竖屏（9:16）整帧显示并在后面垫一层同帧模糊副本，卡片尺寸不变。
 
 卡片区属于素材库而不是这一次页面访问：重新打开工作流时，面板会在「项目素材库」的名字恢复之后自己重画，卡片直接出现，不需要点刷新。面板高度同时是 widget 的最小高度，节点太矮时 ComfyUI 会自动长到能显示一行卡片，宽度按用户自己的设置不变。
 
@@ -980,7 +981,7 @@ Manager v2 暂不包含 v1 的人物裁切控件；需要该功能时继续使�
 
 **面板** — 顶部是与其他两个节点完全相同的项目素材库菜单（切换 / 新建 / 删除，右侧实时显示片段数），
 下面是与 Manager 完全相同的卡片区：按片段顺序显示库内全部片段，本节点这次运行产生的卡片带
-`本次` 角标，卡片缩放 100%–400%，点卡片即切换输出片段编号。卡片区代码是共用的
+`本次` 角标，卡片缩放 100%–400%，点卡片即切换输出片段编号，右下角 🗑 可永久删除该片段。卡片区代码是共用的
 （`web/deck_panel.js`），两个节点写的是同一个素材库，所以任一节点产出的卡片在另一个节点里
 同样可见。切点与每个镜头的帧区间会打印在控制台的 `SEGMENT TABLE` 里。检测把同一个镜头切成好几个小片段时，用 `🔗 合并模式`（说明见 Manager 面板）手动接回去。
 

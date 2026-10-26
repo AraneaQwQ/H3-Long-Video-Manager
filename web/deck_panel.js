@@ -8,12 +8,13 @@
 // The deck belongs to the bin, not to the node that filled it: a bin written by the
 // Manager shows the same cards in the Smart Split panel and vice versa.
 //
-// Display only. No new node inputs and no new saved workflow fields.
+// No new node inputs and no new saved workflow fields.
 
 import { api } from "../../scripts/api.js";
 import { openPreview } from "./preview_overlay.js";
 import { appendThumbnail } from "./thumb_fit.js";
 import { createCardZoom } from "./card_zoom.js";
+import { addDeleteButton } from "./delete_button.js";
 
 export function createDeck({
     node,
@@ -22,7 +23,7 @@ export function createDeck({
     projectField = "project_name",
     segmentField = "segment_id",
     toolLabel = "🎬 素材库",
-    emptyText = "这个素材库还没有片段。运行本节点即可写入；删除片段请在「H3 Segment Picker」里做。",
+    emptyText = "这个素材库还没有片段。运行本节点即可写入。",
     footerLines = [],
     onRefresh = null,
 }) {
@@ -91,8 +92,11 @@ export function createDeck({
     let mergeMode = false;
     let picked = new Set();
     let merging = false;
+    let deleting = false;
+    let segmentCount = 0;
     let rendering = false;
     let pendingRender = false;
+    let deletedBeforeRender = new Set();
 
     function widgetFor(name) {
         return node.widgets?.find(item => item.name === name);
@@ -125,13 +129,19 @@ export function createDeck({
 
     // Button state only; the status line is written by the callers that know why.
     function updateMergeUi() {
+        const busy = merging || deleting;
         mergeBtn.classList.toggle("on", mergeMode);
+        mergeBtn.disabled = busy || segmentCount < 2;
         mergeOkBtn.style.display = mergeMode ? "" : "none";
-        mergeOkBtn.disabled = !(mergeMode && picked.size >= 2 && !merging);
+        mergeOkBtn.disabled = !(mergeMode && picked.size >= 2 && !busy);
         mergeOkBtn.textContent = merging ? "⏳ 合并中…" : "✅ 确认合并";
+        deck.querySelectorAll(".h3-asset-delete").forEach(button => {
+            button.disabled = mergeMode || busy;
+        });
     }
 
     function setMergeMode(on) {
+        if (on && (merging || deleting || segmentCount < 2)) return;
         mergeMode = on;
         if (!on) picked.clear();
         updateMergeUi();
@@ -175,7 +185,7 @@ export function createDeck({
         event.stopPropagation();
         const ids = pickedIds();
         const project = currentProject();
-        if (ids.length < 2 || !project || merging) return;
+        if (ids.length < 2 || !project || merging || deleting) return;
         merging = true;
         updateMergeUi();
         try {
@@ -213,6 +223,31 @@ export function createDeck({
         }
     };
 
+    async function deleteCard(project, segmentId) {
+        if (merging || deleting || mergeMode) return;
+        deleting = true;
+        updateMergeUi();
+        try {
+            document.getElementById("h3lvm-preview-overlay")?._h3Close?.();
+            const response = await api.fetchApi("/h3_lvm/delete", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ project, segment_id: segmentId }),
+            });
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || `删除失败 (${response.status})；请确认已重启 ComfyUI。`);
+            }
+            if (!signal.aborted && currentProject() === project) {
+                await render(segmentId);
+                updateStatus(`已删除片段 ${segmentId}`);
+            }
+        } finally {
+            deleting = false;
+            updateMergeUi();
+        }
+    }
+
     function formatIds(ids) {
         const sorted = [...ids].sort((a, b) => a - b);
         const parts = [];
@@ -230,7 +265,8 @@ export function createDeck({
         runText.textContent = text;
     }
 
-    async function render() {
+    async function render(deletedId = null) {
+        if (deletedId != null && Number.isFinite(Number(deletedId))) deletedBeforeRender.add(Number(deletedId));
         // Two triggers can land at once (a run plus a project switch); one redraw
         // at a time keeps the last one authoritative.
         if (rendering) {
@@ -241,14 +277,16 @@ export function createDeck({
         try {
             do {
                 pendingRender = false;
-                await renderOnce();
+                const deletedIds = deletedBeforeRender;
+                deletedBeforeRender = new Set();
+                await renderOnce(deletedIds);
             } while (pendingRender && !signal.aborted);
         } finally {
             rendering = false;
         }
     }
 
-    async function renderOnce() {
+    async function renderOnce(deletedIds) {
         if (signal.aborted) return;
         const project = currentProject();
         if (!project) return;
@@ -270,12 +308,22 @@ export function createDeck({
             .filter(item => Number.isFinite(item.id))
             .sort((a, b) => a.id - b.id);
         const present = new Set(ordered.map(item => item.id));
+        segmentCount = ordered.length;
+        const segmentWidget = widgetFor(segmentField);
+        const selected = selectedSegment();
+        if (segmentWidget && deletedIds.has(selected)) {
+            const next = ordered[0]?.id ?? 1;
+            if (next !== selected) {
+                segmentWidget.value = next;
+                segmentWidget.callback?.(next);
+                node.setDirtyCanvas?.(true, true);
+            }
+        }
         // Cards deleted in the Picker must lose their badge as well.
         runIds = new Set([...runIds].filter(id => present.has(id)));
         // A merge or a delete elsewhere can take a picked card away; drop it rather
         // than offer a merge the server would refuse.
         picked = new Set([...picked].filter(id => present.has(id)));
-        mergeBtn.disabled = ordered.length < 2;
         mergeBtn.title = ordered.length < 2
             ? "至少需要两段才能合并"
             : "点选相邻的卡片，再把它们合并成一个片段";
@@ -291,7 +339,7 @@ export function createDeck({
         const currentSel = selectedSegment();
         deck.innerHTML = "";
         for (const item of ordered) {
-            deck.appendChild(makeCard(item.seg, item.id === currentSel, runIds.has(item.id), picked.has(item.id)));
+            deck.appendChild(makeCard(item.seg, item.id === currentSel, runIds.has(item.id), picked.has(item.id), project));
         }
         const runNote = runIds.size
             ? ` · 本次生成 ${runIds.size} 段（片段 ${formatIds([...runIds])}）`
@@ -300,7 +348,7 @@ export function createDeck({
         updateStatus(`库内 ${ordered.length} 段${runNote}${mergeNote}`);
     }
 
-    function makeCard(seg, active, fromRun, isPicked) {
+    function makeCard(seg, active, fromRun, isPicked, project) {
         const card = document.createElement("div");
         const classes = ["h3lvm-card"];
         if (active) classes.push("active");
@@ -351,9 +399,16 @@ export function createDeck({
         infoEl.className = "h3lvm-seg-info";
         infoEl.textContent = seg.frames + " 帧 · " + seconds + seg.width + "×" + seg.height;
         meta.append(labelEl, infoEl);
+        const deleteBtn = addDeleteButton(meta, {
+            description: `项目「${project}」的片段 ${seg.segment_id}`,
+            signal,
+            onDelete: () => deleteCard(project, Number(seg.segment_id)),
+        });
+        deleteBtn.disabled = mergeMode || merging || deleting;
         card.appendChild(meta);
 
         card.onclick = () => {
+            if (merging || deleting) return;
             if (mergeMode) {
                 togglePick(Number(seg.segment_id));
                 return;
@@ -379,7 +434,7 @@ export function createDeck({
         if (Array.isArray(data.segments) && data.segments.length) {
             runIds = new Set(data.segments.map(Number).filter(Number.isFinite));
         }
-        void render();
+        void render(data.deleted_id);
     }
 
     api.addEventListener("h3_lvm/changed", onChanged);
