@@ -3,6 +3,13 @@
 > 版本铁规：每次改动前，把旧版本完整快照存入 `archive/<日期>-<commit 短 hash>/`，并在本文件顶部追加一条说明。
 > 只有用户的明确命令才能删改 `archive/` 中的旧版本。
 
+## 2026-10-26 · Guide v2 移除空状态 VAE / 透传提醒（提交并推送 main）
+
+- 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-26-b6cab67-guide-v2-empty-note` 保存本轮前完整开发树（108 个源码/文档/测试文件，逐文件哈希 `mismatch: 0`）。
+- 按用户反馈，从 `H3 Guide Timeline v2` 节点底部删除「无需 VAE · 无生效 Guide · positive 原样透传」绿色提醒。没有生效 Guide 时不再显示这条状态行；有 Guide 时的 VAE 摘要、编排校验通过、待确认与错误提示仍保留。
+- 仅改 `web/guide_timeline.js` 的展示分支，不改 v1/v2 节点 ID、接口、Guide 文档、VAE 调用、空 Guide 透传、双通道开关或执行行为。Guide 前端状态 **106/106 通过**，20 个 `web/*.js` 语法检查 0 失败，目标空状态文案无残留；本轮未重复执行 Python 全量回归。
+- 已同步运行副本，108 个开发/运行文件 `mismatch: 0`、`stale: 0`。仅前端与文档变化，`Ctrl+F5` 后验收，无需重启 ComfyUI；本轮由用户明确要求提交并推送 `origin/main`，不创建 tag。
+
 ## 2026-10-25 · Guide 双通道与参考加载器更新打包提交
 
 - 快照：`C:\Users\az\Documents\Codex\2026-10-02\xia\archive\2026-10-25-pre-push-guide-dual-ref-ui` 保存打包前完整开发树（188 个源码/文档/测试文件，逐文件哈希 `mismatch: 0`）。远端 `origin/main` 已 fetch 核对，仍为 `805ae7e`，没有需要合并的新提交。

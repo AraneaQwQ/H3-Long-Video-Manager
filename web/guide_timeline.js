@@ -3053,9 +3053,9 @@ function installGuideNode(node) {
             if (counts.images && counts.audios) vaeNote = "需要视频 VAE + 音频 VAE";
             else if (counts.images) vaeNote = "需要视频 VAE · 无需音频 VAE";
             else if (counts.audios) vaeNote = "需要音频 VAE · 无需视频 VAE";
-            let checkNote = "无生效 Guide · positive 原样透传";
+            let checkNote = "";
             let checkClass = "ok";
-            let checkTitle = "没有实际生效的 Guide，不调用图片或音频 VAE";
+            let checkTitle = "";
             if (parseError) {
                 checkNote = "Guide 列表读取失败 · 打开编辑器处理";
                 checkClass = "error";
@@ -3073,9 +3073,11 @@ function installGuideNode(node) {
                     checkNote = "编排校验通过";
                 }
             }
-            const hint = make("span", `h3lvm-hint h3guide-node-check ${checkClass}`, `${vaeNote} · ${checkNote}`);
-            hint.title = checkTitle;
-            nodeFooter.appendChild(hint);
+            if (checkNote) {
+                const hint = make("span", `h3lvm-hint h3guide-node-check ${checkClass}`, `${vaeNote} · ${checkNote}`);
+                hint.title = checkTitle;
+                nodeFooter.appendChild(hint);
+            }
             scheduleStrip();
             return;
         }
