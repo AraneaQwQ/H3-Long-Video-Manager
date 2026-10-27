@@ -6,6 +6,7 @@ import os
 import torch
 from comfy_api.latest import io
 
+from ..core.frame_rate import PLAYBACK_SPEED_OPTIONS, iter_slowed_frames, parse_playback_speed
 from ..core.h3_grid import fixed_slice_frames
 from ..core.models import WorkingVideoConfig
 from ..core.segmentation import compute_segment_duration_frames
@@ -21,7 +22,9 @@ from ..core.smart_split import (
     build_smart_segments,
 )
 from ..core.stream_segments import iter_fixed_segment_batches, iter_smart_segment_batches
-from .segment_store import DEFAULT_PROJECT, normalize_save_dtype, save_segment
+from .segment_store import (
+    DEFAULT_PROJECT, normalize_save_dtype, save_segment, set_project_playback_meta,
+)
 from .stream_video import decode_audio_range, iter_video_frames, silent_audio, stack_uint8
 from .video_decode import TARGET_FPS, probe_video
 from .video_loader_node import list_input_videos, resolve_video_path
@@ -43,6 +46,30 @@ def _outputs():
         io.Int.Output(display_name="frame_count"),
         io.Int.Output(display_name="total_segments"),
     ]
+
+
+def _playback_inputs():
+    return [
+        io.Combo.Input("playback_speed", options=list(PLAYBACK_SPEED_OPTIONS), default="1.0x",
+                       tooltip="参考视频慢放倍率：先慢放再分段；帧复制，不插帧。1.0x 保持原有行为"),
+        io.Float.Input("playback_speed_custom", optional=True, default=1.0,
+                       min=0.1, max=1.0, step=0.1,
+                       tooltip="只在播放速度选 custom 时生效，例如 0.6 表示原速的 60%"),
+    ]
+
+
+def _playback_metadata(info, speed, speed_option, motion_context_frames, smart=False):
+    metadata = {
+        "playback_speed": float(speed),
+        "speed_option": str(speed_option),
+        "source_fps": float(info.get("source_fps") or TARGET_FPS),
+        "working_fps": int(TARGET_FPS),
+        "source_duration_sec": round(float(info.get("duration_sec") or 0), 4),
+        "motion_context_frames": int(motion_context_frames),
+    }
+    if smart:
+        metadata["segmentation_method"] = "smart"
+    return metadata
 
 
 def _target_size(info, scale_percent):
@@ -73,16 +100,23 @@ def _run_batches(
     save_preview_mp4,
     save_dtype,
     smart=False,
+    playback=None,
+    playback_stats=None,
 ):
     project = project_name if str(project_name or "").strip() else DEFAULT_PROJECT
+    playback = dict(playback or {"playback_speed": 1.0})
+    speed = float(playback["playback_speed"])
     selected = None
     saved_ids = []
     total = 0
+    processed_frames = 0
     for meta, frames in batches:
         total += 1
+        processed_frames = max(processed_frames, int(meta["main_end"]))
         number = int(meta["segment_id"]) + 1
         video = stack_uint8(frames)
-        audio = decode_audio_range(path, meta["extract_start"], meta["extract_frames"])
+        audio = decode_audio_range(
+            path, meta["extract_start"], meta["extract_frames"], playback_speed=speed)
         if audio is None:
             audio = silent_audio(meta["extract_frames"])
         if save_enabled:
@@ -91,6 +125,7 @@ def _run_batches(
                 "main_end": meta["main_end"],
                 "main_frames": meta["main_frames"],
                 "context_frames": meta["context_frames"],
+                "playback_speed": speed,
             }
             if smart:
                 extra.update({"segmentation_method": "smart", "scene_id": meta["scene_id"]})
@@ -119,6 +154,14 @@ def _run_batches(
     if selected is None:
         raise ValueError(f"segment_id={segment_id} 超出范围 [1, {total}]。")
     if save_enabled:
+        source_frames = int((playback_stats or {}).get("source_frames") or
+                            max(1, int(round(processed_frames * speed))))
+        playback.update({
+            "source_frames": source_frames,
+            "processed_frames": int(processed_frames),
+            "processed_duration_sec": round(processed_frames / float(TARGET_FPS), 4),
+        })
+        set_project_playback_meta(project, playback)
         _notify(project, saved_ids)
         print(f"[H3 v2] saved {total} streaming segments -> '{project}' "
               f"({normalize_save_dtype(save_dtype)})")
@@ -127,7 +170,8 @@ def _run_batches(
     return io.NodeOutput(result, audio, int(result.shape[0]), total)
 
 
-def _detect_file_cuts(path, sensitivity, estimated_total=0):
+def _detect_file_cuts(path, sensitivity, estimated_total=0,
+                      playback_speed=1.0, playback_stats=None):
     """First Smart v2 pass: one small analysis frame at a time, never the full tensor."""
     AdaptiveDetector, FrameTimecode = _require_detector()
     key = str(sensitivity or DEFAULT_SENSITIVITY).strip().lower()
@@ -138,7 +182,9 @@ def _detect_file_cuts(path, sensitivity, estimated_total=0):
     cuts = []
     total = 0
     analysis = "unknown"
-    for frame in iter_video_frames(path):
+    frames = iter_slowed_frames(
+        iter_video_frames(path), playback_speed, stats=playback_stats)
+    for frame in frames:
         source = frame.to(torch.float32).div(255.0).unsqueeze(0)
         resized = _prepare_analysis_frames(source, 1)
         analysis = f"{int(resized.shape[2])}x{int(resized.shape[1])}"
@@ -205,6 +251,7 @@ class H3LongVideoManagerV2(_V2Schema, io.ComfyNode):
                 io.Boolean.Input("save_enabled", optional=True, default=True),
                 io.Boolean.Input("save_preview_mp4", optional=True, default=False),
                 io.Combo.Input("save_dtype", options=["int8", "fp16"], optional=True, default="int8"),
+                *_playback_inputs(),
             ],
             outputs=_outputs(),
         )
@@ -212,16 +259,24 @@ class H3LongVideoManagerV2(_V2Schema, io.ComfyNode):
     @classmethod
     def execute(cls, video, custom_path, segment_duration, motion_context_frames, segment_id,
                 scale_percent=100.0, align_to_h3_grid=True, project_name=DEFAULT_PROJECT,
-                save_enabled=True, save_preview_mp4=False, save_dtype="int8"):
+                save_enabled=True, save_preview_mp4=False, save_dtype="int8",
+                playback_speed="1.0x", playback_speed_custom=1.0):
         path = resolve_video_path(video, custom_path)
+        speed = parse_playback_speed(playback_speed, playback_speed_custom)
         info = probe_video(path)
         target_size = _target_size(info, scale_percent)
         slice_frames = fixed_slice_frames(
             compute_segment_duration_frames(segment_duration, TARGET_FPS), align_to_h3_grid)
-        frames = iter_video_frames(path, target_size=target_size, source_info=info)
+        playback_stats = {}
+        frames = iter_slowed_frames(
+            iter_video_frames(path, target_size=target_size, source_info=info),
+            speed, stats=playback_stats)
         batches = iter_fixed_segment_batches(frames, slice_frames, int(motion_context_frames))
+        playback = _playback_metadata(
+            info, speed, playback_speed, motion_context_frames)
         return _run_batches(path, batches, segment_id, project_name, save_enabled,
-                            save_preview_mp4, save_dtype)
+                            save_preview_mp4, save_dtype, playback=playback,
+                            playback_stats=playback_stats)
 
 
 class H3SmartSplitV2(_V2Schema, io.ComfyNode):
@@ -243,6 +298,7 @@ class H3SmartSplitV2(_V2Schema, io.ComfyNode):
                 io.Boolean.Input("save_enabled", optional=True, default=True),
                 io.Boolean.Input("save_preview_mp4", optional=True, default=False),
                 io.Combo.Input("save_dtype", options=["int8", "fp16"], optional=True, default="int8"),
+                *_playback_inputs(),
             ],
             outputs=_outputs(),
         )
@@ -250,12 +306,16 @@ class H3SmartSplitV2(_V2Schema, io.ComfyNode):
     @classmethod
     def execute(cls, video, custom_path, detection_sensitivity, motion_context_frames, segment_id,
                 scale_percent=100.0, project_name=DEFAULT_PROJECT, save_enabled=True,
-                save_preview_mp4=False, save_dtype="int8"):
+                save_preview_mp4=False, save_dtype="int8",
+                playback_speed="1.0x", playback_speed_custom=1.0):
         path = resolve_video_path(video, custom_path)
+        speed = parse_playback_speed(playback_speed, playback_speed_custom)
         info = probe_video(path)
         estimated_total = int(round((info.get("duration_sec") or 0) * TARGET_FPS))
+        playback_stats = {}
         total, cuts, detect_meta = _detect_file_cuts(
-            path, detection_sensitivity, estimated_total=estimated_total)
+            path, detection_sensitivity, estimated_total=int(round(estimated_total / speed)),
+            playback_speed=speed, playback_stats=playback_stats)
         if total <= 0:
             raise ValueError("H3 Smart Split v2：输入视频没有可解码的画面。")
         print(f"[H3 Smart Split v2] {detect_meta['method']}: {total} frames @24fps, cuts={cuts}")
@@ -263,10 +323,14 @@ class H3SmartSplitV2(_V2Schema, io.ComfyNode):
         segments = build_smart_segments(total, cuts, context)
         assert_lossless(segments, total)
         target_size = _target_size(info, scale_percent)
-        frames = iter_video_frames(path, target_size=target_size, source_info=info)
+        frames = iter_slowed_frames(
+            iter_video_frames(path, target_size=target_size, source_info=info), speed)
         batches = iter_smart_segment_batches(frames, segments, context)
+        playback = _playback_metadata(
+            info, speed, playback_speed, motion_context_frames, smart=True)
         return _run_batches(path, batches, segment_id, project_name, save_enabled,
-                            save_preview_mp4, save_dtype, smart=True)
+                            save_preview_mp4, save_dtype, smart=True,
+                            playback=playback, playback_stats=playback_stats)
 
 
 NODE_LIST = [H3LongVideoManagerV2, H3SmartSplitV2]

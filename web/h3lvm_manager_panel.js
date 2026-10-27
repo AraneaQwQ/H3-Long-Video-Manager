@@ -24,7 +24,7 @@ const SEGMENT_FIELD = "segment_id";
 // also why there is no expand/collapse button and no manual resizing here.
 const PANEL_H = 320;
 
-export function installManagerPanel(node, { leading = null } = {}) {
+export function installManagerPanel(node, { leading = null, leadingHeight = 0 } = {}) {
     const lifetime = node._h3lvmManagerLifetime ?? new AbortController();
     node._h3lvmManagerLifetime = lifetime;
     const signal = lifetime.signal;
@@ -59,7 +59,7 @@ export function installManagerPanel(node, { leading = null } = {}) {
     container.insertBefore(menu.element, deck.toolbar);
     node._h3lvmRefreshProjects = menu.refresh;
 
-    addPanel(node, "h3lvm_manager_panel", container, PANEL_H + (leading ? 48 : 0));
+    addPanel(node, "h3lvm_manager_panel", container, PANEL_H + (leading ? leadingHeight : 0));
 
     // The deck belongs to the bin, not to this page visit: opening the workflow again
     // shows the cards right away. The project name is only restored in configure(),

@@ -102,6 +102,17 @@ class TestStreamVideo(unittest.TestCase):
         self.assertEqual(audio["waveform"].shape[-1], 2 * audio["sample_rate"])
         self.assertGreater(float(audio["waveform"].abs().max()), 0.1)
 
+    def test_half_speed_audio_has_slowed_duration_and_keeps_samples(self):
+        path = make_clip(os.path.join(self.tmpdir, "audio-slow.mp4"), fps=24, duration=3.0, audio=True)
+        audio = decode_audio_range(path, 24, 48, playback_speed=0.5)
+        self.assertIsNotNone(audio)
+        self.assertEqual(audio["waveform"].shape[-1], 2 * audio["sample_rate"])
+        self.assertGreater(float(audio["waveform"].abs().max()), 0.1)
+        wave = audio["waveform"][0, 0]
+        crossings = int(((wave[:-1] <= 0) & (wave[1:] > 0)).sum())
+        seconds = audio["waveform"].shape[-1] / float(audio["sample_rate"])
+        self.assertAlmostEqual(crossings / seconds, 440, delta=20)
+
     def test_stereo_audio_range_keeps_channels_and_pitch(self):
         path = make_stereo_clip(os.path.join(self.tmpdir, "stereo.mp4"), duration=3.0)
         audio = decode_audio_range(path, 24, 48)

@@ -17,6 +17,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installManagerPanel } from "./h3lvm_manager_panel.js";
+import { MANAGER_SETTINGS_SECTIONS } from "./manager_settings.js";
+import { createParameterPanel, hideParameterWidgets } from "./parameter_panel.js";
 
 // The panel reuses the Picker stylesheet; inject it here too so the Manager works
 // on its own if the Picker script ever fails to load.
@@ -52,6 +54,8 @@ const LABELS = {
     person_crop: "人物裁切",
     person_crop_expand_percent: "人物框外扩 %",
     save_dtype: "素材存盘精度",
+    playback_speed: "参考视频慢放倍率",
+    playback_speed_custom: "自定义慢放倍率",
 };
 
 const TOOLTIPS = {
@@ -62,11 +66,13 @@ const TOOLTIPS = {
     scale_percent: "输出前整体缩放画面。",
     align_to_h3_grid: "开启后每段帧数向下取到 H3 支持的 17n+5；关闭则正好是所填时长（H3 可能自行吸附）。",
     project_name: "保存到哪个项目素材库；面板顶部的菜单可以切换、新建或删除项目。",
-    save_enabled: "关闭后只在画布输出，不写入素材库。",
+    save_enabled: "是否把裁切片段写入项目素材库；独立运行时请保持开启。",
     save_preview_mp4: "为每个片段额外生成可播放的 MP4 预览。",
     person_crop: "检测人物并裁掉画面边缘，让人物占画面更大。",
     person_crop_expand_percent: "人物框外扩百分比，0 为紧贴检测框（仍保持原画面比例）。",
     save_dtype: "素材库里的片段张量用什么精度落盘。源视频本身只有 8-bit，所以 int8 体积减半而画面读回来一样；只有需要保留原始浮点张量时才选 fp16。同一个库里可以混用，读取时按各自存的精度还原。",
+    playback_speed: "在切分之前把整条视频放慢（帧复制，不插帧）。之后所有分段和 22 帧 Motion Context 都在慢放后的时间轴上；1.0x 保持原有行为。合并时在 Long Builder 里选择相同倍率恢复原速。",
+    playback_speed_custom: "只在慢放倍率选 custom 时生效：填 0~1.0 之间的一位小数（如 0.6），表示慢放到原速的 60%。",
 };
 
 // Raw values are kept as-is; only the text in the dropdown is Chinese.
@@ -85,6 +91,12 @@ const OPTION_LABELS = {
         "22": "22 帧（默认）",
         "39": "39 帧",
         "56": "56 帧",
+    },
+    playback_speed: {
+        "1.0x": "1.0x（原速，默认）",
+        "0.75x": "0.75x（慢放到 75%）",
+        "0.5x": "0.5x（慢放到 50%）",
+        custom: "custom（自定义 0.1~1.0x）",
     },
 };
 
@@ -108,10 +120,24 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             const r = originalCreated ? originalCreated.apply(this, arguments) : undefined;
             try {
+                const lifetime = this._h3lvmManagerLifetime ?? new AbortController();
+                this._h3lvmManagerLifetime = lifetime;
                 translateWidgets(this);
                 hideProjectWidget(this);
                 hideRetiredWidgets(this);
-                installManagerPanel(this);
+                hideParameterWidgets(this, MANAGER_SETTINGS_SECTIONS, ["segment_id"]);
+                const settings = createParameterPanel(this, {
+                    sections: MANAGER_SETTINGS_SECTIONS,
+                    labels: LABELS,
+                    tooltips: TOOLTIPS,
+                    optionLabels: OPTION_LABELS,
+                    signal: lifetime.signal,
+                });
+                this._h3lvmSettingsRefresh = settings.refresh;
+                installManagerPanel(this, {
+                    leading: settings.element,
+                    leadingHeight: settings.minHeight,
+                });
             } catch (error) {
                 console.warn("[H3 LVM] manager node UI setup failed (node still works):", error);
             }
@@ -127,6 +153,7 @@ app.registerExtension({
                 console.warn("[H3 LVM] could not prepare the saved project:", error);
             }
             const r = originalConfigure ? originalConfigure.apply(this, arguments) : undefined;
+            this._h3lvmSettingsRefresh?.();
             this._h3lvmRefreshProjects?.();
             // Widgets hold their saved values now: paint the deck without a click.
             this._h3lvmDeckRefresh?.();
@@ -144,6 +171,13 @@ app.registerExtension({
         nodeType.prototype.onRemoved = function () {
             this._h3lvmManagerLifetime?.abort();
             return originalRemoved ? originalRemoved.apply(this, arguments) : undefined;
+        };
+
+        const originalConnectionsChange = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function () {
+            const result = originalConnectionsChange?.apply(this, arguments);
+            this._h3lvmSettingsRefresh?.();
+            return result;
         };
     },
 });

@@ -485,6 +485,27 @@ def _upsert_index(project: str, seg_meta: Dict[str, Any]) -> None:
 
 
 @project_locked
+def set_project_playback_meta(project: Any, playback: Dict[str, Any]) -> None:
+    """Store the project-level playback-speed metadata the Long Builder reads.
+
+    The block records what speed this project's segments were cut at (plus the
+    source/processed frame math), so the merge side can restore the original
+    speed without the user retyping the factor. Written on every Manager save
+    run - including 1.0x, which replaces stale slow-motion metadata when a
+    project is re-cut at original speed. Unknown top-level index keys pass
+    through _upsert_index untouched, so the block survives later segment saves.
+    """
+    project = sanitize_project_name(project)
+    idx = load_project_index(project)
+    block = dict(playback)
+    block["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    idx["playback"] = block
+    _write_index(project, idx)
+    logger.info("[H3 LVM] playback metadata for '%s' -> %s",
+                project, {k: block.get(k) for k in ("playback_speed", "motion_context_frames")})
+
+
+@project_locked
 def list_project(project: Any) -> Dict[str, Any]:
     """Return the project index enriched with /view URLs (for the frontend)."""
     project = sanitize_project_name(project)
@@ -869,4 +890,5 @@ __all__ = [
     "MAX_PROJECT_NAME_LENGTH",
     "delete_segment",
     "merge_segments",
+    "set_project_playback_meta",
 ]

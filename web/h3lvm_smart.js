@@ -21,6 +21,8 @@ import { api } from "../../scripts/api.js";
 import { addPanel } from "./dom_panel.js";
 import { createProjectMenu } from "./project_menu.js";
 import { createDeck } from "./deck_panel.js";
+import { SMART_SPLIT_SETTINGS_SECTIONS } from "./smart_settings.js";
+import { createParameterPanel, hideParameterWidgets } from "./parameter_panel.js";
 
 // The panel reuses the Picker stylesheet; inject it here too so this node works on
 // its own if another script fails to load. Same id as the other files = one link.
@@ -59,6 +61,8 @@ const LABELS = {
     save_enabled: "保存到素材库",
     save_preview_mp4: "生成 MP4 预览",
     save_dtype: "素材存盘精度",
+    playback_speed: "参考视频慢放倍率",
+    playback_speed_custom: "自定义慢放倍率",
 };
 
 const TOOLTIPS = {
@@ -68,9 +72,11 @@ const TOOLTIPS = {
     segment_id: "把第几段输出到下游预览；所有片段都会照常保存到素材库。",
     scale_percent: "输出前整体缩放画面。",
     project_name: "保存到哪个项目素材库；面板顶部的菜单可以切换、新建或删除项目。",
-    save_enabled: "关闭后只在画布输出，不写入素材库。",
+    save_enabled: "是否把裁切片段写入项目素材库；独立运行时请保持开启。",
     save_preview_mp4: "为每个片段额外生成可播放的 MP4 预览。",
     save_dtype: "素材库里的片段张量用什么精度落盘。源视频本身只有 8-bit，所以 int8 体积减半而画面读回来一样；只有需要保留原始浮点张量时才选 fp16。同一个库里可以混用，读取时按各自存的精度还原。",
+    playback_speed: "在镜头检测之前把整条视频放慢（帧复制，不插帧）。之后检测到的镜头切点、Motion Context 和保存的片段都在慢放后的时间轴上；1.0x 保持原有行为。合并时在 Long Builder 里选择相同倍率恢复原速。",
+    playback_speed_custom: "只在慢放倍率选 custom 时生效：填 0~1.0 之间的一位小数（如 0.6），表示慢放到原速的 60%。",
 };
 
 // Raw values are kept as-is; only the text in the dropdown is Chinese.
@@ -90,6 +96,12 @@ const OPTION_LABELS = {
     save_dtype: {
         int8: "int8（体积减半，推荐）",
         fp16: "fp16（旧格式，体积翻倍）",
+    },
+    playback_speed: {
+        "1.0x": "1.0x（原速，默认）",
+        "0.75x": "0.75x（慢放到 75%）",
+        "0.5x": "0.5x（慢放到 50%）",
+        custom: "custom（自定义 0.1~1.0x）",
     },
 };
 
@@ -113,9 +125,23 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             const r = originalCreated ? originalCreated.apply(this, arguments) : undefined;
             try {
+                const lifetime = this._h3lvmSmartLifetime ?? new AbortController();
+                this._h3lvmSmartLifetime = lifetime;
                 translateWidgets(this);
                 hideProjectWidget(this);
-                installSmartPanel(this);
+                hideParameterWidgets(this, SMART_SPLIT_SETTINGS_SECTIONS, ["segment_id"]);
+                const settings = createParameterPanel(this, {
+                    sections: SMART_SPLIT_SETTINGS_SECTIONS,
+                    labels: LABELS,
+                    tooltips: TOOLTIPS,
+                    optionLabels: OPTION_LABELS,
+                    signal: lifetime.signal,
+                });
+                this._h3lvmSettingsRefresh = settings.refresh;
+                installSmartPanel(this, {
+                    leading: settings.element,
+                    leadingHeight: settings.minHeight,
+                });
             } catch (error) {
                 console.warn("[H3 LVM] smart split node UI setup failed (node still works):", error);
             }
@@ -131,6 +157,7 @@ app.registerExtension({
                 console.warn("[H3 LVM] could not prepare the saved project:", error);
             }
             const r = originalConfigure ? originalConfigure.apply(this, arguments) : undefined;
+            this._h3lvmSettingsRefresh?.();
             this._h3lvmRefreshProjects?.();
             this._h3lvmDeckRefresh?.();
             return r;
@@ -148,11 +175,18 @@ app.registerExtension({
             this._h3lvmSmartLifetime?.abort();
             return originalRemoved ? originalRemoved.apply(this, arguments) : undefined;
         };
+
+        const originalConnectionsChange = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function () {
+            const result = originalConnectionsChange?.apply(this, arguments);
+            this._h3lvmSettingsRefresh?.();
+            return result;
+        };
     },
 });
 
 // --- The panel: project menu + the shared card deck ---
-export function installSmartPanel(node, { leading = null } = {}) {
+export function installSmartPanel(node, { leading = null, leadingHeight = 0 } = {}) {
     const lifetime = node._h3lvmSmartLifetime ?? new AbortController();
     node._h3lvmSmartLifetime = lifetime;
     const signal = lifetime.signal;
@@ -177,8 +211,8 @@ export function installSmartPanel(node, { leading = null } = {}) {
 
     // Row 2 - the same card deck as the Manager node. Both nodes write into the same
     // bin, so both show the same cards; the deck code lives in deck_panel.js so the
-    // two panels cannot drift apart. Clicking a card sets 输出片段编号, and 合并模式
-    // joins the cards that automatic splitting cut too small.
+    // two panels cannot drift apart. Card selection still updates the hidden legacy
+    // segment_id for old downstream links; the parameter panel no longer exposes it.
     const deck = createDeck({
         node,
         signal,
@@ -188,7 +222,7 @@ export function installSmartPanel(node, { leading = null } = {}) {
         onRefresh: () => void menu.refresh(),
     });
 
-    addPanel(node, "h3lvm_smart_panel", container, PANEL_H + (leading ? 48 : 0));
+    addPanel(node, "h3lvm_smart_panel", container, PANEL_H + (leading ? leadingHeight : 0));
 
     // The deck belongs to the bin, not to this page visit: opening the workflow again
     // shows the cards right away. The project name is only restored in configure(),

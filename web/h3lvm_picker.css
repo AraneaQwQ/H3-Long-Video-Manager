@@ -17,6 +17,196 @@
     box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
+.h3lvm-parameter-panel {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid #3a3a3a;
+    box-sizing: border-box;
+}
+
+.h3lvm-v2-leading {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.h3lvm-parameter-section {
+    overflow: hidden;
+    background: #191c23;
+    border: 1px solid #343a47;
+    border-radius: 7px;
+}
+
+.h3lvm-parameter-title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 26px;
+    padding: 0 9px;
+    box-sizing: border-box;
+    color: #dbeafe;
+    background: #222834;
+    border-bottom: 1px solid #343a47;
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.h3lvm-parameter-index {
+    color: #7dd3fc;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 10px;
+    font-weight: 500;
+}
+
+.h3lvm-parameter-fields {
+    padding: 3px 8px;
+}
+
+.h3lvm-parameter-field {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 30px;
+    min-width: 0;
+    box-sizing: border-box;
+    color: #cbd5e1;
+    font-size: 12px;
+}
+
+.h3lvm-parameter-field + .h3lvm-parameter-field {
+    border-top: 1px solid rgba(71, 85, 105, 0.24);
+}
+
+.h3lvm-parameter-label {
+    flex: 0 0 44%;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    white-space: nowrap;
+}
+
+.h3lvm-parameter-note {
+    color: #7b8798;
+    font-size: 10px;
+    font-weight: 400;
+}
+
+.h3lvm-parameter-select,
+.h3lvm-parameter-number {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    height: 23px;
+    box-sizing: border-box;
+    padding: 2px 7px;
+    color: #e2e8f0;
+    background: #0f141d;
+    border: 1px solid #465163;
+    border-radius: 4px;
+    outline: none;
+    font-size: 12px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.h3lvm-parameter-select:hover,
+.h3lvm-parameter-number:hover {
+    border-color: #64748b;
+    background: #141b26;
+}
+
+.h3lvm-parameter-select:focus,
+.h3lvm-parameter-number:focus {
+    border-color: #60a5fa;
+    background: #111c2a;
+}
+
+.h3lvm-parameter-select:disabled,
+.h3lvm-parameter-number:disabled {
+    color: #758094;
+    background: #15181e;
+    border-color: #303642;
+    cursor: not-allowed;
+}
+
+.h3lvm-parameter-preset-number {
+    flex: 1 1 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+}
+
+.h3lvm-parameter-switch {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+    min-width: 76px;
+    padding: 2px 0 2px 8px;
+    color: #94a3b8;
+    background: transparent;
+    border: 0;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.h3lvm-parameter-track {
+    position: relative;
+    width: 32px;
+    height: 17px;
+    box-sizing: border-box;
+    background: #343b48;
+    border: 1px solid #515b6c;
+    border-radius: 10px;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.h3lvm-parameter-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 11px;
+    height: 11px;
+    background: #a7b0bf;
+    border-radius: 50%;
+    transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.h3lvm-parameter-switch:hover .h3lvm-parameter-track {
+    border-color: #7dd3fc;
+}
+
+.h3lvm-parameter-switch.is-on {
+    color: #bfdbfe;
+}
+
+.h3lvm-parameter-switch.is-on .h3lvm-parameter-track {
+    background: #2563eb;
+    border-color: #60a5fa;
+}
+
+.h3lvm-parameter-switch.is-on .h3lvm-parameter-thumb {
+    background: #eff6ff;
+    transform: translateX(15px);
+}
+
+.h3lvm-parameter-switch:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+}
+
+.h3lvm-parameter-field.is-disabled > .h3lvm-parameter-label {
+    color: #758094;
+}
+
 /* Row 1 - which bin is being read. Picking the wrong bin is the easiest mistake in
    this workflow, so this row is the widest and brightest thing in the panel. */
 .h3lvm-project-row {

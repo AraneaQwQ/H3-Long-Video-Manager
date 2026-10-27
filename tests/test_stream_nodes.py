@@ -80,6 +80,51 @@ class TestStreamNodes(unittest.TestCase):
         self.assertEqual(save.call_args_list[1].kwargs["thumbnail_frame"], 5)
         self.assertEqual(save.call_args_list[1].kwargs["meta"]["main_start"], 24)
 
+    def test_manager_v2_half_speed_slows_video_audio_and_project_metadata(self):
+        path = self.clip(name="manager-slow.mp4", fps=24, duration=2.0, audio=True)
+        output = NODES.H3LongVideoManagerV2.execute(
+            video="", custom_path=path, segment_duration=1.0,
+            motion_context_frames="0", segment_id=2, align_to_h3_grid=False,
+            project_name="StreamSlow", save_enabled=True,
+            playback_speed="0.5x",
+        ).args
+        self.assertEqual(output[0].shape[0], 24)
+        self.assertEqual(output[2:], (24, 4))
+        self.assertEqual(output[1]["waveform"].shape[-1], output[1]["sample_rate"])
+        playback = self.store.load_project_index("StreamSlow")["playback"]
+        self.assertEqual(playback["playback_speed"], 0.5)
+        self.assertEqual(playback["source_frames"], 48)
+        self.assertEqual(playback["processed_frames"], 96)
+        _video, _audio, segment = self.store.load_segment("StreamSlow", 2)
+        self.assertEqual(segment["playback_speed"], 0.5)
+
+    def test_smart_v2_half_speed_detects_on_the_slowed_timeline(self):
+        path = self.clip(name="smart-slow.mp4", fps=24, duration=2.0)
+        with mock.patch.object(self.module, "_detect_file_cuts",
+                               return_value=(96, [48], {"method": "mock"})) as detect:
+            output = NODES.H3SmartSplitV2.execute(
+                video="", custom_path=path, detection_sensitivity="medium",
+                motion_context_frames="0", segment_id=2,
+                project_name="StreamSmartSlow", save_enabled=False,
+                playback_speed="0.5x",
+            ).args
+        self.assertEqual(output[0].shape[0], 48)
+        self.assertEqual(output[2:], (48, 2))
+        self.assertEqual(detect.call_args.kwargs["playback_speed"], 0.5)
+
+    def test_v2_playback_inputs_are_appended_and_cached(self):
+        for node in (NODES.H3LongVideoManagerV2, NODES.H3SmartSplitV2):
+            schema = node.define_schema()
+            ids = [item.id for item in schema.inputs]
+            self.assertEqual(ids[-2:], ["playback_speed", "playback_speed_custom"])
+            self.assertEqual(schema.inputs[-2].default, "1.0x")
+            self.assertEqual(schema.inputs[-1].default, 1.0)
+            base = node.fingerprint_inputs(
+                save_enabled=False, video="", custom_path="", playback_speed="1.0x")
+            slowed = node.fingerprint_inputs(
+                save_enabled=False, video="", custom_path="", playback_speed="0.5x")
+            self.assertNotEqual(base, slowed)
+
     def test_stream_detection_matches_established_tensor_detection(self):
         from comfyui.video_decode import decode_video
         from core.smart_split import detect_scene_cuts
@@ -90,7 +135,24 @@ class TestStreamNodes(unittest.TestCase):
         self.assertEqual(total, video.shape[0])
         self.assertEqual(actual, expected)
 
-    def test_v2_ids_and_outputs_are_independent(self):
+    def test_slowed_stream_detection_matches_slowed_tensor_detection(self):
+        from comfyui.video_decode import decode_video
+        from core.frame_rate import slowdown_video
+        from core.smart_split import detect_scene_cuts
+        path = self.clip(name="detect-slow.mp4", fps=24, duration=2.0)
+        video, _audio, _info = decode_video(path)
+        slowed = slowdown_video(video, 0.5)
+        expected, _ = detect_scene_cuts(slowed, slowed.shape[0], 24, "medium")
+        stats = {}
+        total, actual, _ = self.module._detect_file_cuts(
+            path, "medium", slowed.shape[0], playback_speed=0.5,
+            playback_stats=stats)
+        self.assertEqual(total, slowed.shape[0])
+        self.assertEqual(actual, expected)
+        self.assertEqual(stats["source_frames"], video.shape[0])
+        self.assertEqual(stats["processed_frames"], slowed.shape[0])
+
+    def test_producer_ids_outputs_and_standalone_execution(self):
         manager = NODES.H3LongVideoManagerV2.define_schema()
         smart = NODES.H3SmartSplitV2.define_schema()
         self.assertEqual(manager.node_id, "H3 Long Video Manager v2")
@@ -102,8 +164,8 @@ class TestStreamNodes(unittest.TestCase):
                          ["IMAGE", "AUDIO", "frame_count", "total_segments"])
         self.assertTrue(manager.is_output_node)
         self.assertTrue(smart.is_output_node)
-        self.assertFalse(NODES.H3LongVideoManager.define_schema().is_output_node)
-        self.assertFalse(NODES.H3SmartSplit.define_schema().is_output_node)
+        self.assertTrue(NODES.H3LongVideoManager.define_schema().is_output_node)
+        self.assertTrue(NODES.H3SmartSplit.define_schema().is_output_node)
 
 
 if __name__ == "__main__":

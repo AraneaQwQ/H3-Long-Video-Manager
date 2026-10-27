@@ -59,7 +59,7 @@ MANAGER_INPUTS = [
     "video", "fps", "segment_duration", "motion_context_frames", "segment_id",
     "audio", "scale_percent", "align_to_h3_grid", "project_name", "save_enabled",
     "save_preview_mp4", "final_align", "person_crop", "person_crop_expand_percent",
-    "save_dtype",
+    "save_dtype", "playback_speed", "playback_speed_custom",
 ]
 
 
@@ -116,7 +116,7 @@ class TestNodeSchema(unittest.TestCase):
 SMART_INPUTS = [
     "video", "fps", "detection_sensitivity", "motion_context_frames", "segment_id",
     "audio", "scale_percent", "project_name", "save_enabled", "save_preview_mp4",
-    "save_dtype",
+    "save_dtype", "playback_speed", "playback_speed_custom",
 ]
 
 

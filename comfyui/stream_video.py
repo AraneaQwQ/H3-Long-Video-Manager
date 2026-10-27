@@ -10,6 +10,7 @@ from typing import Iterator, Optional, Tuple
 import numpy as np
 import torch
 
+from .playback_audio import _slowdown_audio
 from .video_decode import (
     MAX_DECODE_FRAMES,
     TARGET_FPS,
@@ -182,8 +183,12 @@ def decode_audio_range(
     start_frame: int,
     frame_count: int,
     target_fps: int = TARGET_FPS,
+    playback_speed: float = 1.0,
 ):
     """Seek and decode one segment's audio; pad only this segment to the video length."""
+    speed = float(playback_speed)
+    if not 0 < speed <= 1.0:
+        raise ValueError("playback_speed must be in (0, 1]")
     av = _av()
     try:
         container = av.open(path)
@@ -195,9 +200,10 @@ def decode_audio_range(
             return None
         stream = streams[0]
         rate = int(getattr(stream, "rate", 0) or 44100)
-        start_seconds = max(0.0, int(start_frame) / float(target_fps))
-        end_seconds = start_seconds + int(frame_count) / float(target_fps)
-        target_samples = max(1, int(int(frame_count) / float(target_fps) * rate))
+        start_seconds = max(0.0, float(start_frame) * speed / float(target_fps))
+        source_frames = float(frame_count) * speed
+        end_seconds = start_seconds + source_frames / float(target_fps)
+        target_samples = max(1, int(source_frames / float(target_fps) * rate))
         layout = getattr(getattr(stream, "layout", None), "name", None)
         try:
             resampler = (av.AudioResampler(format="s16p", layout=layout, rate=rate) if layout
@@ -259,7 +265,18 @@ def decode_audio_range(
             length = overlap_end - overlap_start
             output[:, destination:destination + length] = samples[:, source:source + length]
         waveform = torch.from_numpy(np.ascontiguousarray(output.astype(np.float32) / 32768.0))
-        return {"waveform": waveform.unsqueeze(0), "sample_rate": rate}
+        result = {"waveform": waveform.unsqueeze(0), "sample_rate": rate}
+        if speed < 1.0:
+            result = _slowdown_audio(result, speed)
+            slowed_samples = max(1, int(int(frame_count) / float(target_fps) * rate))
+            slowed = result["waveform"]
+            if slowed.shape[-1] > slowed_samples:
+                slowed = slowed[..., :slowed_samples]
+            elif slowed.shape[-1] < slowed_samples:
+                slowed = torch.nn.functional.pad(
+                    slowed, (0, slowed_samples - slowed.shape[-1]))
+            result["waveform"] = slowed.contiguous()
+        return result
     finally:
         container.close()
 
