@@ -18,6 +18,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 from tests._temp_dir import make_temp_dir
 
@@ -292,6 +293,15 @@ class TestLibrarySplit(LibraryFixture):
         self.assertEqual([row["name"] for row in list_reference_projects(IMAGE)], ["story"])
         self.assertEqual([row["name"] for row in list_reference_projects(AUDIO)], ["story"])
         self.assertNotEqual(preset_path(IMAGE, "story"), preset_path(AUDIO, "story"))
+
+    def test_project_listing_reads_an_image_preset_only_once(self):
+        save_references(IMAGE, "story", entries_for("a.png"))
+        with mock.patch.object(ref_presets, "load_references",
+                               wraps=ref_presets.load_references) as load:
+            rows = list_reference_projects(IMAGE)
+        self.assertEqual(load.call_count, 1)
+        self.assertEqual(rows[0][LIST_KEY], 1)
+        self.assertIn("a.png", rows[0]["cover_url"])
 
     def test_a_project_in_one_library_is_invisible_in_the_other(self):
         save_references(IMAGE, "images-only", entries_for("a.png"))

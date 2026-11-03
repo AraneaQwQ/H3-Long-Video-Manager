@@ -16,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 _PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PLUGIN_ROOT not in sys.path:
@@ -35,6 +36,7 @@ except ImportError:
 READY = have_ffmpeg() and HAS_AV
 
 from comfyui import segment_store
+from comfyui import uploaded_video_store
 from comfyui.uploaded_video_store import (ALLOWED_SUFFIXES, BIN_DIR_NAME, INDEX_NAME,
                                           MAX_SEGMENT_ID, checked_upload_file,
                                           count_uploads, create_upload_project, delete_upload,
@@ -317,6 +319,14 @@ class TestProjectNames(StoreFixture):
         create_upload_project("fresh")
         self.assertEqual([row["name"] for row in list_upload_projects()], ["fresh"])
         self.assertEqual(list_upload_projects()[0]["videos"], 0)
+
+    def test_project_listing_reads_an_upload_index_only_once(self):
+        create_upload_project("fresh")
+        with mock.patch.object(uploaded_video_store, "load_upload_index",
+                               wraps=uploaded_video_store.load_upload_index) as load:
+            rows = list_upload_projects()
+        self.assertEqual(load.call_count, 1)
+        self.assertEqual(rows[0]["videos"], 0)
 
 
 if __name__ == "__main__":

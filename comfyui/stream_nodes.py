@@ -23,7 +23,8 @@ from ..core.smart_split import (
 )
 from ..core.stream_segments import iter_fixed_segment_batches, iter_smart_segment_batches
 from .segment_store import (
-    DEFAULT_PROJECT, normalize_save_dtype, save_segment, set_project_playback_meta,
+    DEFAULT_PROJECT, delete_segments_after, normalize_save_dtype, save_segment,
+    set_project_playback_meta,
 )
 from .stream_video import decode_audio_range, iter_video_frames, silent_audio, stack_uint8
 from .video_decode import TARGET_FPS, probe_video
@@ -162,6 +163,12 @@ def _run_batches(
             "processed_duration_sec": round(processed_frames / float(TARGET_FPS), 4),
         })
         set_project_playback_meta(project, playback)
+        try:
+            removed = delete_segments_after(project, total)
+            if removed:
+                print(f"[H3 v2] re-cut cleanup: removed stale segments {removed} from '{project}'")
+        except Exception as exc:
+            print(f"[H3 v2] WARNING: re-cut cleanup failed for '{project}': {exc}")
         _notify(project, saved_ids)
         print(f"[H3 v2] saved {total} streaming segments -> '{project}' "
               f"({normalize_save_dtype(save_dtype)})")

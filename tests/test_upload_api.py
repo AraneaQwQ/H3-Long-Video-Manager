@@ -140,6 +140,17 @@ class ApiFixture(unittest.IsolatedAsyncioTestCase):
         return make_clip(os.path.join(self.case, name), fps=24, duration=1.0, **kwargs)
 
 class TestProjectScope(ApiFixture):
+    async def create_in_every_scope(self, project):
+        for scope in ("segments", "uploads", "image", "audio"):
+            response = await self.post_json(
+                "/h3_lvm/project", {"project": project, "scope": scope})
+            self.assertEqual(response.status, 200)
+
+    async def project_names(self, scope):
+        response = await self.get("/h3_lvm/projects?scope=" + scope)
+        self.assertEqual(response.status, 200)
+        return [row["name"] for row in (await response.json())["projects"]]
+
     async def test_uploads_scope_lists_its_own_projects(self):
         created = await self.post_json("/h3_lvm/project", {"project": "show", "scope": "uploads"})
         self.assertEqual(created.status, 200)
@@ -195,6 +206,44 @@ class TestProjectScope(ApiFixture):
         refused = await self.post_json("/h3_lvm/project", {"project": "x", "scope": "uploads"},
                                        content_type="text/plain")
         self.assertEqual(refused.status, 415)
+
+    async def test_rename_moves_all_four_libraries(self):
+        await self.create_in_every_scope("Story")
+        response = await self.post_json(
+            "/h3_lvm/project/rename", {"project": "Story", "new_name": "Renamed"})
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["renamed"],
+                         ["segments", "uploads", "image", "audio"])
+        for scope in ("segments", "uploads", "image", "audio"):
+            self.assertEqual(await self.project_names(scope), ["Renamed"])
+
+    async def test_rename_conflict_leaves_every_source_untouched(self):
+        await self.create_in_every_scope("Story")
+        created = await self.post_json(
+            "/h3_lvm/project", {"project": "Renamed", "scope": "audio"})
+        self.assertEqual(created.status, 200)
+        response = await self.post_json(
+            "/h3_lvm/project/rename", {"project": "Story", "new_name": "Renamed"})
+        self.assertEqual(response.status, 400)
+        for scope in ("segments", "uploads", "image"):
+            self.assertEqual(await self.project_names(scope), ["Story"])
+        self.assertEqual(await self.project_names("audio"), ["Renamed", "Story"])
+
+    async def test_rename_failure_rolls_back_every_completed_library(self):
+        await self.create_in_every_scope("Story")
+        real_rename = server_api.rename_reference_project
+
+        def fail_on_audio(kind, old, new):
+            if kind == "audio" and old == "Story" and new == "Renamed":
+                raise OSError("injected rename failure")
+            return real_rename(kind, old, new)
+
+        with mock.patch.object(server_api, "rename_reference_project", side_effect=fail_on_audio):
+            response = await self.post_json(
+                "/h3_lvm/project/rename", {"project": "Story", "new_name": "Renamed"})
+        self.assertEqual(response.status, 409)
+        for scope in ("segments", "uploads", "image", "audio"):
+            self.assertEqual(await self.project_names(scope), ["Story"])
 
 
 class TestUploadRoutes(ApiFixture):

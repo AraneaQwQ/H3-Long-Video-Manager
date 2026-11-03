@@ -29,7 +29,9 @@ import os
 import shutil
 import tempfile
 import threading
+from datetime import datetime
 from typing import Any, Dict, List
+from urllib.parse import urlencode
 
 from ..core.ref_media import MAX_REF_AUDIOS, MAX_REF_IMAGES, parse_media_list
 from .segment_store import (
@@ -53,6 +55,7 @@ LEGACY_KEYS = {"image": "images", "audio": "audios"}
 
 _locks: Dict[str, threading.RLock] = {}
 _locks_guard = threading.Lock()
+_rename_lock = threading.Lock()
 
 
 def check_kind(kind: Any) -> str:
@@ -203,8 +206,38 @@ def count_references(kind: Any, project: Any) -> int:
     return len(load_references(kind, project)[LIST_KEY])
 
 
+def _reference_cover_url(kind: str, project: str, entries=None) -> str:
+    """First reference card's /view URL; audio libraries have no image cover."""
+    if kind != "image":
+        return ""
+    if entries is None:
+        try:
+            entries = load_references(kind, project)[LIST_KEY]
+        except ValueError:
+            return ""
+    if not entries:
+        return ""
+    entry = entries[0]
+    filename = str(entry.get("filename") or "")
+    if not filename:
+        return ""
+    return "/view?" + urlencode({
+        "filename": filename,
+        "subfolder": str(entry.get("subfolder") or ""),
+        "type": str(entry.get("type") or "input"),
+    })
+
+
+def _preset_updated_at(kind: str, project: str) -> str:
+    try:
+        mtime = os.path.getmtime(preset_path(kind, project))
+    except OSError:
+        return ""
+    return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def list_reference_projects(kind: Any) -> List[Dict[str, Any]]:
-    """Every project in one kind's library, with its card count.
+    """Every project in one kind's library, with count, cover and update time.
 
     A library bin is a folder that holds a preset file - an empty project holds an empty
     list, which is still a valid place to save the next combination, so nothing here is
@@ -216,8 +249,15 @@ def list_reference_projects(kind: Any) -> List[Dict[str, Any]]:
         return []
     out: List[Dict[str, Any]] = []
     for name in sorted(os.listdir(base)):
-        if os.path.isfile(os.path.join(base, name, PRESET_NAME)):
-            out.append({"name": name, LIST_KEY: count_references(kind, name)})
+        if not os.path.isfile(os.path.join(base, name, PRESET_NAME)):
+            continue
+        entries = load_references(kind, name)[LIST_KEY]
+        out.append({
+            "name": name,
+            LIST_KEY: len(entries),
+            "cover_url": _reference_cover_url(kind, name, entries),
+            "updated_at": _preset_updated_at(kind, name),
+        })
     return out
 
 
@@ -273,3 +313,28 @@ def delete_reference_project(kind: Any, project: Any, confirm: Any = "") -> Dict
         shutil.rmtree(target)  # Never hide permission / in-use errors from the UI.
     logger.info("[H3 Ref Libraries] Deleted the %s project '%s' (%d cards)", kind, name, cards)
     return {"name": name, "kind": kind, "deleted": True, LIST_KEY: cards}
+
+
+def rename_reference_project(kind: Any, project: Any, new_name: Any) -> Dict[str, Any]:
+    """Rename one kind's reference project and rewrite its preset name."""
+    kind = check_kind(kind)
+    old = sanitize_project_name(project)
+    new = _checked_name(new_name)
+    if old == new:
+        return {"old": old, "name": new, "kind": kind, "renamed": False}
+    with _rename_lock, _library_lock(kind, old), _library_lock(kind, new):
+        old_dir = ref_project_dir(kind, old, create=False)
+        new_dir = ref_project_dir(kind, new, create=False)
+        if not os.path.isfile(os.path.join(old_dir, PRESET_NAME)):
+            raise FileNotFoundError("%s 参考库项目「%s」不存在。" % (kind, old))
+        if os.path.exists(new_dir):
+            raise ValueError("%s 参考库项目「%s」已存在，请换一个名字。" % (kind, new))
+        shutil.move(old_dir, new_dir)
+        try:
+            entries = load_references(kind, new)[LIST_KEY]
+            _write_preset(kind, new, entries)
+        except Exception:
+            shutil.move(new_dir, old_dir)
+            raise
+    logger.info("[H3 Ref Libraries] Renamed the %s project '%s' -> '%s'", kind, old, new)
+    return {"old": old, "name": new, "kind": kind, "renamed": True}

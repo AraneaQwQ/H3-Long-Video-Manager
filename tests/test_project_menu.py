@@ -89,7 +89,12 @@ class TestProjectListing(ProjectFixture):
 
     def test_an_empty_bin_is_still_offered(self):
         create_project("Fresh")
-        self.assertEqual(list_projects_with_counts(), [{"name": "Fresh", "segments": 0}])
+        self.assertEqual(list_projects_with_counts(), [{
+            "name": "Fresh",
+            "segments": 0,
+            "cover_url": "",
+            "updated_at": "",
+        }])
 
 
 class TestProjectCreation(ProjectFixture):

@@ -1,37 +1,24 @@
 // RAFOLIE 2026-10-03: the project bin menu, shared by both panels.
 //
-// Why: the Segment Picker already had a labelled project row with inline create and
-// delete, and the Manager node had a raw canvas dropdown instead. Same action, two
-// looks — so the row now lives here once and both nodes use it.
+// The menu writes through the node widget (project_name), so the graph and any
+// saved workflow keep the same field; nothing here is stored twice.
 //
-// It writes through the node widget (project_name) so the graph and any saved
-// workflow keep the same field; nothing here is stored twice.
+// 2026-11-02: the plain <select> became a card grid. A name alone is hard to
+// scan once a story has several bins, so each project shows its first saved
+// card as a cover, its count and its last update. Rename, create and delete
+// live in the same popup; selecting a card still only writes project_name.
 
 import { api } from "../../scripts/api.js";
 
 const DEFAULT_PROJECT = "H3_LVM";
 
-// Menu actions rather than bin names.
-const NEW_PROJECT = "__h3lvm_new__";
-const DELETE_PROJECT = "__h3lvm_delete__";
-
-/**
- * @param {object} options
- * @param {object} options.node     the LGraphNode that owns the project_name widget
- * @param {object} options.widget   the project_name widget (string or combo)
- * @param {AbortSignal} options.signal  dies with the node
- * @param {"segments" | "uploads" | "image" | "audio"} [options.scope]  which library this menu reads, creates and deletes
- * @param {(name: string) => void} [options.onChange]  called after the bin changes
- * @returns {{element: HTMLElement, refresh: () => Promise<void>, name: () => string}}
- */
 // What a menu is allowed to say about one library. Every scope counts a different
 // key ("segments" / "videos" / "references") and holds a different thing, so the
-// unit word and the delete warning belong here rather than in a refScope boolean:
-// "N 段" is wrong for a video library and "N 张参考" is wrong for both.
+// unit word and the delete warning belong here rather than in a refScope boolean.
 const REFERENCE_CONFIG = {
     field: "references",
     label: "📦 项目素材库",
-    labelTitle: "打开菜单可以切换项目，也可以新建或删除项目",
+    labelTitle: "打开菜单可以切换项目，也可以新建、重命名或删除项目",
     placeholder: "新项目名（例如：科幻短片 01）",
     empty: "无预设",
     count: (total) => `${total} 张参考`,
@@ -42,7 +29,7 @@ const SCOPE_CONFIG = {
     segments: {
         field: "segments",
         label: "📦 项目素材库",
-        labelTitle: "打开菜单可以切换项目，也可以新建或删除项目",
+        labelTitle: "打开菜单可以切换项目，也可以新建、重命名或删除项目",
         placeholder: "新项目名（例如：科幻短片 01）",
         empty: "空库",
         count: (total) => `${total} 段`,
@@ -52,7 +39,7 @@ const SCOPE_CONFIG = {
     uploads: {
         field: "videos",
         label: "📦 项目视频库",
-        labelTitle: "当前模式的投放视频库；这里的新建/删除只影响投放视频，不动裁切片段库",
+        labelTitle: "当前模式的投放视频库；这里的新建/重命名/删除会同时处理同名项目",
         placeholder: "新项目名（例如：投放素材 01）",
         empty: "空视频库",
         count: (total) => `${total} 个视频`,
@@ -64,97 +51,243 @@ const SCOPE_CONFIG = {
     audio: REFERENCE_CONFIG,
 };
 
+const COVER_ICON = { segments: "🎬", uploads: "📹", image: "🖼️", audio: "🎵" };
+
+// One popup at a time. Opening a second menu closes the first one, which is
+// what a click outside already looks like.
+let openMenuClose = null;
+const projectRequests = new Map();
+
+function fetchProjectBins(url) {
+    if (!projectRequests.has(url)) {
+        const request = (async () => {
+            const res = await api.fetchApi(url, { cache: "no-store" });
+            if (!res.ok) return [];
+            const data = await res.json().catch(() => ({}));
+            return Array.isArray(data.projects) ? data.projects : [];
+        })().finally(() => { projectRequests.delete(url); });
+        projectRequests.set(url, request);
+    }
+    return projectRequests.get(url);
+}
+
+function fullTime(value) {
+    return String(value ?? "").trim().replace("T", " ");
+}
+
+function makeElement(tag, className, text) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text !== undefined) element.textContent = text;
+    return element;
+}
+
 export function createProjectMenu({ node, widget, signal, scope = "segments", onChange }) {
     // An unknown scope reads as the cut-segment bin, which is what the backend does.
     const config = SCOPE_CONFIG[scope] ?? SCOPE_CONFIG.segments;
     const refScope = config.field === "references";
     let bins = [];
+    let currentPaintKey = "";
+    let inFlight = null;
+    let search = "";
+    let editingName = "";
+    let pendingDelete = "";
+    let modalOpen = false;
+    let sortField = "name"; // name | updated
+    let sortDir = "asc";    // asc | desc
+    let projectColumns = 5; // 3..6 cards per row
+    const sortStoreKey = `h3lvm.projectSort.${scope}`;
+    const columnsStoreKey = "h3lvm.projectColumns";
+    try {
+        const saved = JSON.parse(localStorage.getItem(sortStoreKey) || "{}");
+        if (saved.field === "name" || saved.field === "updated") sortField = saved.field;
+        if (saved.dir === "asc" || saved.dir === "desc") sortDir = saved.dir;
+        const savedColumns = parseInt(localStorage.getItem(columnsStoreKey) || "", 10);
+        if (savedColumns >= 3 && savedColumns <= 6) projectColumns = savedColumns;
+    } catch (_) {
+        // Private mode or a broken preference must not break the menu.
+    }
 
     const root = document.createElement("div");
 
-    // Row 1 - which bin to read is the first decision in this workflow, so it gets
-    // a full-width labelled row of its own.
+    // Row 1 - the current bin is a card, not a bare line of text. Its cover is
+    // the first saved card's thumbnail; clicking anywhere on it opens the grid.
     const projectRow = document.createElement("div");
     projectRow.className = "h3lvm-project-row";
 
-    const projectLabel = document.createElement("span");
-    projectLabel.className = "h3lvm-project-label";
-    projectLabel.textContent = config.label;
+    const projectLabel = makeElement("span", "h3lvm-project-label", config.label);
     projectLabel.title = config.labelTitle;
 
-    const projectSelect = document.createElement("select");
-    projectSelect.className = "h3lvm-project";
-    projectSelect.title = `${config.labelTitle}；菜单内可新建或删除项目`;
+    const currentCard = makeElement("button", "h3lvm-project-current");
+    currentCard.type = "button";
+    currentCard.title = config.labelTitle;
+    const currentCover = makeElement("div", "h3lvm-project-current-cover");
+    const currentBody = makeElement("div", "h3lvm-project-current-body");
+    const currentNameText = makeElement("span", "h3lvm-project-current-name");
+    const currentMeta = makeElement("span", "h3lvm-project-current-meta");
+    const projectCount = makeElement("span", "h3lvm-count");
+    const currentUpdated = makeElement("span", "h3lvm-project-updated");
+    currentMeta.append(projectCount, currentUpdated);
+    currentBody.append(currentNameText, currentMeta);
+    currentCard.append(currentCover, currentBody);
 
-    const projectCount = document.createElement("span");
-    projectCount.className = "h3lvm-count";
-    projectCount.textContent = "读取中…";
-
-    projectRow.append(projectLabel, projectSelect, projectCount);
+    const chevron = makeElement("span", "h3lvm-project-chevron", "▾");
+    currentCard.append(chevron);
+    projectRow.append(projectLabel, currentCard);
     root.appendChild(projectRow);
 
-    // Name entry for a new bin; only visible while the menu is on "＋ 新建项目…".
-    const createRow = document.createElement("div");
-    createRow.className = "h3lvm-new";
+    // Popup: a fixed overlay escapes the DOM widget's overflow clipping, so the
+    // grid can be larger than the node without resizing the canvas node.
+    const overlay = makeElement("div", "h3lvm-project-overlay");
+    overlay.hidden = true;
+    const modal = makeElement("div", "h3lvm-project-modal");
+
+    const head = makeElement("div", "h3lvm-project-modal-head");
+    const title = makeElement("span", "h3lvm-project-modal-title", config.label);
+    const modalCount = makeElement("span", "h3lvm-project-modal-count");
+    const closeBtn = makeElement("button", "h3lvm-project-close", "✕");
+    closeBtn.type = "button";
+    closeBtn.title = "关闭项目菜单";
+    head.append(title, modalCount, closeBtn);
+
+    const searchRow = makeElement("div", "h3lvm-project-search-row");
+    const searchInput = document.createElement("input");
+    searchInput.type = "search";
+    searchInput.className = "h3lvm-project-search";
+    searchInput.placeholder = "搜索项目…";
+    const sortSelect = document.createElement("select");
+    sortSelect.className = "h3lvm-project-sort";
+    sortSelect.title = "项目排序字段";
+    for (const [value, text] of [["name", "按名称"], ["updated", "按修改时间"]]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = text;
+        sortSelect.appendChild(option);
+    }
+    const sortDirBtn = makeElement("button", "h3lvm-project-sort-dir");
+    sortDirBtn.type = "button";
+    const columnsSelect = document.createElement("select");
+    columnsSelect.className = "h3lvm-project-columns";
+    columnsSelect.title = "每行显示几个项目";
+    for (const count of [3, 4, 5, 6]) {
+        const option = document.createElement("option");
+        option.value = String(count);
+        option.textContent = `${count} 列`;
+        columnsSelect.appendChild(option);
+    }
+    const newBtn = makeElement("button", "h3lvm-refresh-btn", "＋ 新建项目");
+    newBtn.type = "button";
+    searchRow.append(searchInput, sortSelect, sortDirBtn, columnsSelect, newBtn);
+
+    const createRow = makeElement("div", "h3lvm-new");
     createRow.hidden = true;
     const nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.className = "h3lvm-new-input";
     nameInput.placeholder = config.placeholder;
-    const createBtn = document.createElement("button");
-    createBtn.className = "h3lvm-refresh-btn";
-    createBtn.textContent = "✔ 建立";
-    const cancelCreateBtn = document.createElement("button");
-    cancelCreateBtn.className = "h3lvm-refresh-btn";
-    cancelCreateBtn.textContent = "✕ 取消";
-    const createError = document.createElement("span");
-    createError.className = "h3lvm-new-error";
+    const createBtn = makeElement("button", "h3lvm-refresh-btn", "✔ 建立");
+    createBtn.type = "button";
+    const cancelCreateBtn = makeElement("button", "h3lvm-refresh-btn", "✕ 取消");
+    cancelCreateBtn.type = "button";
+    const createError = makeElement("span", "h3lvm-new-error");
     createRow.append(nameInput, createBtn, cancelCreateBtn, createError);
-    root.appendChild(createRow);
 
-    // Deleting a bin is the mirror of creating one, so it opens in the same place.
-    const deleteRow = document.createElement("div");
-    deleteRow.className = "h3lvm-new h3lvm-danger";
+    const deleteRow = makeElement("div", "h3lvm-new h3lvm-danger");
     deleteRow.hidden = true;
-    const deleteText = document.createElement("span");
-    deleteText.className = "h3lvm-danger-text";
-    const deleteBtn = document.createElement("button");
-    deleteBtn.className = "h3lvm-danger-btn";
-    const cancelDeleteBtn = document.createElement("button");
-    cancelDeleteBtn.className = "h3lvm-refresh-btn";
-    cancelDeleteBtn.textContent = "✕ 取消";
-    const deleteError = document.createElement("span");
-    deleteError.className = "h3lvm-new-error";
+    const deleteText = makeElement("span", "h3lvm-danger-text");
+    const deleteBtn = makeElement("button", "h3lvm-danger-btn");
+    deleteBtn.type = "button";
+    const cancelDeleteBtn = makeElement("button", "h3lvm-refresh-btn", "✕ 取消");
+    cancelDeleteBtn.type = "button";
+    const deleteError = makeElement("span", "h3lvm-new-error");
     deleteRow.append(deleteText, deleteBtn, cancelDeleteBtn, deleteError);
-    root.appendChild(deleteRow);
+
+    const grid = makeElement("div", "h3lvm-project-grid");
+    const modalHint = makeElement("span", "h3lvm-project-modal-hint");
+    modalHint.textContent = "点卡片切换项目 · ✎ 重命名会同步所有同名库 · 🗑 删除只处理当前库。";
+    modal.append(head, searchRow, createRow, deleteRow, grid, modalHint);
+    overlay.appendChild(modal);
+
+    document.body.appendChild(overlay);
+    // The popup sits above the canvas; keep its pointer events from panning or
+    // zooming the graph behind it.
+    for (const type of ["pointerdown", "mousedown", "click", "dblclick", "wheel"]) {
+        overlay.addEventListener(type, event => event.stopPropagation(), { signal });
+    }
 
     function currentName() {
         const raw = widget?.value;
         return typeof raw === "string" && raw.trim() ? raw.trim() : DEFAULT_PROJECT;
     }
 
-    // A count is only useful when it is the count of what this menu can read: the
-    // video bins report saved segments, a reference library reports its cards. Counting
-    // segments here is what made a bin full of reference presets show （空） forever.
-    function rawCount(bin, field) {
+    function rawCount(bin, field = config.field) {
         const value = Number(bin?.[field]);
         return Number.isFinite(value) && value > 0 ? value : 0;
     }
 
     function binTotal(bin) {
-        return rawCount(bin, config.field);
+        return rawCount(bin);
     }
 
     function countLabel(total) {
         return config.count(total);
     }
 
-    function emptyLabel() {
-        return config.empty;
+    function countTextFor(bin) {
+        const total = binTotal(bin);
+        return total ? `共 ${countLabel(total)}` : config.empty;
     }
 
-    // Deleting a bin always removes the whole folder, so the warning lists whatever is
-    // really in it - for the loaders that is the preset first, then any saved segments.
+    function updatedValue(bin) {
+        const raw = String(bin?.updated_at ?? "").trim();
+        if (!raw) return 0;
+        const stamp = Date.parse(raw.replace(" ", "T"));
+        return Number.isFinite(stamp) ? stamp : 0;
+    }
+
+    function sortedBins() {
+        const list = bins.slice();
+        list.sort((a, b) => {
+            if (sortField === "updated") {
+                const diff = updatedValue(a) - updatedValue(b);
+                if (diff) return diff;
+            }
+            return a.name.localeCompare(b.name, "zh-Hans-CN", {
+                numeric: true,
+                sensitivity: "base",
+            });
+        });
+        if (sortDir === "desc") list.reverse();
+        return list;
+    }
+
+    function saveSort() {
+        try {
+            localStorage.setItem(sortStoreKey, JSON.stringify({ field: sortField, dir: sortDir }));
+        } catch (_) {
+            // Preference storage is optional.
+        }
+    }
+
+    function syncSortUi() {
+        sortSelect.value = sortField;
+        sortDirBtn.textContent = sortDir === "asc" ? "↑" : "↓";
+        sortDirBtn.title = sortDir === "asc" ? "当前正序，点击切换为倒序" : "当前倒序，点击切换为正序";
+    }
+
+    function saveColumns() {
+        try {
+            localStorage.setItem(columnsStoreKey, String(projectColumns));
+        } catch (_) {
+            // Preference storage is optional.
+        }
+    }
+
+    function applyColumns() {
+        grid.style.setProperty("--project-cols", String(projectColumns));
+        columnsSelect.value = String(projectColumns);
+    }
+
     function deleteWarning(name, bin) {
         if (!refScope) {
             const total = binTotal(bin);
@@ -169,9 +302,320 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         return `删除「${name}」会同时删掉 ${parts.join(" 与 ")}，此操作不可撤销。`;
     }
 
-    // Creating a bin, the panel's own reload and the refresh button can all ask for
-    // the list at the same moment; one request at a time keeps the menu consistent.
-    let inFlight = null;
+    function makeCover(bin) {
+        const box = makeElement("div", "h3lvm-project-cover");
+        if (bin?.cover_url) {
+            const image = document.createElement("img");
+            image.loading = "lazy";
+            image.decoding = "async";
+            image.alt = "";
+            image.src = bin.cover_url;
+            image.onerror = () => {
+                image.remove();
+                box.appendChild(makeElement("span", "h3lvm-project-cover-icon",
+                    COVER_ICON[scope] || "📁"));
+            };
+            box.appendChild(image);
+        } else {
+            box.appendChild(makeElement("span", "h3lvm-project-cover-icon",
+                COVER_ICON[scope] || "📁"));
+        }
+        return box;
+    }
+
+    function paintCurrent() {
+        const active = currentName();
+        const bin = bins.find(item => item.name === active)
+            || { name: active, [config.field]: 0, cover_url: "", updated_at: "" };
+        const paintKey = JSON.stringify([active, bin]);
+        if (paintKey === currentPaintKey) return;
+        currentPaintKey = paintKey;
+        currentCover.textContent = "";
+        currentCover.appendChild(makeCover(bin));
+        currentNameText.textContent = active;
+        projectCount.textContent = countTextFor(bin);
+        const updated = fullTime(bin.updated_at);
+        currentUpdated.textContent = updated ? `更新 ${updated}` : "";
+        currentUpdated.title = updated ? `最后修改：${updated}` : "";
+        currentUpdated.hidden = !updated;
+        currentCard.title = `${config.labelTitle}：当前「${active}」`;
+    }
+
+    function makeAction(label, titleText, handler) {
+        const button = makeElement("button", "h3lvm-project-action", label);
+        button.type = "button";
+        button.title = titleText;
+        button.onclick = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            handler();
+        };
+        return button;
+    }
+
+    function renderTile(bin) {
+        const tile = makeElement("div", "h3lvm-project-tile");
+        tile.tabIndex = 0;
+        tile.setAttribute("role", "button");
+        tile.dataset.name = bin.name;
+        if (bin.name === currentName()) tile.classList.add("active");
+        tile.appendChild(makeCover(bin));
+
+        const body = makeElement("div", "h3lvm-project-tile-body");
+        if (editingName === bin.name) {
+            const input = document.createElement("input");
+            input.type = "text";
+            input.className = "h3lvm-project-rename-input";
+            input.value = bin.name;
+            const error = makeElement("span", "h3lvm-new-error");
+            const actions = makeElement("div", "h3lvm-project-rename-actions");
+            const save = makeElement("button", "h3lvm-refresh-btn", "✔ 保存");
+            save.type = "button";
+            const cancel = makeElement("button", "h3lvm-refresh-btn", "✕");
+            cancel.type = "button";
+            save.onclick = (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void commitRename(bin.name, input.value, error, save);
+            };
+            cancel.onclick = (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                editingName = "";
+                renderGrid();
+            };
+            input.onkeydown = (event) => {
+                event.stopPropagation();
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    void commitRename(bin.name, input.value, error, save);
+                }
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    editingName = "";
+                    renderGrid();
+                }
+            };
+            actions.append(save, cancel);
+            body.append(input, actions, error);
+        } else {
+            body.appendChild(makeElement("span", "h3lvm-project-tile-name", bin.name));
+            const meta = makeElement("div", "h3lvm-project-tile-meta");
+            meta.appendChild(makeElement("span", "h3lvm-project-tile-count", countTextFor(bin)));
+            const updated = fullTime(bin.updated_at);
+            if (updated) {
+                const time = makeElement("span", "h3lvm-project-tile-time", updated);
+                time.title = `最后修改：${updated}`;
+                meta.appendChild(time);
+            }
+            body.appendChild(meta);
+            const actions = makeElement("div", "h3lvm-project-actions");
+            actions.append(
+                makeAction("✎", "重命名这个项目", () => {
+                    pendingDelete = "";
+                    editingName = bin.name;
+                    renderGrid();
+                }),
+                makeAction("🗑", "删除这个项目", () => {
+                    editingName = "";
+                    showDeleteConfirm(bin);
+                }),
+            );
+            body.appendChild(actions);
+        }
+        tile.appendChild(body);
+
+        tile.onclick = (event) => {
+            if (event.target.closest("button, input")) return;
+            void chooseProject(bin.name);
+        };
+        tile.onkeydown = (event) => {
+            if (event.target !== tile) return;
+            if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                void chooseProject(bin.name);
+            }
+        };
+        return tile;
+    }
+
+    function renderGrid() {
+        const needle = search.trim().toLowerCase();
+        const ordered = sortedBins();
+        const filtered = needle
+            ? ordered.filter(bin => bin.name.toLowerCase().includes(needle))
+            : ordered;
+        grid.textContent = "";
+        modalCount.textContent = `${bins.length} 个库`;
+        if (!filtered.length) {
+            grid.appendChild(makeElement("div", "h3lvm-project-empty",
+                bins.length ? "没有匹配的项目。" : "还没有项目，点「＋ 新建项目」开始。"));
+            return;
+        }
+        const fragment = document.createDocumentFragment();
+        filtered.forEach(bin => fragment.appendChild(renderTile(bin)));
+        grid.appendChild(fragment);
+        if (editingName) {
+            const input = grid.querySelector(".h3lvm-project-rename-input");
+            if (input) requestAnimationFrame(() => {
+                input.focus();
+                input.select();
+            });
+        }
+    }
+
+    function closeCreateRow() {
+        createRow.hidden = true;
+        nameInput.value = "";
+        createError.textContent = "";
+    }
+
+    function closeDeleteRow() {
+        deleteRow.hidden = true;
+        pendingDelete = "";
+        deleteError.textContent = "";
+    }
+
+    function openModal() {
+        if (openMenuClose && openMenuClose !== closeModal) openMenuClose();
+        openMenuClose = closeModal;
+        modalOpen = true;
+        overlay.hidden = false;
+        searchInput.value = search;
+        closeCreateRow();
+        closeDeleteRow();
+        editingName = "";
+        renderGrid();
+        void refresh();
+    }
+
+    function closeModal() {
+        modalOpen = false;
+        overlay.hidden = true;
+        editingName = "";
+        pendingDelete = "";
+        closeCreateRow();
+        closeDeleteRow();
+        if (openMenuClose === closeModal) openMenuClose = null;
+    }
+
+    currentCard.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openModal();
+    };
+
+    closeBtn.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeModal();
+    };
+    overlay.onclick = (event) => {
+        if (event.target === overlay) closeModal();
+    };
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && modalOpen) {
+            event.stopPropagation();
+            closeModal();
+        }
+    }, { signal });
+
+    searchInput.oninput = () => {
+        search = searchInput.value;
+        renderGrid();
+    };
+    sortSelect.onchange = () => {
+        sortField = sortSelect.value === "updated" ? "updated" : "name";
+        saveSort();
+        syncSortUi();
+        renderGrid();
+    };
+    sortDirBtn.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        sortDir = sortDir === "asc" ? "desc" : "asc";
+        saveSort();
+        syncSortUi();
+        renderGrid();
+    };
+    columnsSelect.onchange = () => {
+        const next = parseInt(columnsSelect.value, 10);
+        if (next >= 3 && next <= 6) {
+            projectColumns = next;
+            saveColumns();
+            applyColumns();
+        }
+    };
+    newBtn.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeDeleteRow();
+        createRow.hidden = !createRow.hidden;
+        if (!createRow.hidden) nameInput.focus();
+    };
+    cancelCreateBtn.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeCreateRow();
+    };
+    nameInput.onkeydown = (event) => {
+        event.stopPropagation();
+        if (event.key === "Enter") {
+            event.preventDefault();
+            void createProject();
+        }
+        if (event.key === "Escape") closeCreateRow();
+    };
+
+    function showDeleteConfirm(bin) {
+        pendingDelete = bin.name;
+        closeCreateRow();
+        deleteText.textContent = deleteWarning(bin.name, bin);
+        deleteBtn.textContent = `✔ 删除「${bin.name}」`;
+        deleteError.textContent = "";
+        deleteRow.hidden = false;
+    }
+
+    cancelDeleteBtn.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeDeleteRow();
+    };
+    deleteBtn.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void deleteProject();
+    };
+
+    function updateWidgetValues() {
+        const active = currentName();
+        if (widget?.options) {
+            widget.options.values = [active, ...bins.map(bin => bin.name)]
+                .filter((name, index, all) => name && all.indexOf(name) === index);
+        }
+        if (widget && widget.value !== active) widget.value = active;
+    }
+
+    async function refreshBins() {
+        let list = [];
+        try {
+            list = (await fetchProjectBins(
+                `/h3_lvm/projects?scope=${encodeURIComponent(scope)}`)).slice();
+        } catch (error) {
+            if (!signal.aborted) console.warn("[H3 LVM] projects lookup failed:", error);
+        }
+        if (signal.aborted) return;
+
+        const active = currentName();
+        if (!list.some(bin => bin.name === active)) {
+            list.unshift({ name: active, [config.field]: 0, cover_url: "", updated_at: "" });
+        }
+        const changed = JSON.stringify(list) !== JSON.stringify(bins);
+        bins = list;
+        updateWidgetValues();
+        paintCurrent();
+        if (modalOpen && !editingName && changed) renderGrid();
+    }
 
     function refresh() {
         if (!inFlight) {
@@ -180,91 +624,27 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         return inFlight;
     }
 
-    async function refreshBins() {
-        let list = [];
-        let fetched = false;
-        try {
-            const res = await api.fetchApi(
-                `/h3_lvm/projects?scope=${encodeURIComponent(scope)}`,
-                { cache: "no-store" },
-            );
-            if (res.ok) {
-                const data = await res.json().catch(() => ({}));
-                list = Array.isArray(data.projects) ? data.projects : [];
-                fetched = true;
-            }
-        } catch (error) {
-            if (!signal.aborted) console.warn("[H3 LVM] projects lookup failed:", error);
-        }
-        if (signal.aborted) return;
-
-        const active = currentName();
-        if (!list.some(bin => bin.name === active)) {
-            list.unshift({ name: active, segments: 0, references: 0 });
-        }
-        bins = list;
-
-        // The number beside the menu is the bin total from this same reply, so the
-        // Manager panel shows a real count too instead of a stuck "reading" label.
-        if (fetched) {
-            const shown = bins.find(bin => bin.name === active);
-            if (shown) {
-                const total = binTotal(shown);
-                projectCount.textContent = total ? `共 ${countLabel(total)}` : emptyLabel();
-            }
-        }
-
-        projectSelect.innerHTML = "";
-        const newOption = document.createElement("option");
-        newOption.value = NEW_PROJECT;
-        newOption.textContent = "＋ 新建项目…";
-        projectSelect.appendChild(newOption);
-        for (const bin of bins) {
-            const option = document.createElement("option");
-            option.value = bin.name;
-            const total = binTotal(bin);
-            option.textContent = total ? `${bin.name} (${countLabel(total)})` : `${bin.name}（空）`;
-            if (bin.name === active) option.selected = true;
-            projectSelect.appendChild(option);
-        }
-        const deleteOption = document.createElement("option");
-        deleteOption.value = DELETE_PROJECT;
-        deleteOption.textContent = "🗑 删除当前项目…";
-        projectSelect.appendChild(deleteOption);
-
-        // A hidden canvas combo still has to accept the value the graph stores.
-        if (widget?.options) {
-            widget.options.values = [active, ...bins.map(bin => bin.name)]
-                .filter((name, index, all) => name && all.indexOf(name) === index);
-        }
-        if (widget && widget.value !== active) widget.value = active;
-    }
-
-    async function setProject(name) {
+    async function setProject(name, closeAfter = false) {
         closeCreateRow();
         closeDeleteRow();
+        editingName = "";
         if (widget) {
             widget.value = name;
             widget.callback?.(name);
             node.setDirtyCanvas?.(true, true);
         }
         onChange?.(name);
-        // The menu has to show the bin that was just created (and drop the one just
-        // deleted) on its own. Waiting for the panel to reload is what made 建立 look
-        // like it did nothing.
         await refresh();
+        if (closeAfter) closeModal();
     }
 
-    function openCreateRow() {
-        createRow.hidden = false;
-        createError.textContent = "";
-        nameInput.focus();
-    }
-
-    function closeCreateRow() {
-        createRow.hidden = true;
-        nameInput.value = "";
-        createError.textContent = "";
+    async function chooseProject(name) {
+        if (!name) return;
+        if (name === currentName()) {
+            closeModal();
+            return;
+        }
+        await setProject(name, true);
     }
 
     async function createProject() {
@@ -287,7 +667,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
                 createError.textContent = data.error || `建立失败（HTTP ${res.status}）`;
                 return;
             }
-            await setProject(data.name || typed);
+            await setProject(data.name || typed, true);
         } catch (error) {
             console.warn("[H3 LVM] create project failed:", error);
             createError.textContent = "建立失败：连不上后台服务。";
@@ -296,24 +676,43 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         }
     }
 
-    function openDeleteRow() {
-        const name = currentName();
-        const bin = bins.find(item => item.name === name) || { segments: 0, references: 0 };
-        deleteText.textContent = deleteWarning(name, bin);
-        deleteBtn.textContent = `✔ 删除「${name}」`;
-        deleteRow.dataset.project = name;
-        deleteError.textContent = "";
-        deleteRow.hidden = false;
+    async function commitRename(oldName, value, error, saveButton) {
+        const typed = value.trim();
+        if (!typed) {
+            error.textContent = "先写个名字。";
+            return;
+        }
+        if (typed === oldName) {
+            editingName = "";
+            renderGrid();
+            return;
+        }
+        saveButton.disabled = true;
+        error.textContent = "";
+        try {
+            const res = await api.fetchApi("/h3_lvm/project/rename", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ project: oldName, new_name: typed }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                error.textContent = data.error || `重命名失败（HTTP ${res.status}）`;
+                return;
+            }
+            const newName = data.name || typed;
+            const wasCurrent = currentName() === oldName;
+            editingName = "";
+            if (wasCurrent) await setProject(newName, false);
+            else await refresh();
+        } catch (err) {
+            console.warn("[H3 LVM] rename project failed:", err);
+            error.textContent = "重命名失败：连不上后台服务。";
+        } finally {
+            saveButton.disabled = false;
+        }
     }
 
-    function closeDeleteRow() {
-        deleteRow.hidden = true;
-        deleteRow.dataset.project = "";
-        deleteError.textContent = "";
-    }
-
-    // The panel always needs somewhere to point, so after a delete it moves to the
-    // default bin when there is one, otherwise to whatever is left.
     function nextProjectAfter(name) {
         const remaining = bins.map(item => item.name).filter(item => item && item !== name);
         if (remaining.includes(DEFAULT_PROJECT)) return DEFAULT_PROJECT;
@@ -321,7 +720,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     }
 
     async function deleteProject() {
-        const name = deleteRow.dataset.project;
+        const name = pendingDelete;
         if (!name) return;
         deleteBtn.disabled = true;
         deleteError.textContent = "";
@@ -336,7 +735,11 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
                 deleteError.textContent = data.error || `删除失败（HTTP ${res.status}）`;
                 return;
             }
-            await setProject(nextProjectAfter(name));
+            const wasCurrent = currentName() === name;
+            pendingDelete = "";
+            deleteRow.hidden = true;
+            if (wasCurrent) await setProject(nextProjectAfter(name), true);
+            else await refresh();
         } catch (error) {
             console.warn("[H3 LVM] delete project failed:", error);
             deleteError.textContent = "删除失败：连不上后台服务。";
@@ -345,42 +748,14 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         }
     }
 
-    projectSelect.onchange = () => {
-        const chosen = projectSelect.value;
-        if (chosen === NEW_PROJECT) {
-            projectSelect.value = currentName();
-            openCreateRow();
-            return;
-        }
-        if (chosen === DELETE_PROJECT) {
-            projectSelect.value = currentName();
-            openDeleteRow();
-            return;
-        }
-        if (chosen && chosen !== currentName()) setProject(chosen);
-    };
-    createBtn.onclick = (event) => {
-        event.stopPropagation();
-        createProject();
-    };
-    cancelCreateBtn.onclick = (event) => {
-        event.stopPropagation();
-        closeCreateRow();
-    };
-    nameInput.onkeydown = (event) => {
-        event.stopPropagation();
-        if (event.key === "Enter") createProject();
-        if (event.key === "Escape") closeCreateRow();
-    };
-    deleteBtn.onclick = (event) => {
-        event.stopPropagation();
-        deleteProject();
-    };
-    cancelDeleteBtn.onclick = (event) => {
-        event.stopPropagation();
-        closeDeleteRow();
-    };
+    signal.addEventListener("abort", () => {
+        overlay.remove();
+        if (openMenuClose === closeModal) openMenuClose = null;
+    }, { once: true });
 
+    syncSortUi();
+    applyColumns();
+    paintCurrent();
     void refresh();
 
     return { element: root, refresh, name: currentName, countText: projectCount };

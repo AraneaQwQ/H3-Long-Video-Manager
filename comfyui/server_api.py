@@ -3,6 +3,7 @@
 Registers routes with ComfyUI's PromptServer:
   GET /h3_lvm/projects?scope=segments|uploads|image|audio -> one library's projects + counts
   POST /h3_lvm/project        -> create an empty project (same scope)
+  POST /h3_lvm/project/rename -> rename that story in every library that holds it
   POST /h3_lvm/project/delete -> delete a whole project (same scope)
 
 scope picks the folder, not a filter. "segments" is the cut bin the Manager and the Smart
@@ -45,31 +46,41 @@ logger = logging.getLogger(__name__)
 from ..core.ref_size import DEFAULT_UPSCALE_SMALL_IMAGES, plan_reference
 from .segment_store import (
     DEFAULT_PROJECT,
+    INDEX_NAME as SEGMENT_INDEX_NAME,
+    checked_project_name,
     create_project,
     delete_project,
     delete_segment,
+    get_project_dir as segment_project_dir,
     list_project,
     list_projects_with_counts,
     merge_segments,
+    rename_project,
     sanitize_project_name,
 )
 from .ref_presets import (
     KIND_ROOTS,
+    PRESET_NAME,
     create_reference_project,
     delete_reference_project,
     list_reference_projects,
     load_references,
+    ref_project_dir,
+    rename_reference_project,
     save_references,
 )
 from .uploaded_video_store import (
+    INDEX_NAME as UPLOAD_INDEX_NAME,
     MAX_UPLOAD_BYTES,
     create_upload_project,
     delete_upload,
     delete_upload_project,
+    get_project_dir as upload_project_dir,
     import_upload,
     list_upload_projects,
     list_uploads,
     open_partial,
+    rename_upload_project,
     reorder_uploads,
 )
 from .video_loader_node import list_video_directory, video_file_info
@@ -168,6 +179,70 @@ def _csrf_block(request):
     return None
 
 
+def _rename_everywhere(project, new_name) -> dict:
+    """Rename one story across the cut bin, upload bin and both reference bins.
+
+    The UI renames "the project", not one folder. Scopes that do not exist are
+    skipped; all existing targets are checked for collisions before anything
+    moves, and a failure rolls the already-moved folders back.
+    """
+    old = sanitize_project_name(project)
+    new = checked_project_name(new_name)
+    if old == new:
+        return {"old": old, "name": new, "renamed": []}
+
+    segment_old = segment_project_dir(old, create=False)
+    segment_new = segment_project_dir(new, create=False)
+    upload_old = upload_project_dir(old, create=False)
+    upload_new = upload_project_dir(new, create=False)
+    refs = [
+        (kind, ref_project_dir(kind, old, create=False), ref_project_dir(kind, new, create=False))
+        for kind in KIND_ROOTS
+    ]
+
+    existing = []
+    if os.path.isfile(os.path.join(segment_old, SEGMENT_INDEX_NAME)):
+        existing.append(("segments", segment_new))
+    if os.path.isfile(os.path.join(upload_old, UPLOAD_INDEX_NAME)):
+        existing.append(("uploads", upload_new))
+    for kind, old_dir, new_dir in refs:
+        if os.path.isfile(os.path.join(old_dir, PRESET_NAME)):
+            existing.append((kind, new_dir))
+    if not existing:
+        raise FileNotFoundError("项目「%s」不存在。" % old)
+    targets = [("segments", segment_new), ("uploads", upload_new)]
+    targets += [(kind, new_dir) for kind, _, new_dir in refs]
+    for scope, new_dir in targets:
+        if os.path.exists(new_dir):
+            raise ValueError("项目「%s」已存在同名文件夹（%s），请换一个名字。" % (new, scope))
+
+    done = []
+    try:
+        if any(scope == "segments" for scope, _ in existing):
+            rename_project(old, new)
+            done.append("segments")
+        if any(scope == "uploads" for scope, _ in existing):
+            rename_upload_project(old, new)
+            done.append("uploads")
+        for kind, _, _ in refs:
+            if any(scope == kind for scope, _ in existing):
+                rename_reference_project(kind, old, new)
+                done.append(kind)
+    except Exception:
+        for scope in reversed(done):
+            try:
+                if scope == "segments":
+                    rename_project(new, old)
+                elif scope == "uploads":
+                    rename_upload_project(new, old)
+                else:
+                    rename_reference_project(scope, new, old)
+            except Exception:
+                logger.exception("[H3 LVM API] rollback of %s rename failed", scope)
+        raise
+    return {"old": old, "name": new, "renamed": done}
+
+
 def register_h3lvm_routes() -> None:
     """Register /h3_lvm/* routes into ComfyUI's PromptServer.
 
@@ -248,6 +323,31 @@ def register_h3lvm_routes() -> None:
             return web.json_response({"error": "删除失败：文件夹可能正被预览占用，请关闭预览后重试。"}, status=409)
         if not result["deleted"]:
             return web.json_response({"error": "项目已不存在，请刷新列表。"}, status=404)
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/h3_lvm/project/rename")
+    async def handle_rename_project(request):
+        """Rename a project across every library that holds the same story."""
+        blocked = _csrf_block(request)
+        if blocked is not None:
+            return blocked
+        if request.content_type != "application/json":
+            return web.json_response({"error": "Expected JSON"}, status=415)
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Expected an object")
+            result = await asyncio.to_thread(
+                _rename_everywhere, body.get("project"), body.get("new_name"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except FileNotFoundError as exc:
+            return web.json_response({"error": str(exc)}, status=404)
+        except (TypeError, KeyError):
+            return web.json_response({"error": "Invalid project name"}, status=400)
+        except OSError:
+            logger.exception("Failed to rename project")
+            return web.json_response({"error": "重命名失败：文件夹可能被占用或没有写入权限。"}, status=409)
         return web.json_response(result, headers={"Cache-Control": "no-store"})
 
     # A reference preset is a saved combination of reference cards for one project of one

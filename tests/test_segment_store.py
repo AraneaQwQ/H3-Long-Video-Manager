@@ -28,7 +28,10 @@ from comfyui.segment_store import (
     load_project_index,
     list_project,
     list_projects,
+    list_projects_with_counts,
+    rename_project,
     delete_segment,
+    delete_segments_after,
     get_project_dir,
     normalize_save_dtype,
     _load_tensors,
@@ -325,6 +328,59 @@ class TestThumbnailFrame(unittest.TestCase):
     def test_out_of_range_cover_clamps_to_the_last_frame(self):
         save_segment("ThumbClamp", 1, self._ramp_video(5), None, fps=24, thumbnail_frame=99)
         self.assertEqual(self._cover_pixel("ThumbClamp"), (4, 4, 4))
+
+
+class TestProjectCardsAndCleanup(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = make_temp_dir(prefix="h3lvm_admin_")
+        set_base_dir_override(self._tmpdir)
+
+    def tearDown(self):
+        set_base_dir_override(None)
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _save(self, project, count):
+        for index in range(1, count + 1):
+            save_segment(project, index, torch.rand(6, 16, 16, 3), None, fps=24)
+
+    def test_list_projects_carries_cover_and_update_time(self):
+        self._save("Cards", 2)
+        entry = next(item for item in list_projects_with_counts() if item["name"] == "Cards")
+        self.assertTrue(entry["cover_url"].startswith("/view?"))
+        self.assertTrue(entry["updated_at"])
+
+    def test_recut_cleanup_removes_only_higher_ids(self):
+        self._save("ReCut", 5)
+        removed = delete_segments_after("ReCut", 3)
+        self.assertEqual(removed, [4, 5])
+        ids = [seg["segment_id"] for seg in load_project_index("ReCut")["segments"]]
+        self.assertEqual(ids, [1, 2, 3])
+        self.assertFalse(os.path.isdir(os.path.join(get_project_dir("ReCut", create=False), "seg04")))
+        self.assertFalse(os.path.isdir(os.path.join(get_project_dir("ReCut", create=False), "seg05")))
+
+    def test_recut_cleanup_is_a_noop_when_nothing_is_stale(self):
+        self._save("ReCutSame", 2)
+        self.assertEqual(delete_segments_after("ReCutSame", 2), [])
+
+    def test_rename_moves_folder_and_updates_index(self):
+        self._save("OldName", 2)
+        result = rename_project("OldName", "NewName")
+        self.assertEqual(result["name"], "NewName")
+        self.assertFalse(os.path.isdir(get_project_dir("OldName", create=False)))
+        self.assertTrue(os.path.isdir(get_project_dir("NewName", create=False)))
+        self.assertEqual(load_project_index("NewName")["project_name"], "NewName")
+        video, _, _ = load_segment("NewName", 1)
+        self.assertEqual(tuple(video.shape), (6, 16, 16, 3))
+
+    def test_rename_refuses_to_overwrite_an_existing_project(self):
+        self._save("TakenA", 1)
+        self._save("TakenB", 1)
+        with self.assertRaises(ValueError):
+            rename_project("TakenA", "TakenB")
+
+    def test_rename_missing_project_is_reported(self):
+        with self.assertRaises(FileNotFoundError):
+            rename_project("Missing", "NewName")
 
 
 if __name__ == "__main__":

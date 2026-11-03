@@ -28,7 +28,7 @@ from ..core.smart_split import (
 from .segment_store import (
     save_segment as _save_segment, load_segment, load_project_index,
     list_project, list_projects, sanitize_project_name, DEFAULT_PROJECT,
-    normalize_save_dtype, set_project_playback_meta,
+    normalize_save_dtype, set_project_playback_meta, delete_segments_after,
 )
 # RAFOLIE 2026-10-19: the Picker's second library. Kept out of segment_store on purpose -
 # the cut bin stores tensors, this one stores the user's own video files untouched.
@@ -451,6 +451,16 @@ class H3LongVideoManager(io.ComfyNode):
                 "segment_duration_sec": float(segment_duration),
                 "align_to_h3_grid": bool(align_to_h3_grid),
             })
+            # A previous, longer cut left ids above this run's total in the bin.
+            # Clean them only after every new segment saved, so a failed cut
+            # keeps the old library intact.
+            try:
+                removed = delete_segments_after(project, total_segments)
+                if removed:
+                    print(f"[H3 LVM] re-cut cleanup: removed stale segments {removed} "
+                          f"from '{project}'")
+            except Exception as exc:
+                print(f"[H3 LVM] WARNING: re-cut cleanup failed for '{project}': {exc}")
             # Refresh other Picker nodes even if a downstream node later fails.
             import server
             prompt_server = getattr(server.PromptServer, "instance", None)
@@ -845,18 +855,8 @@ class H3SmartSplit(io.ComfyNode):
             if not STORE_AVAILABLE:
                 raise RuntimeError("H3 Smart Split: 素材存储模块不可用，无法保存片段。")
             project = project_name if project_name and str(project_name).strip() else DEFAULT_PROJECT
-            # The Store upserts by segment_id; it never clears the bin. Mixing a
-            # Smart Split into a project that holds more (Fixed) segments leaves
-            # the higher ids behind, so say so instead of pretending otherwise.
-            stale = sorted(
-                int(entry.get("segment_id", 0))
-                for entry in load_project_index(project).get("segments", [])
-                if int(entry.get("segment_id", 0)) > total_segments
-            )
-            if stale:
-                print(f"[H3 Smart Split] WARNING: project '{project}' still keeps segment ids "
-                      f"{stale}, which this Smart Split did not write. The store updates ids in "
-                      "place and does not clear the bin; 需要清理请在素材库里删除这些片段。")
+            # The store upserts by segment_id; a longer previous cut may have left
+            # higher ids behind. They are removed after every new segment saved.
             print(f"[H3 Smart Split] saving {total_segments} segments to project '{project}'")
             saved_ids = []
             for seg in segments:
@@ -906,6 +906,13 @@ class H3SmartSplit(io.ComfyNode):
                 "motion_context_frames": int(motion_context_frames),
                 "segmentation_method": "smart",
             })
+            try:
+                removed = delete_segments_after(project, total_segments)
+                if removed:
+                    print(f"[H3 Smart Split] re-cut cleanup: removed stale segments "
+                          f"{removed} from '{project}'")
+            except Exception as exc:
+                print(f"[H3 Smart Split] WARNING: re-cut cleanup failed for '{project}': {exc}")
             import server
             prompt_server = getattr(server.PromptServer, "instance", None)
             if prompt_server is not None:

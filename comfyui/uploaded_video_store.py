@@ -72,6 +72,7 @@ MAX_UPLOAD_BYTES = 2 * 1024 ** 3
 _base_dir_override: Optional[str] = None
 _project_locks: Dict[str, threading.RLock] = {}
 _locks_guard = threading.Lock()
+_rename_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -223,17 +224,40 @@ def _count_lenient(project: str) -> int:
 
 
 def list_upload_projects() -> List[Dict[str, Any]]:
-    """Every project in the upload library, with its video count.
+    """Every upload project with its video count and first-card cover.
 
-    Listing never creates a folder: a project is a directory that already holds an index.
+    Listing never creates a folder: a project is a directory that already holds
+    an index. The cover is the first card's existing JPEG, so the menu can paint
+    a real thumbnail without decoding a video.
     """
     base = get_base_dir()
     if not os.path.isdir(base):
         return []
     out: List[Dict[str, Any]] = []
     for name in sorted(os.listdir(base)):
-        if os.path.isfile(os.path.join(base, name, INDEX_NAME)):
-            out.append({"name": name, "videos": _count_lenient(name)})
+        if not os.path.isfile(os.path.join(base, name, INDEX_NAME)):
+            continue
+        cover_url = ""
+        updated_at = ""
+        video_count = 0
+        try:
+            idx = load_upload_index(name)
+            videos = sorted(idx.get("videos", []), key=_order_key)
+            video_count = len(videos)
+            updated_at = idx.get("updated_at", "")
+            if videos:
+                cover = videos[0].get("thumbnail", "")
+                files_dir = get_files_dir(name, create=False)
+                if cover and os.path.isfile(os.path.join(files_dir, cover)):
+                    cover_url = _file_url(name, cover)
+        except (OSError, ValueError):
+            pass
+        out.append({
+            "name": name,
+            "videos": video_count,
+            "cover_url": cover_url,
+            "updated_at": updated_at,
+        })
     return out
 
 
@@ -392,6 +416,33 @@ def delete_upload_project(project: Any, confirm: Any = "") -> Dict[str, Any]:
         shutil.rmtree(target)  # Never hide permission / in-use errors from the UI.
     logger.info("[H3 LVM Uploads] Deleted project '%s' (%d videos)", name, videos)
     return {"name": name, "deleted": True, "videos": videos}
+
+
+def rename_upload_project(project: Any, new_name: Any) -> Dict[str, Any]:
+    """Rename one upload project, moving its bytes and covers with the folder."""
+    old = sanitize_project_name(project)
+    new = _checked_name(new_name)
+    if old == new:
+        return {"old": old, "name": new, "renamed": False}
+    with _rename_lock, _project_lock(old), _project_lock(new):
+        old_dir = get_project_dir(old, create=False)
+        new_dir = get_project_dir(new, create=False)
+        if not os.path.isfile(os.path.join(old_dir, INDEX_NAME)):
+            raise FileNotFoundError("投放视频库项目「%s」不存在。" % old)
+        if os.path.exists(new_dir):
+            raise ValueError("投放视频库项目「%s」已存在，请换一个名字。" % new)
+        shutil.move(old_dir, new_dir)
+        try:
+            with open(os.path.join(new_dir, INDEX_NAME), "r", encoding="utf-8") as stream:
+                idx = json.load(stream)
+            idx["project_name"] = new
+            idx["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            _write_index(new, idx)
+        except Exception:
+            shutil.move(new_dir, old_dir)
+            raise
+    logger.info("[H3 LVM Uploads] Renamed project '%s' -> '%s'", old, new)
+    return {"old": old, "name": new, "renamed": True}
 
 
 # ---------------------------------------------------------------------------
@@ -588,5 +639,6 @@ __all__ = [
     "checked_upload_file", "count_uploads", "create_upload_project", "delete_upload",
     "delete_upload_project", "find_upload", "get_base_dir", "get_files_dir", "get_project_dir",
     "import_upload", "index_path", "list_upload_projects", "list_uploads", "load_upload_index",
-    "open_partial", "reorder_uploads", "resolve_upload", "safe_suffix", "set_base_dir_override",
+    "open_partial", "rename_upload_project", "reorder_uploads", "resolve_upload",
+    "safe_suffix", "set_base_dir_override",
 ]

@@ -50,6 +50,9 @@ MAX_PROJECT_NAME_LENGTH = 80
 _base_dir_override: Optional[str] = None
 _project_locks: Dict[str, threading.RLock] = {}
 _locks_guard = threading.Lock()
+# Project renames move a whole folder; one lock serialises them so two panels
+# cannot rename A->B and B->A at the same time.
+_rename_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +85,17 @@ def sanitize_project_name(name: Any) -> str:
     if not s:
         s = DEFAULT_PROJECT
     return s
+
+
+def checked_project_name(name: Any) -> str:
+    """Validate a name the user typed for a project that is about to be created/renamed."""
+    typed = str("" if name is None else name).strip()
+    if not any(c.isalnum() for c in typed):
+        raise ValueError("项目名称里至少要有一个字母或数字（例如「科幻短片 01」）。")
+    safe = sanitize_project_name(typed)
+    if len(safe) > MAX_PROJECT_NAME_LENGTH:
+        raise ValueError("项目名称太长，请控制在 %d 个字符以内。" % MAX_PROJECT_NAME_LENGTH)
+    return safe
 
 
 def resolve_project(name: Any) -> str:
@@ -544,17 +558,41 @@ def list_projects() -> List[str]:
             out.append(name)
     return sorted(out)
 
-def list_projects_with_counts() -> List[Dict[str, Any]]:
-    """Lists project bins together with how many segments each one holds.
+def _project_cover_url(name: str, idx: Dict[str, Any]) -> str:
+    """The project's first card cover, already versioned for /view."""
+    segments = sorted(idx.get("segments", []), key=lambda s: int(s.get("segment_id", 0)))
+    if not segments:
+        return ""
+    first = segments[0]
+    directory = first.get("dir") or first.get("tag") or ""
+    thumb = first.get("thumbnail", "")
+    if not directory or not thumb:
+        return ""
+    path = os.path.join(get_project_dir(name, create=False), directory, thumb)
+    if not os.path.isfile(path):
+        return ""
+    try:
+        return preview_url(path, f"{BIN_DIR_NAME}/{name}/{directory}")
+    except OSError:
+        return ""
 
-    The Picker shows these counts in its menu so a name is never chosen from memory.
-    An empty bin is still a valid place to save the next shot, so nothing is filtered
-    out here - the count only says what the entry points at.
+
+def list_projects_with_counts() -> List[Dict[str, Any]]:
+    """Lists project bins with their segment count, cover and last update.
+
+    The menu paints one card per bin, so it needs the first segment's cover as
+    well as the count. An empty bin is still a valid place to save the next
+    shot, so nothing is filtered out here.
     """
     out: List[Dict[str, Any]] = []
     for name in list_projects():
-        segments = len(load_project_index(name).get("segments", []))
-        out.append({"name": name, "segments": segments})
+        idx = load_project_index(name)
+        out.append({
+            "name": name,
+            "segments": len(idx.get("segments", [])),
+            "cover_url": _project_cover_url(name, idx),
+            "updated_at": idx.get("last_updated", ""),
+        })
     return out
 
 
@@ -613,6 +651,39 @@ def delete_project(project: Any, confirm: Any = "") -> Dict[str, Any]:
     return {"name": safe_name, "deleted": True, "segments": segments}
 
 
+def rename_project(project: Any, new_name: Any) -> Dict[str, Any]:
+    """Rename one cut bin, moving its folder and rewriting the index name.
+
+    The whole folder moves, so covers, previews and the segment bundles follow
+    without touching their relative paths. Refuses to overwrite an existing
+    project; the caller can rename other same-named libraries after this
+    succeeds. A failed index rewrite moves the folder back.
+    """
+    old = sanitize_project_name(project)
+    new = checked_project_name(new_name)
+    if old == new:
+        return {"old": old, "name": new, "renamed": False}
+    with _rename_lock, _project_lock(old), _project_lock(new):
+        old_dir = get_project_dir(old, create=False)
+        new_dir = get_project_dir(new, create=False)
+        if not os.path.isfile(os.path.join(old_dir, INDEX_NAME)):
+            raise FileNotFoundError("项目「%s」不存在。" % old)
+        if os.path.exists(new_dir):
+            raise ValueError("项目「%s」已存在，请换一个名字。" % new)
+        shutil.move(old_dir, new_dir)
+        try:
+            with open(os.path.join(new_dir, INDEX_NAME), "r", encoding="utf-8") as stream:
+                idx = json.load(stream)
+            idx["project_name"] = new
+            idx["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _write_index(new, idx)
+        except Exception:
+            shutil.move(new_dir, old_dir)
+            raise
+    logger.info("[H3 LVM] Renamed project '%s' -> '%s'", old, new)
+    return {"old": old, "name": new, "renamed": True}
+
+
 @project_locked
 def delete_segment(project: Any, seg_index_1based: int) -> bool:
     """Remove a saved segment (files + index entry). Returns True if removed."""
@@ -637,6 +708,48 @@ def delete_segment(project: Any, seg_index_1based: int) -> bool:
         _write_index(project, previous)
         raise
     return True
+
+
+@project_locked
+def delete_segments_after(project: Any, keep_count: int) -> List[int]:
+    """Drop saved segments whose 1-based id is greater than ``keep_count``.
+
+    A re-cut writes ids 1..N in place but cannot remove the ids a longer
+    previous cut left behind. This is the reconciliation step: the caller runs
+    it only after every new segment saved successfully, so a failed cut never
+    empties the library. Returns the ids that were removed.
+    """
+    project = sanitize_project_name(project)
+    if isinstance(keep_count, bool) or not isinstance(keep_count, int) or keep_count < 0:
+        raise ValueError("keep_count must be a non-negative integer")
+    idx = load_project_index(project)
+    stale = sorted(
+        int(entry.get("segment_id", 0))
+        for entry in idx.get("segments", [])
+        if int(entry.get("segment_id", 0)) > keep_count
+    )
+    if not stale:
+        return []
+    previous = dict(idx)
+    previous["segments"] = list(idx.get("segments", []))
+    idx["segments"] = [
+        entry for entry in idx.get("segments", [])
+        if int(entry.get("segment_id", 0)) <= keep_count
+    ]
+    idx["total_segments"] = len(idx["segments"])
+    idx["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _write_index(project, idx)
+    pdir = get_project_dir(project, create=False)
+    try:
+        for segment_id in stale:
+            sdir = checked_asset_dir(get_base_dir(), pdir, f"seg{segment_id:02d}")
+            if os.path.isdir(sdir):
+                shutil.rmtree(sdir)
+    except OSError:
+        _write_index(project, previous)
+        raise
+    logger.info("[H3 LVM] Re-cut cleanup: removed stale segments %s from '%s'", stale, project)
+    return stale
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +989,7 @@ __all__ = [
     "set_base_dir_override",
     "get_base_dir",
     "sanitize_project_name",
+    "checked_project_name",
     "resolve_project",
     "get_project_dir",
     "tensor_to_pil",
@@ -887,8 +1001,10 @@ __all__ = [
     "list_projects_with_counts",
     "create_project",
     "delete_project",
+    "rename_project",
     "MAX_PROJECT_NAME_LENGTH",
     "delete_segment",
+    "delete_segments_after",
     "merge_segments",
     "set_project_playback_meta",
 ]
