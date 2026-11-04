@@ -152,5 +152,22 @@ class TestSmartSplitSchema(unittest.TestCase):
         self.assertFalse(NODES.H3SmartSplit.fingerprint_inputs(save_enabled=False))
 
 
+@unittest.skipIf(NODES is None, f"comfy_api unavailable: {LOAD_ERROR}")
+class TestVideoCompareSchema(unittest.TestCase):
+    def test_registered_as_an_independent_h3_node(self):
+        node_cls = next(cls for cls in NODES.NODE_LIST if cls.__name__ == "H3VideoCompareSlider")
+        schema = node_cls.define_schema()
+        self.assertEqual(schema.node_id, "H3 Video Compare Slider")
+        self.assertTrue(schema.is_output_node)
+
+    def test_compare_inputs_and_outputs(self):
+        self.assertEqual(_input_ids("H3VideoCompareSlider"), [
+            "slider_position", "before_label", "after_label", "show_labels", "loop",
+            "muted", "record_duration", "fps", "before_images", "after_images",
+            "before_video", "after_video", "before_selected", "after_selected",
+        ])
+        self.assertEqual(_outputs("H3VideoCompareSlider"), ["before_video", "after_video"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,7 @@ does not disappear.
 """
 from __future__ import annotations
 
+import filecmp
 import json
 import logging
 import os
@@ -30,7 +31,7 @@ import shutil
 import tempfile
 import threading
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 from ..core.ref_media import MAX_REF_AUDIOS, MAX_REF_IMAGES, parse_media_list
@@ -48,6 +49,12 @@ PRESET_NAME = "h3lvm_references.json"
 # One library root per kind, and the slot limit that kind's loader has.
 KIND_ROOTS = {"image": "h3-lvm-image-refs", "audio": "h3-lvm-audio-refs"}
 KIND_LIMITS = {"image": MAX_REF_IMAGES, "audio": MAX_REF_AUDIOS}
+
+# Where the reference loaders upload their media inside ComfyUI's input folder. One
+# top-level folder makes every file this plugin imported identifiable at a glance;
+# the kind subfolder keeps an image preset from ever pointing at an audio file.
+INPUT_ROOT = "h3-lvm-refs"
+INPUT_ROOTS = {"image": INPUT_ROOT + "/image", "audio": INPUT_ROOT + "/audio"}
 
 # A per-kind library file holds one list; the shared pre-split file held one per kind.
 LIST_KEY = "references"
@@ -86,6 +93,44 @@ def ref_project_dir(kind: Any, project: Any, create: bool = True) -> str:
 def preset_path(kind: Any, project: Any) -> str:
     """Where that project's preset lives."""
     return os.path.join(ref_project_dir(kind, project, create=False), PRESET_NAME)
+
+
+_input_dir_override: Optional[str] = None
+
+
+def set_input_dir_override(path: Optional[str]) -> None:
+    """Tests only: redirect the input folder the reference media lives under."""
+    global _input_dir_override
+    _input_dir_override = path
+
+
+def _input_dir() -> str:
+    if _input_dir_override:
+        return _input_dir_override
+    try:
+        import folder_paths
+        path = folder_paths.get_input_directory()
+    except Exception:
+        path = None
+    return path or os.path.join(".", "input")
+
+
+def input_media_dir(kind: Any, create: bool = False) -> str:
+    """The kind folder inside ComfyUI's input directory."""
+    check_kind(kind)
+    path = os.path.join(_input_dir(), INPUT_ROOT, str(kind))
+    if create:
+        os.makedirs(path, exist_ok=True)
+    return path
+
+
+def input_project_dir(kind: Any, project: Any, create: bool = False) -> str:
+    """The per-project folder that actually holds this kind's uploads."""
+    check_kind(kind)
+    path = os.path.join(input_media_dir(kind), sanitize_project_name(project))
+    if create:
+        os.makedirs(path, exist_ok=True)
+    return path
 
 
 def _library_lock(kind: str, name: str):
@@ -194,6 +239,161 @@ def save_references(kind: Any, project: Any, entries: Any) -> Dict[str, Any]:
 
     logger.info("[H3 Ref Libraries] Saved the %s preset for '%s' (%d entries)", kind, name, len(cleaned))
     return {"name": name, "kind": kind, "saved": len(cleaned)}
+
+
+def _entry_source(kind: str, entry: Dict[str, Any]) -> Optional[str]:
+    """Where one card's file really is right now, before it is adopted.
+
+    Only the two layouts this plugin used before are considered: the input root and
+    the first migration's kind folder. A card that already sits in a deliberate folder
+    is somebody's arrangement and is never second-guessed.
+    """
+    filename = str(entry.get("filename") or "")
+    if not filename:
+        return None
+    if str(entry.get("subfolder") or "") == INPUT_ROOTS[kind]:
+        candidates = [os.path.join(input_media_dir(kind), filename),
+                      os.path.join(_input_dir(), filename)]
+    else:
+        candidates = [os.path.join(_input_dir(), filename),
+                      os.path.join(input_media_dir(kind), filename)]
+    checked = set()
+    for path in candidates:
+        real = os.path.realpath(path)
+        if real in checked:
+            continue
+        checked.add(real)
+        if os.path.isfile(real):
+            return real
+    return None
+
+
+def _adopt_input_entries(kind: str, project: str, entries: List[Dict[str, Any]]) -> tuple:
+    """Point one preset's input cards at copies inside its project folder.
+
+    Copies, never moves: the files the preset used before stay where older workflows
+    still look for them. An existing destination is only accepted when it holds the
+    same bytes, so a newer upload under the same name is never overwritten. Returns
+    (how many entries were repointed, the destination copies used).
+    """
+    changed = 0
+    copies = []
+    target_subfolder = INPUT_ROOTS[kind] + "/" + sanitize_project_name(project)
+    for entry in entries:
+        if entry.get("type") != "input":
+            continue
+        current = str(entry.get("subfolder") or "")
+        if current == target_subfolder:
+            continue
+        if current not in ("", INPUT_ROOTS[kind]):
+            continue
+        source = _entry_source(kind, entry)
+        if not source:
+            continue
+        filename = str(entry.get("filename") or "")
+        target = os.path.join(input_project_dir(kind, project, create=True), filename)
+        if os.path.exists(target):
+            if not filecmp.cmp(source, target, shallow=False):
+                logger.warning(
+                    "[H3 Ref Libraries] %s already holds a different file named '%s'; "
+                    "leaving the preset on its old location", os.path.dirname(target), filename)
+                continue
+        else:
+            try:
+                shutil.copy2(source, target)
+            except OSError as exc:
+                logger.warning("[H3 Ref Libraries] Could not copy '%s' into %s: %s",
+                               filename, os.path.dirname(target), exc)
+                continue
+        entry["subfolder"] = target_subfolder
+        copies.append(target)
+        changed += 1
+    return changed, copies
+
+
+def _clean_kind_root(kind: str, projects: List[tuple], copies: List[str]) -> int:
+    """Drop first-migration copies once every preset has moved into project folders.
+
+    Only a file that no preset references any more is removed, and only when a
+    byte-identical copy exists in a project folder. Files uploaded but not yet saved
+    into a preset are never adopted, so they are never removed either.
+    """
+    filenames = {os.path.basename(path) for path in copies}
+    referenced = {
+        str(entry.get("filename") or "")
+        for _, entries in projects
+        for entry in entries
+        if str(entry.get("subfolder") or "") == INPUT_ROOTS[kind]
+    }
+    removed = 0
+    for filename in sorted(filenames):
+        if filename in referenced:
+            continue
+        source = os.path.join(input_media_dir(kind), filename)
+        if not os.path.isfile(source):
+            continue
+        target = next((path for path in copies if os.path.basename(path) == filename), None)
+        try:
+            if target and filecmp.cmp(source, target, shallow=False):
+                os.remove(source)
+                removed += 1
+        except OSError as exc:
+            logger.warning("[H3 Ref Libraries] Could not remove the old copy %s: %s", source, exc)
+    return removed
+
+
+def migrate_input_media() -> Dict[str, int]:
+    """One-time, idempotent regrouping of old presets into per-project folders.
+
+    Uploads from the reference loaders live in ``<input>/h3-lvm-refs/<kind>/<project>``
+    so one node's imports are easy to find and easy to clean per story. Presets from
+    the input root and from the previous kind-only layout are copied into the project
+    folder and rewritten; the old copies they leave behind are removed only after no
+    preset references them any more. Missing files are left alone, so a stale card
+    stays visibly stale instead of silently disappearing.
+    """
+    report = {"projects": 0, "entries": 0, "cleaned": 0}
+    for kind in KIND_ROOTS:
+        base = library_dir(kind)
+        if not os.path.isdir(base):
+            continue
+        projects = []
+        broken = False
+        for name in sorted(os.listdir(base)):
+            path = os.path.join(base, name, PRESET_NAME)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as stream:
+                    raw = json.load(stream)
+            except (OSError, ValueError):
+                logger.warning("[H3 Ref Libraries] Unreadable %s preset for '%s': left unchanged", kind, name)
+                broken = True
+                continue
+            data = raw if isinstance(raw, dict) else {}
+            try:
+                entries = parse_media_list(data.get(LIST_KEY, []), KIND_LIMITS[kind])
+            except ValueError:
+                logger.warning("[H3 Ref Libraries] Invalid %s preset for '%s': left unchanged", kind, name)
+                broken = True
+                continue
+            projects.append((name, entries))
+
+        copies = []
+        for name, entries in projects:
+            changed, made = _adopt_input_entries(kind, name, entries)
+            copies.extend(made)
+            if not changed:
+                continue
+            with _library_lock(kind, name):
+                _write_preset(kind, name, entries)
+            report["projects"] += 1
+            report["entries"] += changed
+            logger.info("[H3 Ref Libraries] Grouped the %s preset of '%s' into %s (%d entries)",
+                        kind, name, INPUT_ROOTS[kind] + "/" + sanitize_project_name(name), changed)
+        if not broken:
+            report["cleaned"] += _clean_kind_root(kind, projects, copies)
+    return report
 
 
 def count_references(kind: Any, project: Any) -> int:

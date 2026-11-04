@@ -62,6 +62,12 @@ load_references = ref_presets.load_references
 preset_path = ref_presets.preset_path
 ref_project_dir = ref_presets.ref_project_dir
 save_references = ref_presets.save_references
+migrate_input_media = ref_presets.migrate_input_media
+input_media_dir = ref_presets.input_media_dir
+input_project_dir = ref_presets.input_project_dir
+set_input_dir_override = ref_presets.set_input_dir_override
+INPUT_ROOT = ref_presets.INPUT_ROOT
+INPUT_ROOTS = ref_presets.INPUT_ROOTS
 DEFAULT_PROJECT = segment_store.DEFAULT_PROJECT
 create_project = segment_store.create_project
 get_project_dir = segment_store.get_project_dir
@@ -84,10 +90,22 @@ class LibraryFixture(unittest.TestCase):
     def setUp(self):
         self._tmpdir = make_temp_dir(prefix="h3lvm_refs_")
         set_base_dir_override(self._tmpdir)
+        # The media folder is a sibling of the output base, never inside it: the
+        # library-split tests count what the output root holds.
+        self._input = make_temp_dir(prefix="h3lvm_input_")
+        set_input_dir_override(self._input)
 
     def tearDown(self):
         set_base_dir_override(None)
+        set_input_dir_override(None)
         shutil.rmtree(self._tmpdir, ignore_errors=True)
+        shutil.rmtree(self._input, ignore_errors=True)
+
+    def write_input(self, name, data=b"media"):
+        path = os.path.join(self._input, name)
+        with open(path, "wb") as stream:
+            stream.write(data)
+        return path
 
     def raw(self, kind=IMAGE, project="P"):
         with open(preset_path(kind, project), "r", encoding="utf-8") as stream:
@@ -407,6 +425,160 @@ class TestProjectMenuCounts(LibraryFixture):
         self.assertEqual(rows["empty"][LIST_KEY], 0, "an empty bin is still a valid bin")
         self.assertNotIn("segments", rows["refs"],
                          "the reference menu has no business reporting segment counts")
+
+
+class TestInputMediaMigration(LibraryFixture):
+    """Old presets point at the input root or the kind folder; migration regroups.
+
+    The copy is deliberate: workflows saved before the dedicated folder still look for
+    the original in the input root, so moving the file would break them while a copy
+    only costs the bytes once. The first migration's kind-level copies are removed once
+    every preset references a project folder instead.
+    """
+
+    def project_subfolder(self, kind, project):
+        return INPUT_ROOTS[kind] + "/" + project
+
+    def write_kind_media(self, name, data=b"media", kind=IMAGE):
+        directory = input_media_dir(kind, create=True)
+        path = os.path.join(directory, name)
+        with open(path, "wb") as stream:
+            stream.write(data)
+        return path
+
+    def test_root_cards_are_copied_into_the_project_folder(self):
+        save_references(IMAGE, "P", entries_for("a.png", "b.png"))
+        self.write_input("a.png", b"alpha")
+        self.write_input("b.png", b"beta")
+
+        report = migrate_input_media()
+
+        self.assertEqual(report, {"projects": 1, "entries": 2, "cleaned": 0})
+        self.assertTrue(os.path.isfile(os.path.join(self._input, "a.png")),
+                        "the original stays for workflows saved before this change")
+        for name in ("a.png", "b.png"):
+            self.assertTrue(os.path.isfile(os.path.join(input_project_dir(IMAGE, "P"), name)))
+        expected = self.project_subfolder(IMAGE, "P")
+        self.assertEqual(
+            [item["subfolder"] for item in load_references(IMAGE, "P")[LIST_KEY]],
+            [expected, expected])
+
+    def test_each_project_gets_its_own_folder(self):
+        save_references(IMAGE, "A", entries_for("a.png"))
+        save_references(IMAGE, "B", entries_for("b.png"))
+        self.write_input("a.png", b"alpha")
+        self.write_input("b.png", b"beta")
+
+        migrate_input_media()
+
+        self.assertTrue(os.path.isfile(os.path.join(input_project_dir(IMAGE, "A"), "a.png")))
+        self.assertTrue(os.path.isfile(os.path.join(input_project_dir(IMAGE, "B"), "b.png")))
+        self.assertFalse(os.path.exists(os.path.join(input_project_dir(IMAGE, "A"), "b.png")))
+
+    def test_running_again_changes_nothing(self):
+        save_references(IMAGE, "P", entries_for("a.png"))
+        self.write_input("a.png", b"alpha")
+        self.assertEqual(migrate_input_media(), {"projects": 1, "entries": 1, "cleaned": 0})
+        self.assertEqual(migrate_input_media(), {"projects": 0, "entries": 0, "cleaned": 0})
+
+    def test_a_missing_file_is_left_on_the_root(self):
+        save_references(IMAGE, "P", entries_for("gone.png", "here.png"))
+        self.write_input("here.png")
+
+        report = migrate_input_media()
+
+        self.assertEqual(report["entries"], 1)
+        by_name = {item["filename"]: item for item in load_references(IMAGE, "P")[LIST_KEY]}
+        self.assertEqual(by_name["gone.png"]["subfolder"], "",
+                         "a stale card must stay visibly stale, not vanish")
+        self.assertEqual(by_name["here.png"]["subfolder"], self.project_subfolder(IMAGE, "P"))
+
+    def test_skip_and_trim_survive_the_grouping(self):
+        cards = [
+            {"filename": "voice.wav", "subfolder": "", "type": "input",
+             "skip": True, "start": 1.5, "duration": 2.0},
+            {"filename": "tail.wav", "subfolder": "", "type": "input"},
+        ]
+        save_references(AUDIO, "P", cards)
+        self.write_input("voice.wav", b"voice")
+        self.write_input("tail.wav", b"tail")
+
+        report = migrate_input_media()
+        entries = load_references(AUDIO, "P")[LIST_KEY]
+
+        self.assertEqual(report, {"projects": 1, "entries": 2, "cleaned": 0})
+        self.assertEqual([item["subfolder"] for item in entries],
+                         [self.project_subfolder(AUDIO, "P")] * 2)
+        self.assertTrue(entries[0]["skip"])
+        self.assertEqual(entries[0]["start"], 1.5)
+        self.assertEqual(entries[0]["duration"], 2.0)
+        self.assertFalse(os.path.isdir(input_media_dir(IMAGE)),
+                         "an audio preset must not create the image folder")
+
+    def test_the_kind_level_copy_is_reused_then_removed(self):
+        save_references(IMAGE, "P", [{"filename": "a.png", "subfolder": INPUT_ROOTS[IMAGE],
+                                       "type": "input"}])
+        self.write_kind_media("a.png", b"alpha")
+
+        report = migrate_input_media()
+
+        self.assertEqual(report, {"projects": 1, "entries": 1, "cleaned": 1})
+        self.assertTrue(os.path.isfile(os.path.join(input_project_dir(IMAGE, "P"), "a.png")))
+        self.assertFalse(os.path.exists(os.path.join(input_media_dir(IMAGE), "a.png")),
+                         "the old kind-level copy is redundant once every preset moved")
+        self.assertEqual(load_references(IMAGE, "P")[LIST_KEY][0]["subfolder"],
+                         self.project_subfolder(IMAGE, "P"))
+
+    def test_a_shared_file_is_copied_to_every_project_before_the_old_copy_goes(self):
+        shared = [{"filename": "shared.png", "subfolder": INPUT_ROOTS[IMAGE], "type": "input"}]
+        save_references(IMAGE, "A", shared)
+        save_references(IMAGE, "B", shared)
+        self.write_kind_media("shared.png", b"same")
+
+        report = migrate_input_media()
+
+        self.assertEqual(report, {"projects": 2, "entries": 2, "cleaned": 1})
+        for project in ("A", "B"):
+            self.assertTrue(os.path.isfile(os.path.join(input_project_dir(IMAGE, project),
+                                                        "shared.png")))
+        self.assertFalse(os.path.exists(os.path.join(input_media_dir(IMAGE), "shared.png")))
+
+    def test_an_upload_that_no_preset_mentions_is_never_removed(self):
+        self.write_kind_media("orphan.png", b"orphan")
+
+        report = migrate_input_media()
+
+        self.assertEqual(report, {"projects": 0, "entries": 0, "cleaned": 0})
+        self.assertTrue(os.path.isfile(os.path.join(input_media_dir(IMAGE), "orphan.png")),
+                        "a file uploaded but not saved into a preset must survive")
+
+    def test_a_card_in_a_deliberate_folder_is_left_alone(self):
+        save_references(IMAGE, "P", [{"filename": "a.png", "subfolder": "my_uploads",
+                                       "type": "input"}])
+        directory = os.path.join(self._input, "my_uploads")
+        os.makedirs(directory)
+        with open(os.path.join(directory, "a.png"), "wb") as stream:
+            stream.write(b"alpha")
+
+        report = migrate_input_media()
+
+        self.assertEqual(report, {"projects": 0, "entries": 0, "cleaned": 0})
+        self.assertEqual(load_references(IMAGE, "P")[LIST_KEY][0]["subfolder"], "my_uploads")
+
+    def test_a_different_file_with_the_same_name_is_not_overwritten(self):
+        save_references(IMAGE, "P", entries_for("same.png"))
+        self.write_input("same.png", b"old")
+        destination = os.path.join(input_project_dir(IMAGE, "P", create=True), "same.png")
+        with open(destination, "wb") as stream:
+            stream.write(b"new")
+
+        report = migrate_input_media()
+
+        self.assertEqual(report, {"projects": 0, "entries": 0, "cleaned": 0})
+        with open(destination, "rb") as stream:
+            self.assertEqual(stream.read(), b"new", "a newer upload must win")
+        self.assertEqual(load_references(IMAGE, "P")[LIST_KEY][0]["subfolder"], "",
+                         "the preset stays on the copy's real file")
 
 
 if __name__ == "__main__":

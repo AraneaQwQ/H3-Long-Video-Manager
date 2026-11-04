@@ -175,37 +175,51 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         option.textContent = `${count} 列`;
         columnsSelect.appendChild(option);
     }
-    const newBtn = makeElement("button", "h3lvm-refresh-btn", "＋ 新建项目");
+    // The button no longer opens or hides anything: it puts the cursor into the
+    // always-visible name field, so typing can also start with a click on the field.
+    const newBtn = makeElement("button", "h3lvm-project-new-btn", "＋ 新建项目");
     newBtn.type = "button";
-    searchRow.append(searchInput, sortSelect, sortDirBtn, columnsSelect, newBtn);
+    newBtn.title = "把光标放进项目名称框";
 
-    const createRow = makeElement("div", "h3lvm-new");
-    createRow.hidden = true;
+    // The name field and its buttons are always on screen: no second line, no
+    // toggling. The two buttons stay disabled until the field holds something, so
+    // the row reads as "type a name, then confirm".
+    const createGroup = makeElement("div", "h3lvm-project-create");
     const nameInput = document.createElement("input");
     nameInput.type = "text";
-    nameInput.className = "h3lvm-new-input";
+    nameInput.className = "h3lvm-project-name";
     nameInput.placeholder = config.placeholder;
-    const createBtn = makeElement("button", "h3lvm-refresh-btn", "✔ 建立");
+    const createBtn = makeElement("button", "h3lvm-project-create-btn", "✔ 建立");
     createBtn.type = "button";
-    const cancelCreateBtn = makeElement("button", "h3lvm-refresh-btn", "✕ 取消");
+    const cancelCreateBtn = makeElement("button", "h3lvm-project-cancel-btn", "✕ 取消");
     cancelCreateBtn.type = "button";
-    const createError = makeElement("span", "h3lvm-new-error");
-    createRow.append(nameInput, createBtn, cancelCreateBtn, createError);
+    const createError = makeElement("span", "h3lvm-project-error");
+    createGroup.append(nameInput, createBtn, cancelCreateBtn, createError);
 
-    const deleteRow = makeElement("div", "h3lvm-new h3lvm-danger");
+    searchRow.append(newBtn, createGroup, searchInput, sortSelect, sortDirBtn, columnsSelect);
+
+    // Deleting a bin is confirmed in a centered card over the grid, not in a row
+    // above it: the sentence names what the delete removes, the two buttons sit
+    // together, and the destructive click is a deliberate one.
+    const deleteRow = makeElement("div", "h3lvm-project-confirm");
     deleteRow.hidden = true;
-    const deleteText = makeElement("span", "h3lvm-danger-text");
+    const confirmCard = makeElement("div", "h3lvm-project-confirm-card");
+    const confirmTitle = makeElement("span", "h3lvm-project-confirm-title");
+    const deleteText = makeElement("span", "h3lvm-project-confirm-text");
     const deleteBtn = makeElement("button", "h3lvm-danger-btn");
     deleteBtn.type = "button";
     const cancelDeleteBtn = makeElement("button", "h3lvm-refresh-btn", "✕ 取消");
     cancelDeleteBtn.type = "button";
     const deleteError = makeElement("span", "h3lvm-new-error");
-    deleteRow.append(deleteText, deleteBtn, cancelDeleteBtn, deleteError);
+    const confirmActions = makeElement("div", "h3lvm-project-confirm-actions");
+    confirmActions.append(cancelDeleteBtn, deleteBtn);
+    confirmCard.append(confirmTitle, deleteText, confirmActions, deleteError);
+    deleteRow.appendChild(confirmCard);
 
     const grid = makeElement("div", "h3lvm-project-grid");
     const modalHint = makeElement("span", "h3lvm-project-modal-hint");
     modalHint.textContent = "点卡片切换项目 · ✎ 重命名会同步所有同名库 · 🗑 删除只处理当前库。";
-    modal.append(head, searchRow, createRow, deleteRow, grid, modalHint);
+    modal.append(head, searchRow, grid, modalHint, deleteRow);
     overlay.appendChild(modal);
 
     document.body.appendChild(overlay);
@@ -464,10 +478,24 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         }
     }
 
-    function closeCreateRow() {
-        createRow.hidden = true;
+    function resetCreateInput() {
         nameInput.value = "";
-        createError.textContent = "";
+        showCreateError("");
+        syncCreateButtons();
+        nameInput.blur();
+    }
+
+    // Nothing can be confirmed until a real name is in the field; whitespace alone
+    // does not count, which matches what the backend accepts.
+    function syncCreateButtons() {
+        const ready = nameInput.value.trim().length > 0;
+        createBtn.disabled = !ready;
+        cancelCreateBtn.disabled = !ready;
+    }
+
+    function showCreateError(message) {
+        createError.textContent = message;
+        createError.title = message;
     }
 
     function closeDeleteRow() {
@@ -482,7 +510,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         modalOpen = true;
         overlay.hidden = false;
         searchInput.value = search;
-        closeCreateRow();
+        resetCreateInput();
         closeDeleteRow();
         editingName = "";
         renderGrid();
@@ -494,7 +522,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         overlay.hidden = true;
         editingName = "";
         pendingDelete = "";
-        closeCreateRow();
+        resetCreateInput();
         closeDeleteRow();
         if (openMenuClose === closeModal) openMenuClose = null;
     }
@@ -514,10 +542,15 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         if (event.target === overlay) closeModal();
     };
     document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape" && modalOpen) {
-            event.stopPropagation();
-            closeModal();
+        if (event.key !== "Escape" || !modalOpen) return;
+        event.stopPropagation();
+        // Escape backs out of the confirmation first, so a half-pressed delete
+        // cannot take the whole menu (and the clicked project) with it.
+        if (!deleteRow.hidden) {
+            closeDeleteRow();
+            return;
         }
+        closeModal();
     }, { signal });
 
     searchInput.oninput = () => {
@@ -550,30 +583,40 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         event.preventDefault();
         event.stopPropagation();
         closeDeleteRow();
-        createRow.hidden = !createRow.hidden;
-        if (!createRow.hidden) nameInput.focus();
+        nameInput.focus();
+        nameInput.select();
     };
     cancelCreateBtn.onclick = (event) => {
         event.preventDefault();
         event.stopPropagation();
-        closeCreateRow();
+        resetCreateInput();
     };
+    // Enter in the name field does call createProject; the button has to do the same,
+    // otherwise the form only works for keyboard users.
+    createBtn.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void createProject();
+    };
+    nameInput.oninput = syncCreateButtons;
     nameInput.onkeydown = (event) => {
         event.stopPropagation();
         if (event.key === "Enter") {
             event.preventDefault();
             void createProject();
         }
-        if (event.key === "Escape") closeCreateRow();
+        if (event.key === "Escape") resetCreateInput();
     };
 
     function showDeleteConfirm(bin) {
         pendingDelete = bin.name;
-        closeCreateRow();
+        resetCreateInput();
+        confirmTitle.textContent = `删除项目「${bin.name}」`;
         deleteText.textContent = deleteWarning(bin.name, bin);
         deleteBtn.textContent = `✔ 删除「${bin.name}」`;
         deleteError.textContent = "";
         deleteRow.hidden = false;
+        cancelDeleteBtn.focus();
     }
 
     cancelDeleteBtn.onclick = (event) => {
@@ -625,7 +668,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     }
 
     async function setProject(name, closeAfter = false) {
-        closeCreateRow();
+        resetCreateInput();
         closeDeleteRow();
         editingName = "";
         if (widget) {
@@ -650,12 +693,13 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     async function createProject() {
         const typed = nameInput.value.trim();
         if (!typed) {
-            createError.textContent = "先写个名字。";
+            showCreateError("先写个名字。");
             nameInput.focus();
             return;
         }
         createBtn.disabled = true;
-        createError.textContent = "";
+        cancelCreateBtn.disabled = true;
+        showCreateError("");
         try {
             const res = await api.fetchApi("/h3_lvm/project", {
                 method: "POST",
@@ -664,15 +708,15 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                createError.textContent = data.error || `建立失败（HTTP ${res.status}）`;
+                showCreateError(data.error || `建立失败（HTTP ${res.status}）`);
                 return;
             }
             await setProject(data.name || typed, true);
         } catch (error) {
             console.warn("[H3 LVM] create project failed:", error);
-            createError.textContent = "建立失败：连不上后台服务。";
+            showCreateError("建立失败：连不上后台服务。");
         } finally {
-            createBtn.disabled = false;
+            syncCreateButtons();
         }
     }
 
@@ -755,6 +799,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
 
     syncSortUi();
     applyColumns();
+    syncCreateButtons();
     paintCurrent();
     void refresh();
 

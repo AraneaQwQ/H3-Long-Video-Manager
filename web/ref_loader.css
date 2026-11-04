@@ -13,6 +13,44 @@
     flex: 0 0 auto;
 }
 
+.h3ref-add-row.h3-tool-card {
+    margin-bottom: 8px;
+}
+
+/* The action row is a tool card too: the primary add button, the preset pair and
+   the destructive clear share one height and one alignment. The drop hint stays on
+   the same line and takes whatever width is left, so the row does not grow. */
+.h3-tool-actions .h3ref-hint {
+    flex: 1 1 260px;
+    min-width: 0;
+    font-size: 11.5px;
+    color: #94a3b8;
+}
+
+.h3-tool-actions .h3ref-add {
+    background: #1d4ed8;
+    border-color: #3b82f6;
+    color: #ffffff;
+    font-weight: 600;
+}
+
+.h3-tool-actions .h3ref-add:hover {
+    background: #2563eb;
+    border-color: #93c5fd;
+    color: #ffffff;
+}
+
+.h3-tool-actions .h3ref-clear {
+    color: #fca5a5;
+    border-color: #7f1d1d;
+}
+
+.h3-tool-actions .h3ref-clear:hover {
+    color: #fecaca;
+    border-color: #ef4444;
+    background: #451a1a;
+}
+
 .h3ref-add {
     white-space: nowrap;
     flex: 0 0 auto;

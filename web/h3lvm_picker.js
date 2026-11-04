@@ -187,7 +187,7 @@ function setupPickerUI(node) {
     // Row 2 - the tools and the current selection, kept quieter than the rows above
     // so the cards stay the focus.
     const toolbar = document.createElement("div");
-    toolbar.className = "h3lvm-toolbar";
+    toolbar.className = "h3lvm-toolbar h3-tool-card";
 
     const refreshBtn = document.createElement("button");
     refreshBtn.className = "h3lvm-refresh-btn";

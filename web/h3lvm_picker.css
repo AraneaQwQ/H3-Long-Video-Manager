@@ -252,53 +252,14 @@
     white-space: nowrap;
 }
 
-/* Name entry for a new bin; only visible while the menu is on "＋ 新建项目…". */
-.h3lvm-new {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 8px;
-}
-
-.h3lvm-new[hidden] {
-    display: none;
-}
-
-.h3lvm-new-input {
-    flex: 1 1 auto;
-    min-width: 0;
-    background: #0f172a;
-    border: 1px solid #475569;
-    color: #e2e8f0;
-    border-radius: 4px;
-    font-size: 11px;
-    padding: 3px 6px;
-}
-
-.h3lvm-new-input:focus {
-    outline: none;
-    border-color: #60a5fa;
-}
-
 .h3lvm-new-error {
     font-size: 10px;
     color: #fca5a5;
     white-space: nowrap;
 }
 
-/* Confirm step for deleting a whole bin; the sentence names what is at stake. */
-.h3lvm-danger {
-    flex-wrap: wrap;
-    row-gap: 4px;
-}
-
-.h3lvm-danger-text {
-    flex: 1 1 auto;
-    min-width: 0;
-    font-size: 10px;
-    color: #fca5a5;
-}
-
+/* Confirm step for deleting a whole bin. The sentence names what is at stake, and
+   the destructive button keeps its own colour so it never reads like a normal one. */
 .h3lvm-danger-btn {
     background: #7f1d1d;
     border: 1px solid #b91c1c;
@@ -744,12 +705,13 @@
 .h3lvm-mode-btn {
     flex: 1 1 150px;
     min-width: 150px;
+    min-height: 36px;
     background: #16202e;
     border: 1px solid #334155;
     color: #94a3b8;
-    padding: 7px 10px;
+    padding: 0 12px;
     border-radius: 6px;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -774,8 +736,8 @@
 /* One line of context per mode, in the same quiet tone as the footer hint. */
 .h3lvm-mode-hint {
     flex: 1 1 100%;
-    font-size: 10px;
-    color: #64748b;
+    font-size: 11.5px;
+    color: #94a3b8;
     overflow-wrap: anywhere;
 }
 
@@ -1056,6 +1018,7 @@
 }
 
 .h3lvm-project-modal {
+    position: relative;
     width: min(68vw, 1425px);
     max-height: min(78vh, 1000px);
     display: flex;
@@ -1112,6 +1075,7 @@
 }
 
 .h3lvm-project-search-row {
+    --project-control-h: clamp(30px, 2vw, 40px);
     flex: 0 0 auto;
     display: flex;
     align-items: center;
@@ -1120,39 +1084,160 @@
     padding: clamp(8px, .6vw, 13px) clamp(10px, .8vw, 16px) 5px;
 }
 
-.h3lvm-project-search {
-    flex: 1 1 160px;
-    min-width: 0;
-    padding: 4px 7px;
+/* One box model for every toolbar control, so the row lines up to the pixel. */
+.h3lvm-project-search-row > *,
+.h3lvm-project-create > * {
+    box-sizing: border-box;
+}
+
+/* The one control that starts a new bin: primary colour, first in the row, and it
+   never shrinks. A narrow window wraps the search field under it instead of
+   squeezing the label onto two characters. */
+.h3lvm-project-new-btn {
+    flex: 0 0 auto;
+    height: var(--project-control-h);
+    padding: 0 clamp(12px, 1vw, 18px);
+    color: #ffffff;
+    background: #1d4ed8;
+    border: 1px solid #3b82f6;
+    border-radius: 6px;
+    font-size: clamp(14px, .8vw, 17px);
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background .2s ease, border-color .2s ease;
+}
+
+.h3lvm-project-new-btn:hover {
+    background: #2563eb;
+    border-color: #93c5fd;
+}
+
+.h3lvm-project-new-btn:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: 2px;
+}
+
+/* The name field and its two buttons are always in the toolbar row, right after the
+   button that focuses them. The buttons stay dim until the field holds a name.
+   display:contents keeps the three controls in the row's own flex flow, so the name
+   field and the search field can share the leftover width evenly. */
+.h3lvm-project-create {
+    display: contents;
+}
+
+.h3lvm-project-name {
+    flex: 1 1 0;
+    min-width: clamp(150px, 10vw, 200px);
+    height: calc(var(--project-control-h) * .95);
+    padding: 0 8px;
     color: #e2e8f0;
     background: #0f172a;
     border: 1px solid #475569;
     border-radius: 5px;
-    font-size: clamp(11px, .7vw, 14px);
+    font-size: clamp(13px, .72vw, 16px);
+    user-select: text;
+}
+
+.h3lvm-project-name:focus {
+    outline: none;
+    border-color: #60a5fa;
+}
+
+.h3lvm-project-create-btn,
+.h3lvm-project-cancel-btn {
+    flex: 0 0 auto;
+    height: calc(var(--project-control-h) * .95);
+    padding: 0 clamp(10px, .8vw, 14px);
+    border-radius: 5px;
+    font-size: clamp(13px, .72vw, 16px);
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background .2s ease, border-color .2s ease;
+}
+
+.h3lvm-project-create-btn {
+    color: #ffffff;
+    background: #15803d;
+    border: 1px solid #22c55e;
+}
+
+.h3lvm-project-create-btn:hover {
+    background: #16a34a;
+    border-color: #4ade80;
+}
+
+/* Until the field holds a name there is nothing to confirm or cancel, so both
+   buttons read as unavailable instead of looking like live actions. */
+.h3lvm-project-create-btn:disabled,
+.h3lvm-project-cancel-btn:disabled {
+    color: #64748b;
+    background: #1e293b;
+    border-color: #334155;
+    opacity: .75;
+    cursor: default;
+}
+
+.h3lvm-project-cancel-btn {
+    color: #cbd5e1;
+    background: #1e293b;
+    border: 1px solid #475569;
+}
+
+.h3lvm-project-cancel-btn:hover {
+    color: #ffffff;
+    background: #334155;
+    border-color: #60a5fa;
+}
+
+/* A failure message stays in the row; it truncates instead of pushing the controls. */
+.h3lvm-project-error {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: clamp(120px, 12vw, 220px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #fca5a5;
+    font-size: clamp(11px, .62vw, 13px);
+}
+
+.h3lvm-project-search {
+    flex: 1 1 0;
+    min-width: clamp(150px, 10vw, 200px);
+    height: calc(var(--project-control-h) * .95);
+    padding: 0 8px;
+    color: #e2e8f0;
+    background: #0f172a;
+    border: 1px solid #475569;
+    border-radius: 5px;
+    font-size: clamp(13px, .72vw, 16px);
     user-select: text;
 }
 
 .h3lvm-project-sort,
 .h3lvm-project-columns {
     flex: 0 0 auto;
-    min-width: 96px;
-    padding: 3px 5px;
+    min-width: clamp(96px, 8vw, 118px);
+    height: calc(var(--project-control-h) * .95);
+    padding: 0 6px;
     color: #e2e8f0;
     background: #0f172a;
     border: 1px solid #475569;
     border-radius: 5px;
-    font-size: clamp(10px, .62vw, 13px);
+    font-size: clamp(12px, .68vw, 15px);
     cursor: pointer;
 }
 
 .h3lvm-project-columns {
-    min-width: 62px;
+    min-width: clamp(64px, 5vw, 78px);
 }
 
 .h3lvm-project-sort-dir {
     flex: 0 0 auto;
-    width: clamp(24px, 1.4vw, 32px);
-    height: clamp(24px, 1.4vw, 32px);
+    width: var(--project-control-h);
+    height: var(--project-control-h);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1162,12 +1247,11 @@
     border: 1px solid #475569;
     border-radius: 5px;
     cursor: pointer;
-    font-size: clamp(11px, .7vw, 14px);
+    font-size: clamp(13px, .72vw, 16px);
 }
 
 .h3lvm-project-search:focus,
-.h3lvm-project-rename-input:focus,
-.h3lvm-project-modal .h3lvm-new-input:focus {
+.h3lvm-project-rename-input:focus {
     outline: none;
     border-color: #60a5fa;
 }
@@ -1310,17 +1394,138 @@
     font-size: 12px;
 }
 
-.h3lvm-project-modal .h3lvm-new {
-    margin: 0 clamp(12px, 1vw, 20px) 8px;
-    padding: 2px 0;
-}
-
 .h3lvm-project-modal-hint {
     flex: 0 0 auto;
     padding: 7px 12px 9px;
     color: #64748b;
     border-top: 1px solid #263244;
     font-size: 10px;
+}
+
+/* Delete confirmation: a centered card over the bin grid. The old version was a row
+   above the grid that pushed every tile down, so the sentence could scroll away. */
+.h3lvm-project-confirm {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(10, 16, 27, .78);
+}
+
+.h3lvm-project-confirm[hidden] {
+    display: none;
+}
+
+.h3lvm-project-confirm-card {
+    width: min(560px, 100%);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: clamp(14px, 1vw, 20px);
+    background: #1d2532;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, .55);
+}
+
+.h3lvm-project-confirm-title {
+    color: #fecaca;
+    font-size: clamp(13px, .85vw, 16px);
+    font-weight: 700;
+}
+
+.h3lvm-project-confirm-text {
+    color: #cbd5e1;
+    font-size: clamp(11px, .72vw, 14px);
+    line-height: 1.5;
+}
+
+/* The shared error class is nowrap for one-line tiles; inside the card it has the
+   whole width and must wrap instead of running out of the overlay. */
+.h3lvm-project-confirm-card .h3lvm-new-error {
+    white-space: normal;
+    line-height: 1.4;
+}
+
+.h3lvm-project-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 2px;
+}
+
+.h3lvm-project-confirm-actions .h3lvm-danger-btn,
+.h3lvm-project-confirm-actions .h3lvm-refresh-btn {
+    height: 30px;
+    padding: 0 14px;
+    font-size: 13px;
+    border-radius: 6px;
+}
+
+/* ---------------------------------------------------------------------------
+   2026-11-04: in-node tool rows.
+   Deck, picker and reference panels use one card shell for their controls, so
+   刷新 / 卡片大小 / 状态 read as one toolbar instead of loose text. Scoped to
+   .h3-tool-card on purpose: the Guide node's fixed 112px strip keeps its own
+   compact geometry. */
+.h3-tool-card {
+    padding: 7px 9px;
+    background: #16202e;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    gap: 8px;
+}
+
+.h3lvm-toolbar.h3-tool-card {
+    margin-bottom: 8px;
+}
+
+.h3-tool-card .h3lvm-refresh-btn {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    height: 28px;
+    padding: 0 11px;
+    border-radius: 6px;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.h3-tool-card .h3lvm-refresh-btn:disabled {
+    opacity: .45;
+    cursor: default;
+    transform: none;
+}
+
+.h3-tool-card .h3lvm-tool-label {
+    font-size: 12px;
+    color: #94a3b8;
+}
+
+.h3-tool-card .h3lvm-status {
+    font-size: 12px;
+    color: #93c5fd;
+    font-weight: 600;
+}
+
+.h3-tool-card .h3lvm-zoom-label {
+    min-width: 44px;
+    font-size: 12px;
+    color: #cbd5e1;
+}
+
+.h3-tool-card .h3lvm-tool-sep {
+    height: 18px;
+    background: #3a4658;
+}
+
+.h3-tool-card .h3lvm-spacer {
+    flex: 1 1 auto;
 }
 
 /* Zoomed-down cards: keep the segment label on one line and drop the long

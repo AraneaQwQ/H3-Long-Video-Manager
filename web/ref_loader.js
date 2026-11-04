@@ -68,6 +68,24 @@ const RESAMPLE_FIELD = "resampling_method";
 const UPSCALE_FIELD = "upscale_small_images";
 const PROJECT_FIELD = "project_name";
 
+// Uploads go into one folder of ComfyUI's input directory that only these two loaders
+// write to. The input root is shared with every other node, so without this a cleanup
+// could not tell a reference image apart from anybody else's upload. The backend
+// (comfyui/ref_presets.py) uses the same names when it adopts older presets.
+const UPLOAD_ROOT = "h3-lvm-refs";
+
+// Same rules as the backend's sanitize_project_name: uploads go into the folder the
+// project's preset is filed under, so a name never produces a folder and a preset
+// that disagree.
+function projectFolder(name) {
+    const cleaned = String(name ?? "")
+        .trim()
+        .replace(/[\\/:*?"<>|\x00-\x1f]+/g, "_")
+        .trim()
+        .replace(/^\.+|\.+$/g, "");
+    return cleaned || "H3_LVM";
+}
+
 // Fixed on purpose: no collapse button, no self-resizing. The deck scrolls inside.
 const SPECS = {
     [IMAGE_NODE]: {
@@ -77,6 +95,7 @@ const SPECS = {
         // It is a constant: pressing 刷新 / 卡片大小 still never resizes the node.
         panelH: 440,
         accept: "image/png,image/jpeg,image/webp,image/bmp,image/gif",
+        uploadSubfolder: `${UPLOAD_ROOT}/image`,
         addLabel: "＋ 添加参考图",
         deckLabel: "🖼 参考图槽位",
         emptyText: "还没有参考图。点「添加参考图」，或把图片直接拖到这里。",
@@ -87,6 +106,7 @@ const SPECS = {
         max: MAX_REF_AUDIOS,
         panelH: 360,
         accept: "audio/*,.wav,.mp3,.m4a,.flac,.ogg,.opus",
+        uploadSubfolder: `${UPLOAD_ROOT}/audio`,
         addLabel: "＋ 添加参考音频",
         deckLabel: "🎧 参考音频槽位",
         emptyText: "还没有参考音频。点「添加参考音频」，或把音频文件直接拖到这里。",
@@ -189,13 +209,20 @@ function installRefPanel(node, spec) {
         // lists that library and counts its cards - the video bins and the other
         // kind's presets are different material in different folders.
         scope: spec.kind,
-        onChange: () => { void refreshPreset(); },
+        // Switching bins switches the preset this panel shows: the outgoing project
+        // is written first, then the new bin's cards are loaded, so a switch never
+        // leaves the user staring at the previous project's cards.
+        onChange: (name) => { void switchProject(name); },
     });
     container.appendChild(menu.element);
 
+    // The project this panel is currently showing. Kept apart from the widget value
+    // because a switch writes the outgoing project before the new name takes over.
+    let activeProject = menu.name();
+
     // --- Tool row: same shell as the deck panels, so the two look like one family ---
     const toolbar = document.createElement("div");
-    toolbar.className = "h3lvm-toolbar";
+    toolbar.className = "h3lvm-toolbar h3-tool-card";
 
     const refreshBtn = document.createElement("button");
     refreshBtn.className = "h3lvm-refresh-btn";
@@ -222,7 +249,7 @@ function installRefPanel(node, spec) {
 
     // --- Add row ---
     const addRow = document.createElement("div");
-    addRow.className = "h3ref-add-row";
+    addRow.className = "h3ref-add-row h3-tool-card h3-tool-actions";
 
     const addBtn = document.createElement("button");
     addBtn.className = "h3lvm-refresh-btn h3ref-add";
@@ -357,6 +384,7 @@ function installRefPanel(node, spec) {
         widget.callback?.(widget.value);
         node.setDirtyCanvas?.(true, true);
         node.graph?.setChanged?.();
+        schedulePresetSave();
     }
 
     function updateStatus(extra = "") {
@@ -393,17 +421,129 @@ function installRefPanel(node, spec) {
         return pickPresetEntries(preset);
 }
 
-    async function refreshPreset() {
-        const project = menu.name();
+    // --- Auto-save ---
+    //
+    // The project's preset is the panel's own document. Every card edit writes it
+    // back after a short pause, so adding images no longer requires a trip to the
+    // 存为 button, and switching projects cannot leave the arrangement behind.
+    // Writes are debounced because a drag or a rename commits several times.
+    let saveTimer = 0;
+    let pendingSave = false;
+    let suppressAutoSave = false;
+    signal.addEventListener("abort", () => window.clearTimeout(saveTimer), { once: true });
+
+    function schedulePresetSave() {
+        if (suppressAutoSave) return;
+        pendingSave = true;
+        window.clearTimeout(saveTimer);
+        saveTimer = window.setTimeout(() => {
+            saveTimer = 0;
+            void flushPresetSave();
+        }, 500);
+    }
+
+    async function flushPresetSave(project = activeProject) {
+        window.clearTimeout(saveTimer);
+        saveTimer = 0;
+        if (!pendingSave) return;
+        pendingSave = false;
+        await writePreset(project, serializeMedia(entries), { quiet: true });
+    }
+
+    // One writer for both the automatic and the button save, so the two can never
+    // disagree about what a preset holds. A response for a project the panel has
+    // already left only refreshes the bin counts, never the cards on screen.
+    async function writePreset(project, serialized, { quiet = false } = {}) {
+        try {
+            const res = await api.fetchApi('/h3_lvm/ref_presets', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ project, kind: spec.kind, entries: serialized }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                if (!quiet) updateStatus(data.error || `保存失败（HTTP ${res.status}）`);
+                return false;
+            }
+            if (project === activeProject) {
+                await refreshPreset();
+                await menu.refresh();
+            }
+            return true;
+        } catch (error) {
+            if (!signal.aborted) console.warn('[H3 Ref Loader] preset save failed:', error);
+            if (!quiet) updateStatus('保存失败：连不上后台服务。');
+            return false;
+        }
+    }
+
+    // A rename or delete removes the old folder; writing to that name afterwards
+    // would silently recreate it. The pending save is skipped when the bin is gone.
+    async function projectExists(name) {
+        try {
+            const res = await api.fetchApi(
+                `/h3_lvm/projects?scope=${encodeURIComponent(spec.kind)}`, { cache: 'no-store' });
+            if (!res.ok) return true;
+            const data = await res.json().catch(() => ({}));
+            return !Array.isArray(data.projects) || data.projects.some(bin => bin.name === name);
+        } catch (error) {
+            return true;
+        }
+    }
+
+    // Switching the bin writes the outgoing project, then replaces the cards with the
+    // incoming project's preset. Nothing is written for an empty incoming preset: the
+    // next card edit is what creates it.
+    let switchToken = 0;
+    async function switchProject(name) {
+        if (!name) return;
+        if (name === activeProject) {
+            void refreshPreset();
+            return;
+        }
+        // Two clicks can start two switches; only the last one may finish loading,
+        // otherwise the cards could end up belonging to a bin the menu left.
+        const token = ++switchToken;
+        const previous = activeProject;
+        if (pendingSave && await projectExists(previous)) {
+            await flushPresetSave(previous);
+        } else {
+            window.clearTimeout(saveTimer);
+            saveTimer = 0;
+            pendingSave = false;
+        }
+        // The name moves first so a reply for the outgoing project can no longer
+        // reach the screen while the incoming preset is being read.
+        activeProject = name;
+        await refreshPreset(name, token);
+        if (token !== switchToken || signal.aborted) return;
+        suppressAutoSave = true;
+        entries = applyPreset([], presetEntries(), spec.max).entries;
+        commit();
+        suppressAutoSave = false;
+        render();
+        const saved = entries.length;
+        updateStatus(saved
+            ? `已切换到「${name}」并载入 ${saved} 张卡片`
+            : `已切换到「${name}」；这个项目还没有预设`);
+    }
+
+    // Last request wins: a slow reply for a bin the panel already left must not
+    // overwrite the preset the newer one brought in.
+    let presetSeq = 0;
+    async function refreshPreset(project = activeProject, token = 0) {
+        const seq = ++presetSeq;
         try {
             const res = await api.fetchApi(
                 `/h3_lvm/ref_presets?project=${encodeURIComponent(project)}&kind=${spec.kind}`,
                 { cache: 'no-store' });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
-            if (signal.aborted) return;
+            if (seq !== presetSeq || signal.aborted) return;
+            if (token && token !== switchToken) return;
             preset = data;
         } catch (error) {
+            if (seq !== presetSeq) return;
             if (!signal.aborted) console.warn('[H3 Ref Loader] preset read failed:', error);
             preset = null;
         }
@@ -428,7 +568,10 @@ function installRefPanel(node, spec) {
             updateStatus('卡片已经和该预设一致');
             return;
         }
+        // Loading is not an edit: it must not bump the preset's own timestamp.
+        suppressAutoSave = true;
         commit();
+        suppressAutoSave = false;
         render();
         const notes = [`已按保存的顺序载入 ${result.restored} 张`];
         if (result.parked) notes.push(`其中 ${result.parked} 张保持跳过`);
@@ -439,31 +582,20 @@ function installRefPanel(node, spec) {
     }
 
     // Saving sends the whole list, parked cards included, so a preset restores a
-    // project's references exactly as they were arranged.
+    // project's references exactly as they were arranged. Edits already write this
+    // automatically; the button stays as the explicit "save now" the user expects.
     async function savePreset() {
         if (!entries.length) {
             updateStatus('没有卡片可保存');
             return;
         }
-        const project = menu.name();
         savePresetBtn.disabled = true;
         try {
-            const res = await api.fetchApi('/h3_lvm/ref_presets', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ project, kind: spec.kind, entries: serializeMedia(entries) }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                updateStatus(data.error || `保存失败（HTTP ${res.status}）`);
-                return;
-            }
-            await refreshPreset();
-            await menu.refresh();
-            updateStatus(`已保存到项目「${data.name || project}」的预设（${data.saved} 个，只存路径）`);
-        } catch (error) {
-            if (!signal.aborted) console.warn('[H3 Ref Loader] preset save failed:', error);
-            updateStatus('保存失败：连不上后台服务。');
+            pendingSave = false;
+            window.clearTimeout(saveTimer);
+            saveTimer = 0;
+            const ok = await writePreset(activeProject, serializeMedia(entries));
+            if (ok) updateStatus(`已保存到项目「${activeProject}」的预设（${entries.length} 个，只存路径）`);
         } finally {
             savePresetBtn.disabled = false;
         }
@@ -946,7 +1078,7 @@ function installRefPanel(node, spec) {
 
     async function replaceWith(index, file) {
         try {
-            const uploaded = await uploadFile(file);
+            const uploaded = await uploadFile(file, activeProject);
             entries = replaceEntry(entries, index, uploaded);
             commit();
             render();
@@ -967,9 +1099,12 @@ function installRefPanel(node, spec) {
         updateStatus(`上传中 0/${usable.length}`);
         const incoming = [];
         const failed = [];
+        // One batch belongs to one project: if the menu changes while the files are
+        // still going up, they must all land in the project they were added to.
+        const project = activeProject;
         for (const [position, file] of usable.entries()) {
             try {
-                incoming.push(await uploadFile(file));
+                incoming.push(await uploadFile(file, project));
             } catch (error) {
                 failed.push(file.name);
             }
@@ -987,10 +1122,10 @@ function installRefPanel(node, spec) {
         if (notes.length) updateStatus(notes.join(" · "));
     }
 
-    async function uploadFile(file) {
+    async function uploadFile(file, project) {
         const form = new FormData();
         form.append("image", file);
-        form.append("subfolder", "");
+        form.append("subfolder", `${spec.uploadSubfolder}/${projectFolder(project)}`);
         form.append("type", "input");
         const res = await api.fetchApi("/upload/image", { method: "POST", body: form });
         if (res.status !== 200) {
@@ -998,7 +1133,12 @@ function installRefPanel(node, spec) {
         }
         const data = await res.json().catch(() => ({}));
         if (!data.name) throw new Error("上传失败：服务器没有返回文件名");
-        return { filename: data.name, subfolder: data.subfolder || "", type: data.type || "input" };
+        return {
+            filename: data.name,
+            subfolder: typeof data.subfolder === "string" && data.subfolder
+                ? data.subfolder : `${spec.uploadSubfolder}/${projectFolder(project)}`,
+            type: data.type || "input",
+        };
     }
 
     // --- Card details, asked from the same code the node runs ---
@@ -1337,6 +1477,15 @@ function installRefPanel(node, spec) {
     if (projectWidget?.options) projectWidget.options.hidden = true;
 
     node._h3lvmRefRefresh = () => {
+        // configure() can load a graph whose project_name differs from the bin this
+        // panel was showing. Follow the widget, but never load the preset here: the
+        // cards are whatever the saved graph holds.
+        if (menu.name() !== activeProject) {
+            window.clearTimeout(saveTimer);
+            saveTimer = 0;
+            pendingSave = false;
+            activeProject = menu.name();
+        }
         entries = readEntries();
         render();
         void refreshPreset();

@@ -29,7 +29,7 @@ export function createDeck({
 }) {
     // --- Tool row: reload, card size, and what this bin holds ---
     const toolbar = document.createElement("div");
-    toolbar.className = "h3lvm-toolbar";
+    toolbar.className = "h3lvm-toolbar h3-tool-card";
 
     const refreshBtn = document.createElement("button");
     refreshBtn.className = "h3lvm-refresh-btn";
