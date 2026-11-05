@@ -133,7 +133,15 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
 
     const chevron = makeElement("span", "h3lvm-project-chevron", "▾");
     currentCard.append(chevron);
-    projectRow.append(projectLabel, currentCard);
+
+    // The folder the current bin lives in is a property of the bin, so the open
+    // button sits beside the project card instead of inside the popup. It always
+    // acts on the project the menu currently shows.
+    const openDirBtn = makeElement("button", "h3lvm-project-open", "📂 打开本地目录");
+    openDirBtn.type = "button";
+    openDirBtn.title = "在资源管理器中打开当前项目的素材库文件夹";
+
+    projectRow.append(projectLabel, currentCard, openDirBtn);
     root.appendChild(projectRow);
 
     // Popup: a fixed overlay escapes the DOM widget's overflow clipping, so the
@@ -533,6 +541,46 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         openModal();
     };
 
+    // Opening a folder is a one-click action, so the label has to say what happened
+    // even when it fails: a silent click on this button would read as a broken node.
+    const OPEN_DIR_LABEL = "📂 打开本地目录";
+    const OPEN_DIR_TITLE = "在资源管理器中打开当前项目的素材库文件夹";
+    let openDirTimer = 0;
+    function flashOpenDir(text, tip) {
+        openDirBtn.textContent = text;
+        openDirBtn.title = tip;
+        window.clearTimeout(openDirTimer);
+        openDirTimer = window.setTimeout(() => {
+            openDirBtn.textContent = OPEN_DIR_LABEL;
+            openDirBtn.title = OPEN_DIR_TITLE;
+        }, 2600);
+    }
+
+    openDirBtn.onclick = async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const project = currentName();
+        openDirBtn.disabled = true;
+        try {
+            const res = await api.fetchApi("/h3_lvm/project/open", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ project, scope }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                flashOpenDir("⚠ 打不开目录", data.error || `打开失败（HTTP ${res.status}）`);
+                return;
+            }
+            flashOpenDir("📂 已打开", `已在资源管理器中打开「${project}」`);
+        } catch (error) {
+            console.warn("[H3 LVM] open project folder failed:", error);
+            flashOpenDir("⚠ 打不开目录", "打开失败：连不上后台服务。");
+        } finally {
+            openDirBtn.disabled = false;
+        }
+    };
+
     closeBtn.onclick = (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -667,7 +715,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         return inFlight;
     }
 
-    async function setProject(name, closeAfter = false) {
+    async function setProject(name, closeAfter = false, source = "select") {
         resetCreateInput();
         closeDeleteRow();
         editingName = "";
@@ -676,7 +724,9 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
             widget.callback?.(name);
             node.setDirtyCanvas?.(true, true);
         }
-        onChange?.(name);
+        // source tells a panel whether the cards changed with the bin. A rename keeps
+        // the same bin under a new name, so a selection made inside it must survive.
+        onChange?.(name, source);
         await refresh();
         if (closeAfter) closeModal();
     }
@@ -747,7 +797,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
             const newName = data.name || typed;
             const wasCurrent = currentName() === oldName;
             editingName = "";
-            if (wasCurrent) await setProject(newName, false);
+            if (wasCurrent) await setProject(newName, false, "rename");
             else await refresh();
         } catch (err) {
             console.warn("[H3 LVM] rename project failed:", err);
@@ -793,6 +843,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     }
 
     signal.addEventListener("abort", () => {
+        window.clearTimeout(openDirTimer);
         overlay.remove();
         if (openMenuClose === closeModal) openMenuClose = null;
     }, { once: true });

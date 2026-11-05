@@ -246,6 +246,49 @@ class TestProjectScope(ApiFixture):
             self.assertEqual(await self.project_names(scope), ["Story"])
 
 
+class TestOpenProjectFolder(ApiFixture):
+    async def open_project(self, project, scope):
+        created = await self.post_json(
+            "/h3_lvm/project", {"project": project, "scope": scope})
+        self.assertEqual(created.status, 200)
+        with mock.patch.object(server_api, "open_local_folder") as opened:
+            response = await self.post_json(
+                "/h3_lvm/project/open", {"project": project, "scope": scope})
+        self.assertEqual(response.status, 200)
+        opened.assert_called_once()
+        return opened.call_args.args[0]
+
+    async def test_each_scope_opens_its_own_project_folder(self):
+        expected = {
+            "segments": server_api.segment_project_dir("Open", create=False),
+            "uploads": server_api.upload_project_dir("Open", create=False),
+            "image": server_api.ref_project_dir("image", "Open", create=False),
+            "audio": server_api.ref_project_dir("audio", "Open", create=False),
+        }
+        for scope, path in expected.items():
+            opened = await self.open_project("Open", scope)
+            self.assertEqual(opened, path, "scope picks the library, not a filter")
+            self.assertTrue(os.path.isdir(path))
+
+    async def test_a_project_that_has_no_folder_is_refused(self):
+        with mock.patch.object(server_api, "open_local_folder") as opened:
+            response = await self.post_json(
+                "/h3_lvm/project/open", {"project": "Never", "scope": "segments"})
+        self.assertEqual(response.status, 404)
+        opened.assert_not_called()
+        self.assertIn("目录不存在", (await response.json())["error"])
+
+    async def test_an_unknown_scope_and_a_cross_site_post_open_nothing(self):
+        with mock.patch.object(server_api, "open_local_folder") as opened:
+            refused = await self.post_json(
+                "/h3_lvm/project/open", {"project": "Open", "scope": "whatever"})
+            foreign = await self.post_json(
+                "/h3_lvm/project/open", {"project": "Open", "scope": "segments"}, origin=False)
+        self.assertEqual(refused.status, 400)
+        self.assertEqual(foreign.status, 403)
+        opened.assert_not_called()
+
+
 class TestUploadRoutes(ApiFixture):
     async def test_import_registers_a_card_and_broadcasts_it(self):
         response = await self.upload("show", self.clip(audio=True))

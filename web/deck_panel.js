@@ -97,6 +97,13 @@ export function createDeck({
     let rendering = false;
     let pendingRender = false;
     let deletedBeforeRender = new Set();
+    // Set by the project menu when the user changes bins: the old selection belongs
+    // to another bin, so that bin's next render starts at its first card.
+    let selectFirstProject = null;
+
+    function selectFirstSegment(project) {
+        selectFirstProject = project;
+    }
 
     function widgetFor(name) {
         return node.widgets?.find(item => item.name === name);
@@ -302,6 +309,9 @@ export function createDeck({
             return;
         }
         if (signal.aborted) return;
+        // The bin changed while this reply was on its way: the pending render will
+        // read the new bin, and its first-card reset must not be consumed here.
+        if (currentProject() !== project) return;
 
         const ordered = [...segments]
             .map(seg => ({ seg, id: Number(seg.segment_id) }))
@@ -311,7 +321,9 @@ export function createDeck({
         segmentCount = ordered.length;
         const segmentWidget = widgetFor(segmentField);
         const selected = selectedSegment();
-        if (segmentWidget && deletedIds.has(selected)) {
+        const selectFirst = selectFirstProject === project;
+        if (selectFirst) selectFirstProject = null;
+        if (segmentWidget && (selectFirst || deletedIds.has(selected))) {
             const next = ordered[0]?.id ?? 1;
             if (next !== selected) {
                 segmentWidget.value = next;
@@ -440,5 +452,5 @@ export function createDeck({
     api.addEventListener("h3_lvm/changed", onChanged);
     signal.addEventListener("abort", () => api.removeEventListener("h3_lvm/changed", onChanged), { once: true });
 
-    return { render, toolbar, deck, footer };
+    return { render, toolbar, deck, footer, selectFirstSegment };
 }

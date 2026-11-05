@@ -228,6 +228,39 @@
     white-space: nowrap;
 }
 
+/* Opens the current bin's folder on the host. It lives in the panel, not the popup,
+   because "where is this project on disk" is asked while working in the node. */
+.h3lvm-project-open {
+    flex: 0 0 auto;
+    height: clamp(28px, 1.8vw, 34px);
+    padding: 0 clamp(8px, .7vw, 12px);
+    color: #cbd5e1;
+    background: #20252d;
+    border: 1px solid #475569;
+    border-radius: 6px;
+    font-size: clamp(11px, .5vw, 14px);
+    font-family: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background .2s ease, border-color .2s ease, color .2s ease;
+}
+
+.h3lvm-project-open:hover {
+    color: #fff;
+    background: #263244;
+    border-color: #60a5fa;
+}
+
+.h3lvm-project-open:focus-visible {
+    outline: 2px solid #60a5fa;
+    outline-offset: 2px;
+}
+
+.h3lvm-project-open:disabled {
+    opacity: .55;
+    cursor: default;
+}
+
 .h3lvm-project {
     flex: 1 1 220px;
     min-width: 180px;

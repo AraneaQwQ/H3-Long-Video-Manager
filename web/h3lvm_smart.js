@@ -204,7 +204,10 @@ export function installSmartPanel(node, { leading = null, leadingHeight = 0 } = 
         node,
         widget: widgetFor(PROJECT_FIELD),
         signal,
-        onChange: () => void deck.render(),
+        onChange: (name, source) => {
+            if (source !== "rename") deck.selectFirstSegment(name);
+            void deck.render();
+        },
     });
     container.appendChild(menu.element);
     node._h3lvmRefreshProjects = menu.refresh;

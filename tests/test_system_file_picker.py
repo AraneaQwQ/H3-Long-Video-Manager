@@ -54,6 +54,29 @@ class TestSystemFilePicker(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "已经打开"):
                 system_file_picker.choose_system_video()
 
+    def test_a_folder_opens_even_when_raising_it_fails(self):
+        # The shell already opened the folder; a window lookup failure is not an error
+        # the panel should report as a failed request.
+        with mock.patch.object(system_file_picker.platform, "system", return_value="Windows"), \
+                mock.patch.object(system_file_picker, "_explorer_windows", return_value=[]), \
+                mock.patch.object(system_file_picker, "_raise_explorer",
+                                  side_effect=OSError("no window yet")), \
+                mock.patch.object(system_file_picker.os, "startfile") as startfile:
+            system_file_picker.open_local_folder(self.tmpdir)
+        startfile.assert_called_once_with(os.path.realpath(self.tmpdir))
+
+    def test_opening_a_folder_is_windows_only(self):
+        with mock.patch.object(system_file_picker.platform, "system", return_value="Linux"):
+            with self.assertRaisesRegex(RuntimeError, "仅支持 Windows"):
+                system_file_picker.open_local_folder(self.tmpdir)
+
+    def test_the_window_the_shell_just_created_is_the_one_raised(self):
+        folder = os.path.join(self.tmpdir, "Movie")
+        with mock.patch.object(system_file_picker, "_explorer_windows",
+                               side_effect=[[(1, "Old")], [(1, "Old"), (2, "Movie")]]), \
+                mock.patch("ctypes.windll", mock.MagicMock()):
+            self.assertTrue(system_file_picker._raise_explorer(folder, {1}, timeout=0.5))
+
 
 if __name__ == "__main__":
     unittest.main()

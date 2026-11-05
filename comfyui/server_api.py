@@ -5,6 +5,7 @@ Registers routes with ComfyUI's PromptServer:
   POST /h3_lvm/project        -> create an empty project (same scope)
   POST /h3_lvm/project/rename -> rename that story in every library that holds it
   POST /h3_lvm/project/delete -> delete a whole project (same scope)
+  POST /h3_lvm/project/open   -> open that project's folder in the host file manager
 
 scope picks the folder, not a filter. "segments" is the cut bin the Manager and the Smart
 Split write; "uploads" is the Picker's second library of whole videos the user brought in;
@@ -90,7 +91,7 @@ from .source_preview import (
     create_upload_preview,
     source_preview_path,
 )
-from .system_file_picker import choose_system_video
+from .system_file_picker import choose_system_video, open_local_folder
 
 
 
@@ -136,6 +137,16 @@ def _project_library(scope: str):
                 lambda project: create_reference_project(scope, project),
                 lambda project, confirm: delete_reference_project(scope, project, confirm))
     return list_projects_with_counts, create_project, delete_project  # SEGMENT_SCOPE
+
+
+def _project_folder(scope: str, project) -> str:
+    """The folder a project already lives in, without creating anything."""
+    name = sanitize_project_name(project)
+    if scope == UPLOAD_SCOPE:
+        return upload_project_dir(name, create=False)
+    if scope in KIND_ROOTS:
+        return ref_project_dir(scope, name, create=False)
+    return segment_project_dir(name, create=False)
 
 
 def _remove_partial(path: str) -> None:
@@ -324,6 +335,37 @@ def register_h3lvm_routes() -> None:
         if not result["deleted"]:
             return web.json_response({"error": "项目已不存在，请刷新列表。"}, status=404)
         return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/h3_lvm/project/open")
+    async def handle_open_project(request):
+        """Open one project's folder in the host's file manager."""
+        blocked = _csrf_block(request)
+        if blocked is not None:
+            return blocked
+        if request.content_type != "application/json":
+            return web.json_response({"error": "Expected JSON"}, status=415)
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Expected an object")
+            scope = _scope(body.get("scope"))
+            name = sanitize_project_name(body.get("project"))
+            folder = _project_folder(scope, name)
+            if not os.path.isdir(folder):
+                return web.json_response(
+                    {"error": "项目目录不存在，请先保存至少一张卡片或一个片段。"}, status=404)
+            await asyncio.to_thread(open_local_folder, folder)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except (TypeError, KeyError):
+            return web.json_response({"error": "Invalid project name"}, status=400)
+        except RuntimeError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
+        except OSError:
+            logger.exception("Failed to open project folder")
+            return web.json_response({"error": "打开目录失败：没有权限或资源管理器没有响应。"}, status=409)
+        return web.json_response({"opened": name, "scope": scope},
+                                 headers={"Cache-Control": "no-store"})
 
     @routes.post("/h3_lvm/project/rename")
     async def handle_rename_project(request):

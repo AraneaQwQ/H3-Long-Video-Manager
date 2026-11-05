@@ -252,6 +252,11 @@ function setupPickerUI(node) {
     let modeState = readModeState(node.properties);
     let builtMode = null;
     let generation = 0;
+    // A card number belongs to its bin: after a project switch the next load of that
+    // bin starts at its first card instead of keeping a number from another story.
+    // The name is remembered rather than a bare flag, so two quick switches still
+    // reset the bin the user actually landed on.
+    let resetSelectionFor = null;
     let importing = false;
     // A reorder reloads the deck itself, so the matching event must not reload it twice.
     let reordering = false;
@@ -308,6 +313,12 @@ function setupPickerUI(node) {
             widget: projectWidget,
             signal: menuLifetime.signal,
             scope: mode,
+            // The widget callback already starts the reload; setting the name here is
+            // enough because it runs before that reload reaches the fetched list.
+            // Renaming the current bin keeps its cards, so its selection stays.
+            onChange: (name, source) => {
+                if (source !== "rename") resetSelectionFor = name;
+            },
         });
         projectCount = menu.countText;
         menuSlot.appendChild(menu.element);
@@ -337,6 +348,9 @@ function setupPickerUI(node) {
             void loadDeck();
             return;
         }
+        // Mode switching restores that mode's own selection, so a pending project
+        // reset must not override the number stored for the target mode.
+        resetSelectionFor = null;
         // Leave the current mode: keep what is on screen, then restore the target.
         persist();
         if (modeWidget) modeWidget.value = target; // graph truth; no callback, no loop
@@ -353,6 +367,9 @@ function setupPickerUI(node) {
     // source_mode and no stored state, and must open exactly as it did before - the
     // other mode's defaults never overwrite it.
     function syncFromGraph() {
+        // A loaded workflow owns both project and number, so a pending switch reset
+        // must not overwrite the restored segment.
+        resetSelectionFor = null;
         const wanted = graphMode();
         if (wanted !== builtMode) buildForMode(wanted);
         modeState = seedState(modeState, wanted, {
@@ -403,7 +420,19 @@ function setupPickerUI(node) {
             if (isStale(request, mode, project)) return;
             const segments = data.segments || [];
             projectCount.textContent = segments.length ? `共 ${segments.length} 段` : "空库";
-            if (deletedId != null && Number(segmentWidget?.value) === Number(deletedId)) {
+            // A project switch starts at the first card of the new bin: the number
+            // from the previous story means nothing here even when it also exists.
+            const resetToFirst = resetSelectionFor === project;
+            if (resetToFirst) resetSelectionFor = null;
+            if (resetToFirst) {
+                const first = segments[0]?.segment_id ?? 1;
+                if (Number(segmentWidget?.value) !== Number(first)) {
+                    segmentWidget.value = first;
+                    persist();
+                    node.setDirtyCanvas?.(true, true);
+                }
+                if (segments.length) statusText.textContent = `当前选中：片段 ${first}`;
+            } else if (deletedId != null && Number(segmentWidget?.value) === Number(deletedId)) {
                 segmentWidget.value = segments[0]?.segment_id || 1;
                 statusText.textContent = segments.length ? `当前选中：片段 ${segmentWidget.value}` : "该库暂无片段";
                 node.setDirtyCanvas?.(true, true);
@@ -526,7 +555,19 @@ function setupPickerUI(node) {
             const videos = Array.isArray(data.videos) ? data.videos : [];
             projectCount.textContent = videos.length ? `共 ${videos.length} 个视频` : "空视频库";
 
-            if (deletedId != null) {
+            // Same rule as the cut segments: a new bin starts at its first video,
+            // never at a number left over from the previous story.
+            const resetToFirst = resetSelectionFor === project;
+            if (resetToFirst) resetSelectionFor = null;
+            if (resetToFirst) {
+                const first = videos[0]?.segment_id || 1;
+                if (Number(segmentWidget?.value) !== Number(first)) {
+                    segmentWidget.value = first;
+                    persist();
+                    node.setDirtyCanvas?.(true, true);
+                }
+                if (videos.length) statusText.textContent = `当前选中：视频 ${first}`;
+            } else if (deletedId != null) {
                 // Deleting closes the gap: the cards after it move up one number, so the
                 // selection follows the card it was pointing at. Only a deleted selection
                 // falls back to the first card.
