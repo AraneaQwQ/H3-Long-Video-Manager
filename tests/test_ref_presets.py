@@ -135,6 +135,8 @@ class TestPresetRoundTrip(LibraryFixture):
         self.assertEqual(result["name"], "科幻短片")
         self.assertEqual(result["kind"], "image")
         self.assertEqual(result["saved"], 2)
+        self.assertTrue(result["cover_url"].startswith("/h3_lvm/image_thumbnail?"))
+        self.assertTrue(result["updated_at"])
         self.assertEqual(card_names(load_references(IMAGE, "科幻短片")), ["b.png", "a.png"])
 
     def test_a_preset_is_paths_only_and_costs_one_small_file(self):

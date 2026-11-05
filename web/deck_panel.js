@@ -15,6 +15,7 @@ import { openPreview } from "./preview_overlay.js";
 import { appendThumbnail } from "./thumb_fit.js";
 import { createCardZoom } from "./card_zoom.js";
 import { addDeleteButton } from "./delete_button.js";
+import { fetchJsonShared } from "./json_request.js";
 
 export function createDeck({
     node,
@@ -97,6 +98,7 @@ export function createDeck({
     let rendering = false;
     let pendingRender = false;
     let deletedBeforeRender = new Set();
+    let renderedDeckKey = "";
     // Set by the project menu when the user changes bins: the old selection belongs
     // to another bin, so that bin's next render starts at its first card.
     let selectFirstProject = null;
@@ -300,9 +302,9 @@ export function createDeck({
 
         let segments = [];
         try {
-            const res = await api.fetchApi(`/h3_lvm/segments?project=${encodeURIComponent(project)}`, { cache: "no-store" });
-            if (!res.ok) return;
-            const data = await res.json();
+            const { ok, data } = await fetchJsonShared(
+                api, `/h3_lvm/segments?project=${encodeURIComponent(project)}`);
+            if (!ok) return;
             segments = data.segments || [];
         } catch (error) {
             if (!signal.aborted) console.warn("[H3 LVM] deck panel could not load segments:", error);
@@ -342,16 +344,34 @@ export function createDeck({
         if (ordered.length < 2 && mergeMode) setMergeMode(false);
         updateMergeUi();
 
+        const currentSel = selectedSegment();
+        const renderKey = JSON.stringify({
+            project,
+            segments: ordered.map(item => item.seg),
+            currentSel,
+            runIds: [...runIds].sort((a, b) => a - b),
+            picked: pickedIds(),
+            mergeMode,
+            merging,
+            deleting,
+        });
+        const rebuild = renderKey !== renderedDeckKey;
+
         if (!ordered.length) {
-            deck.innerHTML = '<div class="h3lvm-empty">' + emptyText + "</div>";
+            if (rebuild) {
+                deck.innerHTML = '<div class="h3lvm-empty">' + emptyText + "</div>";
+                renderedDeckKey = renderKey;
+            }
             updateStatus("空库");
             return;
         }
 
-        const currentSel = selectedSegment();
-        deck.innerHTML = "";
-        for (const item of ordered) {
-            deck.appendChild(makeCard(item.seg, item.id === currentSel, runIds.has(item.id), picked.has(item.id), project));
+        if (rebuild) {
+            deck.innerHTML = "";
+            for (const item of ordered) {
+                deck.appendChild(makeCard(item.seg, item.id === currentSel, runIds.has(item.id), picked.has(item.id), project));
+            }
+            renderedDeckKey = renderKey;
         }
         const runNote = runIds.size
             ? ` · 本次生成 ${runIds.size} 段（片段 ${formatIds([...runIds])}）`

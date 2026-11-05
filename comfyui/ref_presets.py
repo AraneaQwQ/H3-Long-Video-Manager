@@ -238,7 +238,13 @@ def save_references(kind: Any, project: Any, entries: Any) -> Dict[str, Any]:
         _write_preset(kind, name, cleaned)
 
     logger.info("[H3 Ref Libraries] Saved the %s preset for '%s' (%d entries)", kind, name, len(cleaned))
-    return {"name": name, "kind": kind, "saved": len(cleaned)}
+    return {
+        "name": name,
+        "kind": kind,
+        "saved": len(cleaned),
+        "cover_url": _reference_cover_url(kind, name, cleaned),
+        "updated_at": _preset_updated_at(kind, name),
+    }
 
 
 def _entry_source(kind: str, entry: Dict[str, Any]) -> Optional[str]:
@@ -421,7 +427,7 @@ def _reference_cover_url(kind: str, project: str, entries=None) -> str:
     filename = str(entry.get("filename") or "")
     if not filename:
         return ""
-    return "/view?" + urlencode({
+    return "/h3_lvm/image_thumbnail?" + urlencode({
         "filename": filename,
         "subfolder": str(entry.get("subfolder") or ""),
         "type": str(entry.get("type") or "input"),

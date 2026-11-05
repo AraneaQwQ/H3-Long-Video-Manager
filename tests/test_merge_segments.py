@@ -127,6 +127,14 @@ class TestMergeShape(MergeTestCase):
 
         self.assertEqual(seen, [(1, 16, 32, 3)])
 
+    def test_video_merge_writes_into_one_output_instead_of_cat(self):
+        self.save_shot("NoCat", 1, 0, 10, context=0, audio=False)
+        self.save_shot("NoCat", 2, 5, 10, context=5, audio=False)
+        real_cat = segment_store.torch.cat
+        with mock.patch.object(segment_store.torch, "cat", wraps=real_cat) as cat:
+            merge_segments("NoCat", [1, 2])
+        self.assertEqual(cat.call_count, 0)
+
     def test_merge_keeps_the_stored_dtype(self):
         for dtype in ("int8", "fp16"):
             project = "D_" + dtype

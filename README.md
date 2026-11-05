@@ -1241,6 +1241,16 @@ IMAGE 批次会逐帧送入 FFmpeg，不再为整段视频同时制造多份完�
 最近 16 个其他文件，并清理超过 24 小时的旧预览。本机选片上传上限为 8 GiB；录制最长边为 1920 像素、目标码率
 8 Mbps、上传上限 512 MiB，服务端转码超过 15 分钟会停止并清理半成品。
 
+#### 预览与内存优化
+
+整段视频解码先保留 uint8 帧，最后统一转换为 float32；int8/uint8 片段读取使用原地归一化。
+Manager / Smart Split 合并时预分配最终视频张量并逐段写入，不再额外生成一次完整的视频 `torch.cat`
+副本。音频合并逻辑不变。
+
+图片参考卡、Guide 卡片/轨道/拖拽预览和项目封面使用最长边 512 的 JPEG 缩略图；缓存只在源文件
+大小或修改时间变化时失效。卡片上的源图尺寸由独立元数据接口读取，模型执行仍读取原图，不会把
+缩略图作为生成条件。相同地址的并发 GET 会合并，完成后立即释放；卡片数据未变化时保留现有 DOM。
+
 ### API 接口
 
 | 接口 | 返回 |
@@ -1248,6 +1258,8 @@ IMAGE 批次会逐帧送入 FFmpeg，不再为整段视频同时制造多份完�
 | `GET /h3_lvm/video_compare/media?path=<路径>` | 为对比面板读取 ComfyUI input、output 或 temp 目录内的视频 |
 | `POST /h3_lvm/video_compare/upload` | 同源 multipart 上传一个本机对比视频到 ComfyUI input 目录 |
 | `POST /h3_lvm/video_compare/recording` | 把浏览器录制的 WebM 转成 ComfyUI output 目录内的 MP4 |
+| `GET /h3_lvm/image_thumbnail` | 为 input、output 或 temp 内的安全图片路径生成最长边 512 的 JPEG 预览；不改变原图 |
+| `GET /h3_lvm/image_metadata` | 读取同范围图片经过 EXIF 方向校正后的原始宽高，不向浏览器传输整张原图 |
 | `GET /h3_lvm/projects?scope=segments\|image\|audio\|uploads` | `{"projects": [...], "default": "H3_LVM"}` — `scope=segments`（默认）是视频素材库 + 片段数量（Picker/Manager 用）；`scope=image` / `scope=audio` 是那一类自己的参考库 + 卡片数（两个参考加载器用） |
 | `POST /h3_lvm/project` | 请求 `{"project": <用户输入的名字>, "scope": "segments"\|"image"\|"audio"\|"uploads"}` → `{"name": <清洗后的名字>, "created": true/false, "segments"\|"references": N}` — scope 决定在哪个库里新建 |
 | `POST /h3_lvm/project/open` | 请求 `{"project": <库名>, "scope": ...}` → 在 Windows 宿主的资源管理器中打开该 scope 下已经存在的项目目录，并尝试将新窗口置前；置前失败不影响目录已经打开。目录不存在返回中文 404，非 Windows 宿主返回中文 501 |

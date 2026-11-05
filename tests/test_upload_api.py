@@ -11,6 +11,7 @@ Run with:
 from __future__ import annotations
 
 import os
+import io
 import shutil
 import sys
 import tempfile
@@ -20,6 +21,7 @@ import urllib.parse
 from unittest import mock
 
 import aiohttp
+from PIL import Image
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -61,6 +63,7 @@ server_api = _load_plugin("comfyui.server_api")
 source_preview = _load_plugin("comfyui.source_preview")
 uvs = _load_plugin("comfyui.uploaded_video_store")
 vd = _load_plugin("comfyui.video_decode")
+image_thumbnails = _load_plugin("comfyui.image_thumbnails")
 
 
 def _register_on_fake_server():
@@ -628,3 +631,30 @@ class TestUploadOutputSize(ApiFixture):
         # clamped up to the 16 px floor, and the height stays even
         self.assertEqual((card["out_width"], card["out_height"]), (16, 8))
         self.assertTrue(card["out_scaled"])
+
+
+class TestImagePreviewApi(ApiFixture):
+    async def test_thumbnail_and_metadata_routes_do_not_serve_the_original(self):
+        input_dir = os.path.join(self.case, "input")
+        cache_dir = os.path.join(self.case, "cache")
+        os.makedirs(input_dir)
+        Image.new("RGB", (1024, 512), (20, 40, 60)).save(
+            os.path.join(input_dir, "source.png"))
+        query = urllib.parse.urlencode(
+            {"filename": "source.png", "subfolder": "", "type": "input"})
+        with mock.patch.object(image_thumbnails, "_media_roots", return_value={"input": input_dir}), \
+                mock.patch.object(image_thumbnails, "_cache_dir", return_value=cache_dir):
+            metadata = await self.get("/h3_lvm/image_metadata?" + query)
+            self.assertEqual(metadata.status, 200)
+            self.assertEqual(await metadata.json(), {"width": 1024, "height": 512})
+            response = await self.get("/h3_lvm/image_thumbnail?" + query)
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers.get("Cache-Control"), "no-cache")
+            with Image.open(io.BytesIO(await response.read())) as image:
+                self.assertEqual(image.size, (512, 256))
+                self.assertEqual(image.format, "JPEG")
+
+    async def test_thumbnail_route_rejects_a_path_outside_input(self):
+        query = urllib.parse.urlencode({"filename": "../secret.png", "type": "input"})
+        response = await self.get("/h3_lvm/image_thumbnail?" + query)
+        self.assertEqual(response.status, 400)

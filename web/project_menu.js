@@ -715,6 +715,16 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
         return inFlight;
     }
 
+    function updateBin(bin) {
+        if (!bin?.name) return;
+        const index = bins.findIndex(item => item.name === bin.name);
+        if (index >= 0) bins[index] = { ...bins[index], ...bin };
+        else bins.push({ ...bin });
+        updateWidgetValues();
+        paintCurrent();
+        if (modalOpen && !editingName) renderGrid();
+    }
+
     async function setProject(name, closeAfter = false, source = "select") {
         resetCreateInput();
         closeDeleteRow();
@@ -854,5 +864,5 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     paintCurrent();
     void refresh();
 
-    return { element: root, refresh, name: currentName, countText: projectCount };
+    return { element: root, refresh, updateBin, name: currentName, countText: projectCount };
 }

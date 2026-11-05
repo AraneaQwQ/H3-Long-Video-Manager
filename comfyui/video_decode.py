@@ -431,7 +431,7 @@ def _decode_frames(path: str, target_fps: int,
                 shape = array.shape
             elif tuple(array.shape) != tuple(shape):
                 raise MediaError("这个视频在播放过程中改变了分辨率，无法作为一段连续输出。")
-            tensor = torch.from_numpy(array).to(torch.float32).mul_(1.0 / 255.0)
+            tensor = torch.from_numpy(array)
             while filled < target:
                 frames.append(tensor)
                 filled += 1
@@ -442,7 +442,10 @@ def _decode_frames(path: str, target_fps: int,
                 break
         if not frames:
             raise MediaError("解码失败：这个视频里没有任何可解码的画面。")
-        video = torch.stack(frames) if len(frames) > 1 else frames[0].unsqueeze(0)
+        packed = torch.stack(frames) if len(frames) > 1 else frames[0].unsqueeze(0)
+        frames.clear()
+        video = packed.to(torch.float32).mul_(1.0 / 255.0)
+        del packed
         info = {
             "width": int(video.shape[2]),
             "height": int(video.shape[1]),

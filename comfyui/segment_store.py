@@ -310,9 +310,11 @@ def _encode_video(video: torch.Tensor, save_dtype: str) -> torch.Tensor:
 def _decode_video(tensor: torch.Tensor) -> torch.Tensor:
     """Reverse _encode_video; stored float tensors are passed through."""
     if tensor.dtype == torch.int8:
-        return tensor.to(torch.float32).add(INT8_OFFSET).div(255.0).contiguous()
+        decoded = tensor.to(torch.float32)
+        return decoded.add_(INT8_OFFSET).div_(255.0).contiguous()
     if tensor.dtype == torch.uint8:
-        return tensor.to(torch.float32).div(255.0).contiguous()
+        decoded = tensor.to(torch.float32)
+        return decoded.div_(255.0).contiguous()
     return tensor
 
 # ---------------------------------------------------------------------------
@@ -862,7 +864,19 @@ def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
 
     save_dtype = normalize_save_dtype(metas[0].get("video_dtype"))
     wants_float = save_dtype == "fp16"
-    parts: List[torch.Tensor] = []
+    planned_counts = []
+    for position, meta in enumerate(metas):
+        frames = int(meta.get("frames") or 0)
+        if frames < 1:
+            raise ValueError("片段索引缺少有效帧数，无法合并。")
+        overlap = 0
+        if position:
+            overlap = min(max(0, int(meta.get("context_frames") or 0)), frames - 1)
+        planned_counts.append(frames - overlap)
+
+    merged_video = None
+    video_offset = 0
+    cover_source = None
     waves: List[Any] = []
     sample_rate = 0
     dropped: List[int] = []
@@ -871,6 +885,8 @@ def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
         video = tensors.get("video")
         if not isinstance(video, torch.Tensor) or video.ndim != 4 or video.shape[0] < 1:
             raise ValueError(f"片段 {seg_id} 的视频张量形状异常，无法合并。")
+        if int(video.shape[0]) != int(metas[position].get("frames") or 0):
+            raise ValueError(f"片段 {seg_id} 的索引帧数与文件不一致，请重新生成该片段后再合并。")
         is_float = video.dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64)
         if is_float != wants_float:
             video = _encode_video(_decode_video(video), save_dtype)
@@ -881,7 +897,19 @@ def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
             if overlap:
                 video = video[overlap:]
                 dropped.append(overlap)
-        parts.append(video.contiguous())
+        clipped = video.contiguous()
+        if merged_video is None:
+            merged_video = torch.empty(
+                (sum(planned_counts), *clipped.shape[1:]), dtype=clipped.dtype, device="cpu")
+        count = int(clipped.shape[0])
+        if count != planned_counts[position]:
+            raise ValueError(f"片段 {seg_id} 的有效帧数与索引不一致，无法合并。")
+        merged_video[video_offset:video_offset + count].copy_(clipped)
+        video_offset += count
+        if position == 0:
+            cover_index = min(max(int(metas[0].get("context_frames") or 0), 0),
+                              int(video.shape[0]) - 1)
+            cover_source = _decode_video(video[cover_index:cover_index + 1])
 
         rate = tensors.get("sample_rate")
         seg_sr = int(rate.reshape(-1)[0]) if isinstance(rate, torch.Tensor) and rate.numel() else 0
@@ -898,8 +926,8 @@ def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
             sample_rate = sample_rate or seg_sr
         else:
             waves.append(None)
+        del tensors, video, clipped
 
-    merged_video = torch.cat(parts, dim=0)
     audio = None
     if all(w is not None for w in waves) and sample_rate > 0:
         channels = {int(w.shape[-2]) for w in waves}
@@ -918,8 +946,6 @@ def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
         "context_frames": int(metas[0].get("context_frames") or 0),
     })
 
-    cover_index = min(max(int(metas[0].get("context_frames") or 0), 0),
-                      max(0, int(parts[0].shape[0]) - 1))
     merged = save_segment(
         project, ids[0], merged_video, audio, fps,
         save_mp4=any(bool(m.get("mp4")) for m in metas),
@@ -927,7 +953,7 @@ def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
         save_dtype=save_dtype,
         # The merged head is the first segment's head, so its cover still fits.
         thumbnail_frame=0,
-        cover_source=_decode_video(parts[0][cover_index:cover_index + 1]),
+        cover_source=cover_source,
     )
 
     for seg_id in ids[1:]:

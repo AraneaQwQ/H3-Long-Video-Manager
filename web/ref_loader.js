@@ -35,6 +35,7 @@ import { addPanel } from "./dom_panel.js";
 import { createCardZoom } from "./card_zoom.js";
 import { appendThumbnail } from "./thumb_fit.js";
 import { createProjectMenu } from "./project_menu.js";
+import { imageMetadataPath, imageThumbnailUrl } from "./image_preview.js";
 import {
     MAX_REF_AUDIOS, MAX_REF_IMAGES, addEntries, applyPreset, audioInfoLine, countActive,
     insertPosition, isSkipped, mediaKey, mediaKind, moveActive, parseMedia, pickPresetEntries, removeEntry,
@@ -416,6 +417,7 @@ function installRefPanel(node, spec) {
     // The panel keeps the last reply so the 载入 button can be honest before it is
     // clicked, and re-reads it whenever the project changes or 刷新 is pressed.
     let preset = null;
+    let presetWriteSeq = 0;
 
     function presetEntries() {
         return pickPresetEntries(preset);
@@ -454,6 +456,7 @@ function installRefPanel(node, spec) {
     // disagree about what a preset holds. A response for a project the panel has
     // already left only refreshes the bin counts, never the cards on screen.
     async function writePreset(project, serialized, { quiet = false } = {}) {
+        const writeSeq = ++presetWriteSeq;
         try {
             const res = await api.fetchApi('/h3_lvm/ref_presets', {
                 method: 'POST',
@@ -465,9 +468,15 @@ function installRefPanel(node, spec) {
                 if (!quiet) updateStatus(data.error || `保存失败（HTTP ${res.status}）`);
                 return false;
             }
-            if (project === activeProject) {
-                await refreshPreset();
-                await menu.refresh();
+            if (project === activeProject && writeSeq === presetWriteSeq) {
+                preset = { project_name: data.name || project, references: JSON.parse(serialized) };
+                menu.updateBin({
+                    name: data.name || project,
+                    references: Number(data.saved) || 0,
+                    cover_url: data.cover_url || "",
+                    updated_at: data.updated_at || "",
+                });
+                updateStatus();
             }
             return true;
         } catch (error) {
@@ -691,7 +700,7 @@ function installRefPanel(node, spec) {
         if (spec.kind === "image") {
             const known = sourceCache.get(mediaKey(entry));
             appendThumbnail(thumbWrap, {
-                thumbnail_url: viewUrl(entry),
+                thumbnail_url: imageThumbnailUrl(api, entry),
                 width: known?.width,
                 height: known?.height,
             });
@@ -1163,12 +1172,18 @@ function installRefPanel(node, spec) {
     async function loadImageSource(entry) {
         const key = mediaKey(entry);
         if (sourceCache.has(key)) return sourceCache.get(key);
-        const result = await new Promise((resolve) => {
-            const image = new Image();
-            image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-            image.onerror = () => resolve({ error: "图片读取失败" });
-            image.src = viewUrl(entry);
-        });
+        let result;
+        try {
+            const response = await api.fetchApi(imageMetadataPath(entry), { cache: "no-store" });
+            const data = await response.json().catch(() => ({}));
+            const width = Number(data.width);
+            const height = Number(data.height);
+            result = response.ok && width > 0 && height > 0
+                ? { width, height }
+                : { error: data.error || "图片读取失败" };
+        } catch (_error) {
+            result = { error: "图片读取失败" };
+        }
         sourceCache.set(key, result);
         return result;
     }

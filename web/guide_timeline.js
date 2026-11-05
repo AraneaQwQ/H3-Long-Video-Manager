@@ -29,6 +29,7 @@ import { addPanel } from "./dom_panel.js";
 import { createCardZoom } from "./card_zoom.js";
 import { appendThumbnail } from "./thumb_fit.js";
 import { insertPosition } from "./ref_state.js";
+import { imageMetadataPath, imageThumbnailUrl } from "./image_preview.js";
 import {
     alignFrameCount, AUDIO_DECODING, AUDIO_FAILED, AUDIO_KIND, AUDIO_METADATA_ONLY, AUDIO_READY, DEFAULT_DOCUMENT, DEFAULT_FPS, IMAGE_KIND, KINDS,
     MAX_GUIDE_AUDIOS, MAX_GUIDE_IMAGES, MAX_GUIDE_TOTAL, STRENGTH_OFF,
@@ -1235,7 +1236,7 @@ function installGuideNode(node) {
                     surface.trackImage.appendChild(link);
                 }
                 const img = make("img", "h3guide-marker-thumb");
-                img.src = viewUrl(guide.asset);
+                img.src = imageThumbnailUrl(api, guide.asset);
                 img.alt = guide.label || "";
                 img.draggable = false;
                 el.append(img, make("span", "h3guide-marker-cap", `${guide.label} · ${frame}f`));
@@ -1533,7 +1534,7 @@ function installGuideNode(node) {
         if (guide.kind === IMAGE_KIND) {
             // The thumbnail renderer only needs a url, and it is the same portrait-aware
             // one the picker uses, so a 9:16 frame shows whole here too.
-            appendThumbnail(thumbWrap, { thumbnail_url: viewUrl(guide.asset) });
+            appendThumbnail(thumbWrap, { thumbnail_url: imageThumbnailUrl(api, guide.asset) });
         } else {
             const wave = make("canvas", "h3guide-wave");
             const play = make("button", "h3guide-play", "▶");
@@ -1877,12 +1878,18 @@ function installGuideNode(node) {
     async function loadImageMeta(guide) {
         const key = mediaKeyOf(guide);
         if (imageCache.has(key)) return imageCache.get(key);
-        const meta = await new Promise((resolve) => {
-            const image = new Image();
-            image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-            image.onerror = () => resolve({ error: "图片读取失败" });
-            image.src = viewUrl(guide.asset);
-        });
+        let meta;
+        try {
+            const response = await api.fetchApi(imageMetadataPath(guide.asset), { cache: "no-store" });
+            const data = await response.json().catch(() => ({}));
+            const width = Number(data.width);
+            const height = Number(data.height);
+            meta = response.ok && width > 0 && height > 0
+                ? { width, height }
+                : { error: data.error || "图片读取失败" };
+        } catch (_error) {
+            meta = { error: "图片读取失败" };
+        }
         imageCache.set(key, meta);
         return meta;
     }
@@ -2378,7 +2385,7 @@ function installGuideNode(node) {
                 const preview = make("div", "h3guide-drag-preview");
                 if (guide.kind === IMAGE_KIND) {
                     const shot = make("img", "h3guide-drag-shot");
-                    shot.src = viewUrl(guide.asset);
+                    shot.src = imageThumbnailUrl(api, guide.asset);
                     preview.appendChild(shot);
                 } else {
                     preview.appendChild(make("span", "h3guide-drag-shot", "♪"));

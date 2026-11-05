@@ -25,6 +25,7 @@ import { addPanel } from "./dom_panel.js";
 import { openPreview } from "./preview_overlay.js";
 import { createProjectMenu } from "./project_menu.js";
 import { appendThumbnail } from "./thumb_fit.js";
+import { fetchJsonShared } from "./json_request.js";
 import {
     DEFAULT_PROJECT,
     MODE_LABELS,
@@ -260,6 +261,7 @@ function setupPickerUI(node) {
     let importing = false;
     // A reorder reloads the deck itself, so the matching event must not reload it twice.
     let reordering = false;
+    let renderedDeckKey = "";
 
     function graphMode() {
         return modeFromValue(modeWidget?.value);
@@ -393,14 +395,11 @@ function setupPickerUI(node) {
         if (signal.aborted) return;
         const request = ++generation;
         const mode = builtMode;
-        await menu.refresh();
-        if (isStale(request, mode, currentProject())) return;
         const project = currentProject();
-        if (mode === MODE_UPLOADS) {
-            await loadUploads(request, mode, project, deletedId, beforeIds);
-        } else {
-            await loadSegments(request, mode, project, deletedId);
-        }
+        const cards = mode === MODE_UPLOADS
+            ? loadUploads(request, mode, project, deletedId, beforeIds)
+            : loadSegments(request, mode, project, deletedId);
+        await Promise.all([menu.refresh(), cards]);
     }
 
     // --- Cut segments (the original behaviour) ---
@@ -409,15 +408,14 @@ function setupPickerUI(node) {
         projectCount.textContent = "读取中…";
 
         try {
-            const res = await api.fetchApi(`/h3_lvm/segments?project=${encodeURIComponent(project)}`, { cache: "no-store" });
+            const { ok, status, data } = await fetchJsonShared(
+                api, `/h3_lvm/segments?project=${encodeURIComponent(project)}`);
             if (isStale(request, mode, project)) return;
-            if (!res.ok) {
+            if (!ok) {
                 projectCount.textContent = "读取失败";
-                deck.innerHTML = `<div class="h3lvm-empty">接口读取失败（HTTP ${res.status}）</div>`;
+                deck.innerHTML = `<div class="h3lvm-empty">接口读取失败（HTTP ${status}）</div>`;
                 return;
             }
-            const data = await res.json();
-            if (isStale(request, mode, project)) return;
             const segments = data.segments || [];
             projectCount.textContent = segments.length ? `共 ${segments.length} 段` : "空库";
             // A project switch starts at the first card of the new bin: the number
@@ -441,24 +439,31 @@ function setupPickerUI(node) {
                 statusText.textContent = `片段 ${segmentWidget?.value} 已不存在，请重新选择`;
             }
 
+            const currentSel = parseInt(segmentWidget?.value || 1);
+            const renderKey = JSON.stringify({ mode, project, segments, currentSel });
+            const rebuild = renderKey !== renderedDeckKey;
+
             if (segments.length === 0) {
                 statusText.textContent = "该库暂无片段";
                 projectCount.textContent = "空库";
-                deck.innerHTML = `<div class="h3lvm-empty">
-                    <div>📭 「${project}」${MODE_LABELS[MODE_SEGMENTS].emptyTitle}</div>
-                    <div class="h3lvm-empty-hint">${MODE_LABELS[MODE_SEGMENTS].emptyHint}</div>
-                </div>`;
+                if (rebuild) {
+                    deck.innerHTML = `<div class="h3lvm-empty">
+                        <div>📭 「${project}」${MODE_LABELS[MODE_SEGMENTS].emptyTitle}</div>
+                        <div class="h3lvm-empty-hint">${MODE_LABELS[MODE_SEGMENTS].emptyHint}</div>
+                    </div>`;
+                    renderedDeckKey = renderKey;
+                }
                 return;
             }
 
             // Render cards
-            deck.innerHTML = "";
-            const currentSel = parseInt(segmentWidget?.value || 1);
+            if (rebuild) {
+                deck.innerHTML = "";
 
-            for (const seg of segments) {
-                const card = document.createElement("div");
-                card.className = `h3lvm-card ${seg.segment_id === currentSel ? "active" : ""}`;
-                card.dataset.segId = seg.segment_id;
+                for (const seg of segments) {
+                    const card = document.createElement("div");
+                    card.className = `h3lvm-card ${seg.segment_id === currentSel ? "active" : ""}`;
+                    card.dataset.segId = seg.segment_id;
 
                 // Thumbnail
                 const thumbWrap = document.createElement("div");
@@ -521,11 +526,13 @@ function setupPickerUI(node) {
                 // Click to select
                 card.onclick = () => selectCard(card, seg.segment_id, "片段");
 
-                deck.appendChild(card);
+                    deck.appendChild(card);
+                }
+                renderedDeckKey = renderKey;
             }
 
             // Fit node height
-            fitToContent();
+            if (rebuild) fitToContent();
 
         } catch (e) {
             if (isStale(request, mode, project)) return;
@@ -543,15 +550,13 @@ function setupPickerUI(node) {
             const url = `/h3_lvm/uploads?project=${encodeURIComponent(project)}`
                 + `&output_size=${encodeURIComponent(currentOutputSize())}`
                 + `&custom_max_side=${encodeURIComponent(currentCustomMaxSide())}`;
-            const res = await api.fetchApi(url, { cache: "no-store" });
+            const { ok, status, data } = await fetchJsonShared(api, url);
             if (isStale(request, mode, project)) return;
-            if (!res.ok) {
+            if (!ok) {
                 projectCount.textContent = "读取失败";
-                deck.innerHTML = `<div class="h3lvm-empty">接口读取失败（HTTP ${res.status}）；请确认已重启 ComfyUI。</div>`;
+                deck.innerHTML = `<div class="h3lvm-empty">接口读取失败（HTTP ${status}）；请确认已重启 ComfyUI。</div>`;
                 return;
             }
-            const data = await res.json();
-            if (isStale(request, mode, project)) return;
             const videos = Array.isArray(data.videos) ? data.videos : [];
             projectCount.textContent = videos.length ? `共 ${videos.length} 个视频` : "空视频库";
 
@@ -586,22 +591,31 @@ function setupPickerUI(node) {
                 statusText.textContent = `视频 ${segmentWidget?.value} 已不存在，请重新选择`;
             }
 
+            const currentSel = parseInt(segmentWidget?.value || 1);
+            const renderKey = JSON.stringify({ mode, project, videos, currentSel });
+            const rebuild = renderKey !== renderedDeckKey;
+
             if (videos.length === 0) {
                 statusText.textContent = "该视频库暂无视频";
                 projectCount.textContent = "空视频库";
-                deck.innerHTML = `<div class="h3lvm-empty">
-                    <div>📥 ${MODE_LABELS[MODE_UPLOADS].emptyTitle}</div>
-                    <div class="h3lvm-empty-hint">「${project}」是空的。${MODE_LABELS[MODE_UPLOADS].emptyHint}</div>
-                </div>`;
+                if (rebuild) {
+                    deck.innerHTML = `<div class="h3lvm-empty">
+                        <div>📥 ${MODE_LABELS[MODE_UPLOADS].emptyTitle}</div>
+                        <div class="h3lvm-empty-hint">「${project}」是空的。${MODE_LABELS[MODE_UPLOADS].emptyHint}</div>
+                    </div>`;
+                    renderedDeckKey = renderKey;
+                }
                 return;
             }
 
-            deck.innerHTML = "";
-            const currentSel = parseInt(segmentWidget?.value || 1);
-            videos.forEach((video, index) => {
-                renderUploadCard(video, project, currentSel, index);
-            });
-            fitToContent();
+            if (rebuild) {
+                deck.innerHTML = "";
+                videos.forEach((video, index) => {
+                    renderUploadCard(video, project, currentSel, index);
+                });
+                renderedDeckKey = renderKey;
+                fitToContent();
+            }
 
         } catch (e) {
             if (isStale(request, mode, project)) return;

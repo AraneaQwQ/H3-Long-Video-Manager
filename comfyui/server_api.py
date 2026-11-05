@@ -92,6 +92,7 @@ from .source_preview import (
     source_preview_path,
 )
 from .system_file_picker import choose_system_video, open_local_folder
+from .image_thumbnails import image_metadata, thumbnail_path
 
 
 
@@ -428,6 +429,34 @@ def register_h3lvm_routes() -> None:
             logger.exception("Failed to save reference preset")
             return web.json_response({"error": "保存失败：没有写入权限或文件正被占用，请稍后重试。"}, status=409)
         return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+    @routes.get("/h3_lvm/image_thumbnail")
+    async def handle_image_thumbnail(request):
+        query = request.rel_url.query
+        entry = {name: query.get(name, "") for name in ("filename", "subfolder", "type")}
+        if not entry["type"]:
+            entry["type"] = "input"
+        try:
+            path = await asyncio.to_thread(thumbnail_path, entry)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except (OSError, SyntaxError):
+            return web.json_response({"error": "图片读取失败，无法生成缩略图。"}, status=422)
+        return web.FileResponse(path, headers={"Cache-Control": "no-cache"})
+
+    @routes.get("/h3_lvm/image_metadata")
+    async def handle_image_metadata(request):
+        query = request.rel_url.query
+        entry = {name: query.get(name, "") for name in ("filename", "subfolder", "type")}
+        if not entry["type"]:
+            entry["type"] = "input"
+        try:
+            data = await asyncio.to_thread(image_metadata, entry)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except (OSError, SyntaxError):
+            return web.json_response({"error": "图片信息读取失败。"}, status=422)
+        return web.json_response(data, headers={"Cache-Control": "no-store"})
 
     # The Picker's second library: whole videos the user brought in, stored as they are.
     # Bytes are streamed into a .partial file and only become a card once FFmpeg has read
