@@ -60,6 +60,7 @@ from tests._plugin_import import load as _load_plugin
 
 segment_store = _load_plugin("comfyui.segment_store")
 server_api = _load_plugin("comfyui.server_api")
+ref_presets = _load_plugin("comfyui.ref_presets")
 source_preview = _load_plugin("comfyui.source_preview")
 uvs = _load_plugin("comfyui.uploaded_video_store")
 vd = _load_plugin("comfyui.video_decode")
@@ -99,6 +100,7 @@ class ApiFixture(unittest.IsolatedAsyncioTestCase):
         self.case = make_temp_dir(prefix="h3lvm_api_")
         uvs.set_base_dir_override(os.path.join(self.case, "uploads"))
         segment_store.set_base_dir_override(os.path.join(self.case, "bin"))
+        ref_presets.set_input_dir_override(os.path.join(self.case, "input"))
         self.app = web.Application()
         self.app.add_routes(ROUTES)
         self.client = TestClient(TestServer(self.app))
@@ -108,6 +110,7 @@ class ApiFixture(unittest.IsolatedAsyncioTestCase):
         await self.client.close()
         uvs.set_base_dir_override(None)
         segment_store.set_base_dir_override(None)
+        ref_presets.set_input_dir_override(None)
         shutil.rmtree(self.case, ignore_errors=True)
         EVENTS.clear()
 
@@ -261,16 +264,16 @@ class TestOpenProjectFolder(ApiFixture):
         opened.assert_called_once()
         return opened.call_args.args[0]
 
-    async def test_each_scope_opens_its_own_project_folder(self):
+    async def test_each_scope_opens_the_folder_that_holds_its_media(self):
         expected = {
             "segments": server_api.segment_project_dir("Open", create=False),
             "uploads": server_api.upload_project_dir("Open", create=False),
-            "image": server_api.ref_project_dir("image", "Open", create=False),
-            "audio": server_api.ref_project_dir("audio", "Open", create=False),
+            "image": server_api.input_project_dir("image", "Open", create=False),
+            "audio": server_api.input_project_dir("audio", "Open", create=False),
         }
         for scope, path in expected.items():
             opened = await self.open_project("Open", scope)
-            self.assertEqual(opened, path, "scope picks the library, not a filter")
+            self.assertEqual(opened, path, "reference buttons open input media, not the preset index")
             self.assertTrue(os.path.isdir(path))
 
     async def test_a_project_that_has_no_folder_is_refused(self):

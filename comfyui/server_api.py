@@ -64,6 +64,7 @@ from .ref_presets import (
     PRESET_NAME,
     create_reference_project,
     delete_reference_project,
+    input_project_dir,
     list_reference_projects,
     load_references,
     ref_project_dir,
@@ -351,7 +352,10 @@ def register_h3lvm_routes() -> None:
                 raise ValueError("Expected an object")
             scope = _scope(body.get("scope"))
             name = sanitize_project_name(body.get("project"))
-            folder = _project_folder(scope, name)
+            if scope in KIND_ROOTS:
+                folder = input_project_dir(scope, name, create=True)
+            else:
+                folder = _project_folder(scope, name)
             if not os.path.isdir(folder):
                 return web.json_response(
                     {"error": "项目目录不存在，请先保存至少一张卡片或一个片段。"}, status=404)

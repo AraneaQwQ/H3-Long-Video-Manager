@@ -12,6 +12,7 @@ const LABELS = {
     show_labels: "显示标签",
     loop: "循环播放",
     muted: "静音",
+    audio_source: "音频来源",
     record_duration: "录制时长（秒）",
     fps: "IMAGE 帧率",
 };
@@ -91,10 +92,11 @@ function createCompareView(node) {
     timeline.className = "h3-vc-range";
     const clock = element("span", "h3-vc-clock", "00:00 / 00:00");
     const loop = actionButton("🔁 循环", "开启或关闭循环播放");
-    const mute = actionButton("🔇", "开启或关闭原视频声音");
+    const mute = actionButton("🔇", "开启或关闭当前音源");
+    const audioSource = actionButton("🎙 原视频音频", "切换播放左右两个视频的声音");
     const fullscreen = actionButton("⛶ 全屏", "全屏对比，滚轮缩放");
     const toolbar = element("div", "h3-vc-toolbar");
-    toolbar.append(play, restart, timeline, clock, loop, mute, fullscreen);
+    toolbar.append(play, restart, timeline, clock, loop, mute, audioSource, fullscreen);
     const toolbarHome = element("div", "h3-vc-toolbar-home");
     toolbarHome.appendChild(toolbar);
 
@@ -109,10 +111,12 @@ function createCompareView(node) {
     }
     const beforeName = element("span", "h3-vc-source-name", "未选择");
     const afterName = element("span", "h3-vc-source-name", "未选择");
+    const beforeSourceLabel = element("span", "h3-vc-source-label", "原视频");
+    const afterSourceLabel = element("span", "h3-vc-source-label", "处理后");
     const beforeSource = element("div", "h3-vc-source");
     const afterSource = element("div", "h3-vc-source");
-    beforeSource.append(element("span", "h3-vc-source-label", "原视频"), beforeName, chooseBefore);
-    afterSource.append(element("span", "h3-vc-source-label", "处理后"), afterName, chooseAfter);
+    beforeSource.append(beforeSourceLabel, beforeName, chooseBefore);
+    afterSource.append(afterSourceLabel, afterName, chooseAfter);
     const fileStatus = element("div", "h3-vc-file-status");
     const fileRow = element("div", "h3-vc-file-row");
     fileRow.append(beforeSource, afterSource, beforePicker, afterPicker);
@@ -181,19 +185,39 @@ function createCompareView(node) {
         return api.apiURL(`/h3_lvm/video_compare/media?path=${encodeURIComponent(path)}`);
     }
 
+    function sourceLabel(role) {
+        const fallback = role === "after" ? "处理后" : "原视频";
+        return String(value(`${role}_label`, fallback) || fallback);
+    }
+
+    function applyAudioState() {
+        const source = value("audio_source", "before") === "after" ? "after" : "before";
+        const muted = Boolean(value("muted", true));
+        before.muted = muted || source !== "before";
+        after.muted = muted || source !== "after";
+        const label = sourceLabel(source);
+        audioSource.textContent = `🎙 ${label}音频`;
+        audioSource.title = `当前播放${label}音频；点击切换`;
+        audioSource.setAttribute("aria-label", `音频来源：${label}音频，点击切换`);
+        mute.textContent = muted ? "🔇" : "🔊";
+        mute.setAttribute("aria-pressed", String(muted));
+        mute.setAttribute("aria-label", muted ? `开启${label}音频` : `关闭${label}音频`);
+    }
+
     function applySettings() {
         const labelsVisible = Boolean(value("show_labels", true));
-        beforeTag.textContent = String(value("before_label", "原视频") || "原视频");
-        afterTag.textContent = String(value("after_label", "处理后") || "处理后");
+        beforeTag.textContent = sourceLabel("before");
+        afterTag.textContent = sourceLabel("after");
+        beforeSourceLabel.textContent = beforeTag.textContent;
+        afterSourceLabel.textContent = afterTag.textContent;
+        chooseBefore.title = `从电脑选择${beforeTag.textContent}`;
+        chooseAfter.title = `从电脑选择${afterTag.textContent}`;
         beforeTag.hidden = !labelsVisible;
         afterTag.hidden = !labelsVisible;
-        before.muted = Boolean(value("muted", true));
         const looping = Boolean(value("loop", true));
         loop.setAttribute("aria-pressed", String(looping));
         loop.title = looping ? "关闭循环播放" : "开启循环播放";
-        mute.textContent = before.muted ? "🔇" : "🔊";
-        mute.setAttribute("aria-pressed", String(before.muted));
-        mute.setAttribute("aria-label", before.muted ? "开启原视频声音" : "关闭原视频声音");
+        applyAudioState();
         if (document.activeElement !== beforeLabelInput) beforeLabelInput.value = beforeTag.textContent;
         if (document.activeElement !== afterLabelInput) afterLabelInput.value = afterTag.textContent;
         showLabelsInput.checked = labelsVisible;
@@ -277,8 +301,7 @@ function createCompareView(node) {
     async function startPlayback() {
         if (!before.src || !after.src) return false;
         if (duration > 0 && before.currentTime >= duration - 0.03) seek(0);
-        before.muted = Boolean(value("muted", true));
-        after.muted = true;
+        applyAudioState();
         try {
             after.currentTime = before.currentTime;
             await Promise.all([before.play(), after.play()]);
@@ -305,7 +328,7 @@ function createCompareView(node) {
         pause();
         for (const name of [
             "slider_position", "before_label", "after_label", "show_labels",
-            "loop", "muted", "record_duration", "fps",
+            "loop", "muted", "audio_source", "record_duration", "fps",
         ]) {
             if (settings[name] !== undefined) writeValue(name, settings[name]);
         }
@@ -317,8 +340,8 @@ function createCompareView(node) {
         before.load();
         after.load();
         placeholder.hidden = true;
-        beforeName.textContent = beforeInfo.name || "原视频";
-        afterName.textContent = afterInfo.name || "处理后";
+        beforeName.textContent = beforeInfo.name || sourceLabel("before");
+        afterName.textContent = afterInfo.name || sourceLabel("after");
         beforeName.title = beforeName.textContent;
         afterName.title = afterName.textContent;
         fileStatus.classList.remove("h3-vc-error");
@@ -641,10 +664,14 @@ function createCompareView(node) {
         if (resume) void startPlayback();
     });
     listen(mute, "click", () => {
-        const next = !before.muted;
-        before.muted = next;
+        const next = !Boolean(value("muted", true));
         writeValue("muted", next);
         applySettings();
+    });
+    listen(audioSource, "click", () => {
+        const next = value("audio_source", "before") === "after" ? "before" : "after";
+        writeValue("audio_source", next);
+        applyAudioState();
     });
     listen(loop, "click", () => {
         writeValue("loop", !Boolean(value("loop", true)));

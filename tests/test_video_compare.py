@@ -48,6 +48,7 @@ class TestVideoCompare(unittest.TestCase):
         self.assertEqual(output.result, ((True, [self.before]), (True, [self.after])))
         self.assertEqual(output.ui["h3_video_compare"][0]["role"], "before")
         self.assertEqual(output.ui["h3_video_compare_settings"]["fps"], 24.0)
+        self.assertEqual(output.ui["h3_video_compare_settings"]["audio_source"], "before")
 
     def test_image_inputs_use_the_streaming_mp4_encoder(self):
         images = mock.Mock(ndim=4)

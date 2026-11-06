@@ -628,7 +628,9 @@ two local videos in the panel. Drag the picture to move the wipe and use the sha
 Fullscreen carries the playback controls and adds scroll-wheel zoom. The default-open `对比设置` area holds labels,
 recording duration and IMAGE fps. `录制对比视频` saves the current labeled wipe as an MP4 in ComfyUI's output directory;
 if server-side conversion is unavailable, the browser offers a temporary WebM download instead. The two
-`VHS_FILENAMES` outputs pass the selected source paths through for downstream nodes.
+`VHS_FILENAMES` outputs pass the selected source paths through for downstream nodes. The toolbar's
+`xxx音频` button follows the custom left/right labels and switches the audible source; mute applies to
+the selected source.
 
 IMAGE batches are encoded one frame at a time instead of duplicating the whole batch in memory. Temporary comparison
 previews are bounded (the current files plus the 16 most recent others, with a 24-hour age limit). Local uploads accept
@@ -1235,7 +1237,7 @@ base64。关闭编辑器或删除节点都不会删除素材，因为别的工�
 直接拖动画面移动分割线，底部时间轴控制两个视频同步播放。全屏模式保留播放工具栏并支持滚轮缩放。
 默认展开的「对比设置」用于修改标签、录制时长和 IMAGE 帧率。「录制对比视频」把当前带标签的分割画面存成
 ComfyUI output 目录里的 MP4；服务端无法转码时会提供临时 WebM 下载。两个 `VHS_FILENAMES` 输出把所选源文件路径
-继续传给下游节点。
+继续传给下游节点。工具栏的「xxx音频」按钮跟随左右标签名称，点击切换音源，静音键控制当前所选音源。
 
 IMAGE 批次会逐帧送入 FFmpeg，不再为整段视频同时制造多份完整内存副本。本节点生成的临时预览保留当前文件及
 最近 16 个其他文件，并清理超过 24 小时的旧预览。本机选片上传上限为 8 GiB；录制最长边为 1920 像素、目标码率
@@ -1262,7 +1264,7 @@ Manager / Smart Split 合并时预分配最终视频张量并逐段写入，不�
 | `GET /h3_lvm/image_metadata` | 读取同范围图片经过 EXIF 方向校正后的原始宽高，不向浏览器传输整张原图 |
 | `GET /h3_lvm/projects?scope=segments\|image\|audio\|uploads` | `{"projects": [...], "default": "H3_LVM"}` — `scope=segments`（默认）是视频素材库 + 片段数量（Picker/Manager 用）；`scope=image` / `scope=audio` 是那一类自己的参考库 + 卡片数（两个参考加载器用） |
 | `POST /h3_lvm/project` | 请求 `{"project": <用户输入的名字>, "scope": "segments"\|"image"\|"audio"\|"uploads"}` → `{"name": <清洗后的名字>, "created": true/false, "segments"\|"references": N}` — scope 决定在哪个库里新建 |
-| `POST /h3_lvm/project/open` | 请求 `{"project": <库名>, "scope": ...}` → 在 Windows 宿主的资源管理器中打开该 scope 下已经存在的项目目录，并尝试将新窗口置前；置前失败不影响目录已经打开。目录不存在返回中文 404，非 Windows 宿主返回中文 501 |
+| `POST /h3_lvm/project/open` | 请求 `{"project": <库名>, "scope": ...}` → 在 Windows 宿主的资源管理器中打开项目素材目录并尝试置前。`image` / `audio` 分别打开 `input/h3-lvm-refs/<image|audio>/<项目名>`（需要时创建），不再打开只保存路径的预设索引；segments / uploads 仍打开原项目目录，缺失时返回中文 404。非 Windows 宿主返回中文 501 |
 | `POST /h3_lvm/project/delete` | 请求 `{"project": <库名>, "confirm": <同一个库名>, "scope": ...}` → `{"name": ..., "deleted": true, ...}` — 只动那一个库，不会碰视频素材库或另一类参考 |
 | `GET /h3_lvm/ref_presets?project=<项目名>&kind=image\|audio` | `{"project_name": <项目名>, "references": [...]}` — 那一类在该项目下的预设，只有路径；kind 不是 image/audio 时返回中文 400 |
 | `POST /h3_lvm/ref_presets` | 请求 `{"project": <项目名>, "kind": "image"\|"audio", "entries": <面板 JSON>}` → `{"name": ..., "kind": ..., "saved": N}` — 只写那一类自己的库文件 |

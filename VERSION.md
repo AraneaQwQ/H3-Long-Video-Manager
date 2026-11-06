@@ -3,6 +3,21 @@
 > 版本铁规：每次改动前，把旧版本完整快照存入 `archive/<日期>-<commit 短 hash>/`，并在本文件顶部追加一条说明。
 > 只有用户的明确命令才能删改 `archive/` 中的旧版本。
 
+## 2026-11-06 · H3 视频对比滑块音源选择与动态名称
+
+- 快照：`archive/2026-11-06-7142f40-pre-compare-audio/worktree/` 保存合入本轮对比滑块修改前的完整在途工作树。
+- 工具栏新增音源切换，任一时刻只播放左侧或右侧视频的音轨，静音键控制当前音源；`audio_source` 作为可选 combo 追加在 schema 末尾，默认 `before`，随工作流保存恢复，既有输入顺序与输出不变。
+- 音源按钮显示「🎙 xxx音频」，素材区标题、选择提示、画面角标与录制标签共同读取左右标签，修改后即时更新，不再写死「原视频 / 处理后」。
+- 自动验证：对比节点相关 Python 24 项、前端 7 项通过；新增测试覆盖音源互斥、静音联动、动态标签、schema 顺序和 UI 回传。完整发布复测为 Python **733 项通过、0 失败、0 跳过**，前端 **20 项通过**，全部 **27 个** `web/*.js` 语法检查及 `git diff --check` 通过。
+
+## 2026-11-06 · 参考加载器打开 input 素材目录
+
+- 快照：`archive/2026-11-06-7142f40-pre-reference-input-folder/worktree/` 保存本轮前的完整在途工作树。
+- H3 图片参考加载器与 H3 音频参考加载器的「📂 打开本地目录」不再打开只存放预设 JSON 的索引目录，分别改为 `input/h3-lvm-refs/image/<项目名>` 与 `input/h3-lvm-refs/audio/<项目名>`；目录不存在时创建，方便用户直接放入素材。Manager、Smart Split、Picker 的 segments / uploads 目录行为不变。
+- 按钮提示明确区分 input 参考素材目录与视频项目目录；接口仍只接受经过清洗的项目名和固定 scope，不接收浏览器传入的任意磁盘路径。
+- 自动验证：`TestOpenProjectFolder` 3 条真实 aiohttp API 测试通过，覆盖四类目录、参考 input 目录自动创建、缺失视频目录拒绝、未知 scope 与跨站请求拒绝；全部 `web/*.js` 语法检查及 `git diff --check` 通过。真实资源管理器打开位置待用户点击验收。
+- 部署：只同步 `comfyui/server_api.py` 与 `web/project_menu.js` 到运行版并核对哈希；原文件备份在工作区 `work/h3-runtime-backup-before-ref-input-open-20261106/`。本轮改了 Python 路由，需完全重启 ComfyUI 后 `Ctrl+F5`。
+
 ## 2026-11-06 · 解码、合并与卡片预览性能优化
 
 - 快照：`archive/2026-11-06-c70b024-pre-performance/h3-lvm-c70b024.zip` 保存本轮前已发布基线 `c70b024` 的 120 个 Git 跟踪文件；本轮不创建 tag，按用户命令推送原版 main。

@@ -386,7 +386,7 @@ class H3VideoCompareSlider(io.ComfyNode):
                 io.Boolean.Input("show_labels", display_name="显示标签", default=True),
                 io.Boolean.Input("loop", display_name="循环播放", default=True),
                 io.Boolean.Input("muted", display_name="静音", default=True,
-                                 tooltip="关闭静音后播放原视频的声音。"),
+                                 tooltip="关闭静音后播放当前所选音源的声音。"),
                 io.Float.Input("record_duration", display_name="录制时长（秒）", default=5.0,
                                min=0.5, max=300.0, step=0.5),
                 io.Float.Input("fps", display_name="IMAGE 帧率", default=24.0,
@@ -398,6 +398,9 @@ class H3VideoCompareSlider(io.ComfyNode):
                 VHS_FILENAMES.Input("after_video", display_name="处理后 Filenames", optional=True),
                 io.String.Input("before_selected", default="", optional=True),
                 io.String.Input("after_selected", default="", optional=True),
+                io.Combo.Input("audio_source", display_name="音频来源",
+                               options=["before", "after"], default="before", optional=True,
+                               tooltip="选择播放原视频或处理后视频的声音。"),
             ],
             outputs=[
                 VHS_FILENAMES.Output(display_name="before_video"),
@@ -408,7 +411,8 @@ class H3VideoCompareSlider(io.ComfyNode):
     @classmethod
     def execute(cls, slider_position, before_label, after_label, show_labels, loop,
                 muted, record_duration, fps=24.0, before_images=None, after_images=None,
-                before_video=None, after_video=None, before_selected="", after_selected=""):
+                before_video=None, after_video=None, before_selected="", after_selected="",
+                audio_source="before"):
         before_path = None
         after_path = None
         try:
@@ -449,6 +453,7 @@ class H3VideoCompareSlider(io.ComfyNode):
                     "show_labels": bool(show_labels),
                     "loop": bool(loop),
                     "muted": bool(muted),
+                    "audio_source": "after" if audio_source == "after" else "before",
                     "record_duration": max(0.5, float(record_duration)),
                     "fps": float(fps),
                 },

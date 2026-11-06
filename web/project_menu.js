@@ -86,6 +86,9 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     // An unknown scope reads as the cut-segment bin, which is what the backend does.
     const config = SCOPE_CONFIG[scope] ?? SCOPE_CONFIG.segments;
     const refScope = config.field === "references";
+    const openDirTitle = refScope
+        ? "在资源管理器中打开当前项目的 input 参考素材文件夹"
+        : "在资源管理器中打开当前项目的素材库文件夹";
     let bins = [];
     let currentPaintKey = "";
     let inFlight = null;
@@ -139,7 +142,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     // acts on the project the menu currently shows.
     const openDirBtn = makeElement("button", "h3lvm-project-open", "📂 打开本地目录");
     openDirBtn.type = "button";
-    openDirBtn.title = "在资源管理器中打开当前项目的素材库文件夹";
+    openDirBtn.title = openDirTitle;
 
     projectRow.append(projectLabel, currentCard, openDirBtn);
     root.appendChild(projectRow);
@@ -544,7 +547,7 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
     // Opening a folder is a one-click action, so the label has to say what happened
     // even when it fails: a silent click on this button would read as a broken node.
     const OPEN_DIR_LABEL = "📂 打开本地目录";
-    const OPEN_DIR_TITLE = "在资源管理器中打开当前项目的素材库文件夹";
+    const OPEN_DIR_TITLE = openDirTitle;
     let openDirTimer = 0;
     function flashOpenDir(text, tip) {
         openDirBtn.textContent = text;
@@ -572,7 +575,8 @@ export function createProjectMenu({ node, widget, signal, scope = "segments", on
                 flashOpenDir("⚠ 打不开目录", data.error || `打开失败（HTTP ${res.status}）`);
                 return;
             }
-            flashOpenDir("📂 已打开", `已在资源管理器中打开「${project}」`);
+            const target = refScope ? `「${project}」的 input 参考素材目录` : `「${project}」`;
+            flashOpenDir("📂 已打开", `已在资源管理器中打开${target}`);
         } catch (error) {
             console.warn("[H3 LVM] open project folder failed:", error);
             flashOpenDir("⚠ 打不开目录", "打开失败：连不上后台服务。");

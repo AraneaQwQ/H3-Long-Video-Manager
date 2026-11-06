@@ -164,9 +164,13 @@ class TestVideoCompareSchema(unittest.TestCase):
         self.assertEqual(_input_ids("H3VideoCompareSlider"), [
             "slider_position", "before_label", "after_label", "show_labels", "loop",
             "muted", "record_duration", "fps", "before_images", "after_images",
-            "before_video", "after_video", "before_selected", "after_selected",
+            "before_video", "after_video", "before_selected", "after_selected", "audio_source",
         ])
         self.assertEqual(_outputs("H3VideoCompareSlider"), ["before_video", "after_video"])
+        schema = next(cls for cls in NODES.NODE_LIST if cls.__name__ == "H3VideoCompareSlider").define_schema()
+        audio_source = next(inp for inp in schema.inputs if inp.id == "audio_source")
+        self.assertEqual(audio_source.default, "before")
+        self.assertEqual(list(audio_source.options), ["before", "after"])
 
 
 if __name__ == "__main__":

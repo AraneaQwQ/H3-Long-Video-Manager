@@ -170,7 +170,7 @@ async function fixture({ recording = false } = {}) {
     const values = {
         slider_position: 0.5, before_label: "A", after_label: "B", show_labels: true,
         loop: true, muted: true, record_duration: 5, fps: 24,
-        before_selected: "", after_selected: "",
+        before_selected: "", after_selected: "", audio_source: "before",
     };
     const node = {
         widgets: Object.entries(values).map(([name, value]) => ({ name, value, options: {} })),
@@ -264,6 +264,41 @@ test("toolbar and detail settings stay bound to the serialized widgets", async (
     visible.fire("change");
     assert.equal(node.widgets.find(item => item.name === "show_labels").value, false);
     assert.equal(elements.find(item => item.className === "h3-vc-tag h3-vc-before-tag").hidden, true);
+    view.destroy();
+});
+
+test("audio source selects exactly one video and mute follows that source", async () => {
+    const { view, node, before, after, elements } = await fixture();
+    const source = elements.find(item => item.tagName === "button" && item.textContent === "🎙 A音频");
+    const mute = elements.find(item => item.tagName === "button" && item.textContent === "🔇");
+    assert.ok(source);
+    assert.ok(mute);
+    node.widgets.find(item => item.name === "muted").value = false;
+    view.applySettings();
+    assert.equal(before.muted, false);
+    assert.equal(after.muted, true);
+    source.click();
+    assert.equal(node.widgets.find(item => item.name === "audio_source").value, "after");
+    assert.equal(before.muted, true);
+    assert.equal(after.muted, false);
+    assert.equal(source.textContent, "🎙 B音频");
+    mute.click();
+    assert.equal(before.muted, true);
+    assert.equal(after.muted, true);
+    mute.click();
+    assert.equal(before.muted, true);
+    assert.equal(after.muted, false);
+    source.click();
+    assert.equal(before.muted, false);
+    assert.equal(after.muted, true);
+    node.widgets.find(item => item.name === "before_label").value = "素材甲";
+    node.widgets.find(item => item.name === "after_label").value = "素材乙";
+    view.applySettings();
+    assert.equal(source.textContent, "🎙 素材甲音频");
+    const sourceLabels = elements.filter(item => item.className === "h3-vc-source-label");
+    assert.deepEqual(sourceLabels.map(item => item.textContent), ["素材甲", "素材乙"]);
+    source.click();
+    assert.equal(source.textContent, "🎙 素材乙音频");
     view.destroy();
 });
 
