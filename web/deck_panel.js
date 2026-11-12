@@ -16,6 +16,7 @@ import { appendThumbnail } from "./thumb_fit.js";
 import { createCardZoom } from "./card_zoom.js";
 import { addDeleteButton } from "./delete_button.js";
 import { fetchJsonShared } from "./json_request.js";
+import { adjacentSelection, toggleMergeSelection } from "./deck_selection.js";
 
 export function createDeck({
     node,
@@ -95,6 +96,7 @@ export function createDeck({
     let merging = false;
     let deleting = false;
     let segmentCount = 0;
+    let availableIds = [];
     let rendering = false;
     let pendingRender = false;
     let deletedBeforeRender = new Set();
@@ -142,7 +144,7 @@ export function createDeck({
         mergeBtn.classList.toggle("on", mergeMode);
         mergeBtn.disabled = busy || segmentCount < 2;
         mergeOkBtn.style.display = mergeMode ? "" : "none";
-        mergeOkBtn.disabled = !(mergeMode && picked.size >= 2 && !busy);
+        mergeOkBtn.disabled = !(mergeMode && picked.size >= 2 && !busy && adjacentSelection(picked, availableIds));
         mergeOkBtn.textContent = merging ? "⏳ 合并中…" : "✅ 确认合并";
         deck.querySelectorAll(".h3-asset-delete").forEach(button => {
             button.disabled = mergeMode || busy;
@@ -158,21 +160,7 @@ export function createDeck({
     }
 
     function togglePick(id) {
-        if (picked.has(id)) {
-            picked.delete(id);
-        } else if (!picked.size) {
-            picked.add(id);
-        } else {
-            const ids = pickedIds();
-            // Only a contiguous block can become one clip, so a card that does not
-            // touch the current block starts a new selection instead of a gap.
-            if (id === ids[ids.length - 1] + 1 || id === ids[0] - 1) {
-                picked.add(id);
-            } else {
-                picked.clear();
-                picked.add(id);
-            }
-        }
+        picked = toggleMergeSelection(picked, id, availableIds);
         deck.querySelectorAll(".h3lvm-card").forEach(item => {
             item.classList.toggle("picked", picked.has(Number(item.dataset.segId)));
         });
@@ -194,7 +182,7 @@ export function createDeck({
         event.stopPropagation();
         const ids = pickedIds();
         const project = currentProject();
-        if (ids.length < 2 || !project || merging || deleting) return;
+        if (ids.length < 2 || !project || merging || deleting || !adjacentSelection(picked, availableIds)) return;
         merging = true;
         updateMergeUi();
         try {
@@ -321,6 +309,7 @@ export function createDeck({
             .sort((a, b) => a.id - b.id);
         const present = new Set(ordered.map(item => item.id));
         segmentCount = ordered.length;
+        availableIds = ordered.map(item => Number(item.seg.segment_id));
         const segmentWidget = widgetFor(segmentField);
         const selected = selectedSegment();
         const selectFirst = selectFirstProject === project;

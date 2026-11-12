@@ -162,6 +162,40 @@ class TestMergeShape(MergeTestCase):
 
 
 class TestMergeIds(MergeTestCase):
+    def test_deleted_middle_card_allows_its_neighbours_to_merge(self):
+        for index in range(1, 5):
+            self.save_shot("Deleted", index, (index - 1) * 10, 10,
+                           context=2 if index > 1 else 0)
+        segment_store.delete_segment("Deleted", 2)
+        self.assertEqual(self.ids_in_bin("Deleted"), [1, 3, 4])
+
+        result = merge_segments("Deleted", [3, 1])
+        self.assertEqual(result["merged_from"], [1, 3])
+        self.assertEqual(result["renumbered"], [{"from": 4, "to": 3}])
+        self.assertEqual(self.ids_in_bin("Deleted"), [1, 3])
+        video, audio, _ = load_segment("Deleted", 1)
+        self.assertEqual(len(video), 18)
+        self.assertAlmostEqual(_first_pixel(video, 9), .09, places=2)
+        # Segment 3's context belongs to deleted segment 2: it must stay out.
+        self.assertAlmostEqual(_first_pixel(video, 10), .22, places=2)
+        self.assertAlmostEqual(_first_pixel(video, 17), .29, places=2)
+        self.assertAlmostEqual(audio["waveform"].shape[-1], 18 / 24 * 44100, delta=3)
+        moved, _, _ = load_segment("Deleted", 3)
+        self.assertAlmostEqual(_first_pixel(moved, 0), .30, places=2)
+        # A subsequent merge must also accept the remaining numbering gap.
+        merge_segments("Deleted", [1, 3])
+        self.assertEqual(self.ids_in_bin("Deleted"), [1])
+
+    def test_sparse_library_still_rejects_skipping_an_existing_card(self):
+        for index in (1, 3, 5):
+            self.save_shot("Sparse", index, index * 10, 10, context=0)
+        with self.assertRaisesRegex(ValueError, "相邻"):
+            merge_segments("Sparse", [1, 5])
+        self.assertEqual(self.ids_in_bin("Sparse"), [1, 3, 5])
+        result = merge_segments("Sparse", [1, 3, 5])
+        self.assertEqual(result["merged_from"], [1, 3, 5])
+        self.assertEqual(result["renumbered"], [])
+
     def test_later_segments_shift_down_and_files_follow(self):
         for index in range(1, 6):
             self.save_shot("M2", index, (index - 1) * 10, 10, context=5 if index > 1 else 0)

@@ -777,7 +777,7 @@ def _segment_dir(project: str, seg_index_1based: int) -> str:
 
 
 def _checked_merge_ids(segment_ids: Any) -> List[int]:
-    """Validate the requested ids: at least two, unique, and consecutive."""
+    """Validate IDs; library-position adjacency is checked under the project lock."""
     if isinstance(segment_ids, (str, bytes)) or not isinstance(segment_ids, (list, tuple)):
         raise ValueError("请给出要合并的片段编号列表。")
     ids = set()
@@ -788,8 +788,6 @@ def _checked_merge_ids(segment_ids: Any) -> List[int]:
     if len(ids) < 2:
         raise ValueError("请至少选择两个片段再合并。")
     ordered = sorted(ids)
-    if any(b - a != 1 for a, b in zip(ordered, ordered[1:])):
-        raise ValueError("只能合并相邻的片段（编号必须连续）。")
     return ordered
 
 
@@ -827,12 +825,13 @@ def _retag(value: Any, old_tag: str, new_tag: str) -> Any:
 
 @project_locked
 def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
-    """Join consecutive segments into one card, then close the numbering gap.
+    """Join neighbouring existing cards, allowing gaps left by deleted IDs.
 
     Automatic splitting sometimes cuts one shot into several tiny pieces. The user
     picks those cards and merges them: the merged card keeps the smallest id, and
     every card behind it shifts down by the number of removed segments, so the bin
-    stays numbered 1..N with no holes - which is what 输出片段编号 expects.
+    keeps its existing order. Deletion gaps are allowed and are not renumbered
+    merely by deleting a card.
 
     Saved tensors start with the Motion Context overlap of the previous shot, so
     each segment after the first loses those head frames; without that the joined
@@ -850,6 +849,12 @@ def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
     missing = [i for i in ids if i not in by_id]
     if missing:
         raise ValueError("片段 " + "、".join(str(i) for i in missing) + " 已不存在，请刷新列表。")
+    # IDs remain stable on deletion; adjacency means consecutive positions
+    # in the current library, not consecutive integer IDs. Check under lock.
+    available = sorted(by_id)
+    start = available.index(ids[0])
+    if available[start:start + len(ids)] != ids:
+        raise ValueError("只能合并当前素材库中相邻的卡片，请勿跳过仍存在的片段。")
     metas = [by_id[i] for i in ids]
 
     fps = int(metas[0].get("fps") or 0)

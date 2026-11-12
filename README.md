@@ -275,7 +275,8 @@ carry a `🔗 合并模式` button in the tool row, on the same row and at the s
 non-adjacent one restarts the selection), they get an `已选` badge, and `✅ 确认合并` appears in
 the same row. The merge joins those segments into one card that keeps the **smallest** id of the
 selection, and every later segment shifts down by the number of removed cards, so the bin stays
-numbered 1..N with no holes — which is what 输出片段编号 reads. Joining drops the Motion Context
+in its existing order. Adjacency uses positions in the current library: after deleting card 2,
+cards 1 and 3 can merge; if card 2 still exists they cannot. Deleting a card preserves the other IDs. Joining drops the Motion Context
 overlap at every seam (the head frames of each segment after the first, plus the matching audio
 head), so the joined clip neither replays frames nor drifts off the picture; audio survives only
 when every part has it. Frames are concatenated in the stored packed format (int8/fp16), so a long
@@ -652,7 +653,7 @@ after 15 minutes if it cannot finish.
 | `GET /h3_lvm/segments?project=<name>` | Full segment list with thumbnail URLs |
 | `GET /h3_lvm/ref_plan?w=&h=&mp=&upscale=0|1` | `{"width", "height", "actual_megapixels", "area_error", "ratio_error", "mode"}` — the 32-grid size the reference loader will really produce for that source, target and upscale setting; `mode` is `target_mp` or `grid_align` and is what puts the "not upscaled" note on the card |
 | `POST /h3_lvm/delete` | body `{"project": <name>, "segment_id": N}` → `{"deleted": N}` |
-| `POST /h3_lvm/merge` | body `{"project": <name>, "segment_ids": [3, 4, 5]}` → `{"project": ..., "merged_id": 3, "merged_from": [3, 4, 5], "dropped_overlap_frames": N, "renumbered": [{"from": 6, "to": 4}], "segment": {...}}` — joins consecutive segments; a Chinese 400 for a non-consecutive selection or mismatched fps/size |
+| `POST /h3_lvm/merge` | body `{"project": <name>, "segment_ids": [3, 4, 5]}` → `{"project": ..., "merged_id": 3, "merged_from": [3, 4, 5], "dropped_overlap_frames": N, "renumbered": [{"from": 6, "to": 4}], "segment": {...}}` — joins neighbouring cards in the current library (deleted ID gaps allowed); a Chinese 400 for skipping an existing card or mismatched fps/size |
 | `GET /h3_lvm/video_files?directory=<input-relative-folder>` | One directory for H3 Video Loader's server file browser: immediate subfolders and videos with path / size / mtime; absolute paths and escaping `input` are refused |
 | `GET /h3_lvm/video_file_info?path=<input-relative-video>` | Probe the selected input video for the browser's confirmation details; cannot probe an arbitrary disk path |
 | `POST /h3_lvm/source_preview` + `GET /h3_lvm/source_preview?ticket=...` | Same-origin JSON creates a short-lived ticket for the selected v2 source; GET streams only that authorized file with HTTP Range, never a caller-supplied disk path |
@@ -991,7 +992,7 @@ Manager v2 暂不包含 v1 的人物裁切控件；需要该功能时继续使�
 
 **卡片大小** — 两个面板用的是同一个控件（`web/card_zoom.js`）：`−` / `+` 在 100% / 150% / 200% / 300% / 400% 之间步进，到两端按钮自己变灰而不是绕回，卡片区在面板内滚动。它只改 CSS 变量 `--card-min` 和 `--thumb-h`，节点尺寸完全由用户掌握。
 
-**合并模式** — 自动切分有时会把一个镜头切成好几个小片段，所以两个卡片区都在工具行里放了 `🔗 合并模式`，与 `🔄 刷新` 同一行同一高度。打开后卡片可以点选：点两段以上**相邻**的卡片（点了不相邻的就重新从这一段开始选），卡片上出现 `已选` 角标，同一行出现 `✅ 确认合并`。合并把这几段接成一个卡片，**编号沿用所选里最小的那个**，后面的片段按删掉的段数依次前移，整个库始终是 1..N 连续编号——也就是「输出片段编号」读的那个号。相接时会去掉每个接缝的 Motion Context 重叠帧（第一段之后每段头部的若干帧，音频按同样的时长同步裁掉），所以接出来的片段既不会重复帧也不会音画错位；只要有一段没有音频，合并结果就不带音频。帧数据按库里存的 packed 格式（int8/fp16）直接拼接，长片段不会因为合并而多吃一份 float32 内存。所选片段帧率或分辨率不一致会被拒绝并给出中文提示。合并模式只是界面上的状态，不写进工作流，刷新页面就关掉。
+**合并模式** — 自动切分有时会把一个镜头切成好几个小片段，所以两个卡片区都在工具行里放了 `🔗 合并模式`，与 `🔄 刷新` 同一行同一高度。打开后卡片可以点选：点两段以上**相邻**的卡片（点了不相邻的就重新从这一段开始选），卡片上出现 `已选` 角标，同一行出现 `✅ 确认合并`。合并把这几段接成一个卡片，**编号沿用所选里最小的那个**，后面的片段按删掉的段数依次前移，保留现有卡片顺序。「相邻」按当前素材库中实际卡片的位置判断：删除 2 后可以合并 1、3；2 仍存在时不能跳过它合并。删除卡片本身不重排其他编号。相接时会去掉每个接缝的 Motion Context 重叠帧（第一段之后每段头部的若干帧，音频按同样的时长同步裁掉），所以接出来的片段既不会重复帧也不会音画错位；只要有一段没有音频，合并结果就不带音频。帧数据按库里存的 packed 格式（int8/fp16）直接拼接，长片段不会因为合并而多吃一份 float32 内存。所选片段帧率或分辨率不一致会被拒绝并给出中文提示。合并模式只是界面上的状态，不写进工作流，刷新页面就关掉。
 
 #### H3 Smart Split
 
