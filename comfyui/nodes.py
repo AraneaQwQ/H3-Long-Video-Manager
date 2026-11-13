@@ -43,6 +43,7 @@ from .ref_nodes import H3AudioReferenceLoader, H3ImageReferenceLoader
 # thing that touches the native Add Guide node, so a ComfyUI without it fails there
 # and nowhere else.
 from .guide_nodes import H3GuideTimeline, H3GuideTimelineV2, H3GuideTimelineV2B
+from .guide_release import H3GuideKeyframeRelease
 from .video_loader_node import H3VideoLoader
 from .stream_nodes import H3LongVideoManagerV2, H3SmartSplitV2
 from .playback_audio import _slowdown_audio
@@ -941,7 +942,7 @@ NODE_LIST = [
     H3VideoLoader, H3LongVideoManager, H3SmartSplit, H3SegmentPicker,
     H3LongVideoManagerV2, H3SmartSplitV2,
     H3ImageReferenceLoader, H3AudioReferenceLoader, H3GuideTimeline,
-    H3GuideTimelineV2, H3GuideTimelineV2B, H3VideoCompareSlider,
+    H3GuideTimelineV2, H3GuideTimelineV2B, H3VideoCompareSlider, H3GuideKeyframeRelease,
 ]
 
 

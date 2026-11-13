@@ -49,6 +49,7 @@ from ..core.ref_size import MAX_SOURCE_PIXELS
 from .ref_nodes import _decode_audio_file, _media_roots
 # v2 only. Importing this module never touches the model: install() does, and only
 # when a v2 run actually asks for less than full strength.
+from ..core.guide_release import RELEASE_KEY, parse_release, release_fingerprint
 from .h3_strength_patch import apply_image_strength, install_reason, install as install_strength_patch
 
 logger = logging.getLogger(__name__)
@@ -343,6 +344,7 @@ class H3GuideTimeline(io.ComfyNode):
     def validate_inputs(cls, guides, length_seconds=0.0, **_):
         try:
             cls._parse(guides)
+            parse_release(guides)
         except ValueError as exc:
             return str(exc)
         return True
@@ -357,7 +359,7 @@ class H3GuideTimeline(io.ComfyNode):
         """
         try:
             digest = guide_fingerprint_v2 if cls.STRENGTH_ENABLED else guide_fingerprint
-            return digest(cls._parse(guides), _media_roots())
+            return digest(cls._parse(guides), _media_roots()) + release_fingerprint(guides)
         except Exception:
             return repr(guides)
 
@@ -376,6 +378,7 @@ class H3GuideTimeline(io.ComfyNode):
              enable_b=False, latent_b=None, shared_guides=None) -> io.NodeOutput:
         if cls.SHARED_DOCUMENT_INPUT and shared_guides is not None:
             guides = shared_guides
+        release = parse_release(guides)
         parsed = cls._parse(guides)
         ordered = cls._ordered(parsed)
         channels = [{"name": "一采", "active": not cls.DUAL_CHANNEL or enable_a,
@@ -483,7 +486,7 @@ class H3GuideTimeline(io.ComfyNode):
                     audio = _decode_audio_window(resolve_media_path(roots, guide["asset"]), guide)
             for channel in active_channels:
                 conditioned = channel["conditioning"]
-                before = _keyframe_ids(conditioned) if cls.STRENGTH_ENABLED else None
+                before = _keyframe_ids(conditioned) if (cls.STRENGTH_ENABLED or release["enabled"]) else None
                 result = native.execute(
                     conditioned, channel["latent"], int(guide["frame_index"]),
                     vae=vae, audio_vae=audio_vae, image=image, audio=audio)
@@ -494,6 +497,11 @@ class H3GuideTimeline(io.ComfyNode):
                     if strength < STRENGTH_MAX:
                         _mark_new_keyframe_strength(conditioned, before, strength,
                                                     int(guide["frame_index"]), guide)
+                if release["enabled"] and guide["kind"] == IMAGE_KIND:
+                    created = [k for k in _keyframes_of(conditioned) if id(k) not in before]
+                    if len(created) != 1:
+                        raise ValueError("关键帧阶段控制无法唯一定位本时间轴新增的图片条件。")
+                    created[0][RELEASE_KEY] = release["threshold"]
             del image, audio
 
         keyframe_counts = [len(_keyframes_of(channel["conditioning"]))
@@ -600,6 +608,7 @@ class H3GuideTimelineV2B(H3GuideTimelineV2):
             return True
         try:
             cls._parse(shared_guides)
+            parse_release(shared_guides)
         except ValueError as exc:
             return str(exc)
         return True

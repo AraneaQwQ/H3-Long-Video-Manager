@@ -299,6 +299,20 @@ export function laneHeightsDiffer(heights) {
     return safe[IMAGE_KIND] !== DEFAULT_LANE_HEIGHTS[IMAGE_KIND] || safe[AUDIO_KIND] !== DEFAULT_LANE_HEIGHTS[AUDIO_KIND];
 }
 
+export function normalizeRelease(value = { enabled: false, threshold: 0.9 }) {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || (value.enabled !== undefined && typeof value.enabled !== "boolean")) {
+        throw new Error("关键帧阶段控制必须包含布尔 enabled 与 0–1 阈值。");
+    }
+    const raw = value.threshold === undefined ? 0.9 : value.threshold;
+    const threshold = Number(raw);
+    if (raw === null || typeof raw === "boolean" || String(raw).trim() === ""
+        || !Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+        throw new Error("关键帧释放阈值必须是 0–1 的有限数值。");
+    }
+    return { enabled: value.enabled === true, threshold };
+}
+
 export function parseDocument(raw) {
     let data = raw;
     if (data === null || data === undefined) data = {};
@@ -337,6 +351,7 @@ export function parseDocument(raw) {
         fps: Number(data.fps) || DEFAULT_FPS,
         guides,
         view_state: view,
+        ...(data.keyframe_release !== undefined ? { keyframe_release: normalizeRelease(data.keyframe_release) } : {}),
         // Written by the node after a run; the ruler uses it before the next run.
         resolved_frame_count: Math.max(0, Math.trunc(Number(data.resolved_frame_count) || 0)),
         resolved_source: data.resolved_source === "upstream" ? "upstream" : "run",
@@ -379,6 +394,7 @@ export function serializeDocument(doc) {
         }
         document.guides.push(entry);
     }
+    if (doc.keyframe_release !== undefined) document.keyframe_release = normalizeRelease(doc.keyframe_release);
     const frameCount = Math.max(0, Math.trunc(Number(doc.resolved_frame_count) || 0));
     if (frameCount) document.resolved_frame_count = frameCount;
     const view = doc.view_state || {};

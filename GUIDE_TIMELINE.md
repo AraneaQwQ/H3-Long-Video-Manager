@@ -210,3 +210,29 @@ execute(cls, positive, latent, frame_idx, vae=None, audio_vae=None, image=None, 
 - 使用真实 Guide 文档和真实节点类，通过 ComfyUI 原 `execution.validate_inputs` 重放同样的共享链接，
   结果为 `GUIDE_B_VALID True`、`GUIDE_B_ERRORS []`。完整 Python 回归 **658/658，0 跳过**，
   Guide 专项 **57/57**，前端状态 **106/106**。未把该结果当作完整两采成片验收。
+
+
+## 2026-11-13：图片关键帧仅在采样前期提供
+
+Guide 时间轴和 v2 编辑器顶栏新增「图片仅前期」开关与「释放阈值」。旧文档缺字段时默认关闭，节点的原有输入、输出及 widget 顺序不变；v2 的共享 Guide 文档会把此设置传给二采信息传输节点。
+
+使用方法：
+
+1. 在时间轴编辑器勾选「图片仅前期」，设置释放阈值（初始 0.9）。
+2. 新增 **H3 Guide 关键帧阶段控制**（`H3/Guide`），将加载模型 / LoRA 后的 MODEL 经过它再连到对应采样器。若一采和二采用不同 MODEL，各自连接一个；没有连接补丁节点时，仅保存文档开关不会改变采样行为。
+3. 时间轴的 positive 保持原有接法。它只标记自己新增的图片关键帧，音频、上游已有关键帧、原视频引导与 refs 不标记。
+4. 需要检查时打开补丁节点的 `log_forwards`，控制台记录每次模型前向的 sigma 和图片关键帧数量。低于阈值时释放，等于阈值时保留。
+
+阈值是噪声值，不是采样步数百分比。越高通常越早释放；0 在常规非负 sigma 调度下不释放，1 会在 sigma 小于 1 时释放。如果调度从小于 1 开始，阈值 1 可能从第一次计算就不提供这些图片条件。多次求值采样器按每次实际 sigma 判断，不使用累计调用次数。
+
+运行时只克隆 payload 并过滤带私有标记的视觉条件，保留音频、refs、文本和其他字段，然后使布局失效并按「保留关键帧 → refs」重建条件 latent。原条件、MODEL 和原卡片不修改，回到高 sigma 会重新读取完整输入，不残留释放状态。已有 strength 与噪声行标签继续对应保留的条件；strength=0 的图片仍不编码。
+
+分窗通过 MODEL 的实例对象补丁委托原生 `_window_payload` 逐源裁切，再将释放标记及逐图 `noise_aug` 带到对应视觉块；不编辑核心文件、不安装新的全局 monkey patch。稳定 wrapper key 使重复连接不累计同类 wrapper，其他 key 的 wrapper 保留。
+
+文档字段示例（关闭时可省略整个字段）：
+
+```json
+{"schema_version":1,"fps":24,"guides":[],"keyframe_release":{"enabled":true,"threshold":0.9}}
+```
+
+此机制只保证后期停止直接提供这些图片条件；前期已形成的信息仍在当前 latent 中，不能承诺关键帧影响被完全消除或画质必然改善。已完成原生 AddGuide、实际 ModelPatcher / WrapperExecutor、原生分窗及强度共存的自动测试；真实预训练 H3 小样和编辑器视觉验收仍待部署后完成。

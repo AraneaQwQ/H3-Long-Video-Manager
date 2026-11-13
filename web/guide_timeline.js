@@ -578,6 +578,37 @@ function installGuideNode(node) {
             closeBtn,
         );
 
+        const releaseConfig = doc.keyframe_release || { enabled: false, threshold: 0.9 };
+        const releaseLabel = make("label", "h3guide-sub");
+        const releaseEnabled = make("input");
+        releaseEnabled.type = "checkbox";
+        releaseEnabled.checked = releaseConfig.enabled;
+        const releaseThreshold = make("input");
+        releaseThreshold.type = "number";
+        releaseThreshold.min = "0";
+        releaseThreshold.max = "1";
+        releaseThreshold.step = "0.01";
+        releaseThreshold.value = String(releaseConfig.threshold);
+        releaseThreshold.disabled = !releaseConfig.enabled;
+        releaseThreshold.style.width = "64px";
+        releaseLabel.title = "需要连接「H3 Guide 关键帧阶段控制」MODEL 节点。只释放本时间轴图片，音频及其他参考保留。阈值是噪声值，不是采样步数百分比；越高通常越早释放，0 表示常规采样不释放。";
+        releaseLabel.append(releaseEnabled, make("span", null, " 图片仅前期 · 释放阈值 "), releaseThreshold);
+        head.insertBefore(releaseLabel, closeBtn);
+        const saveRelease = () => {
+            const threshold = Number(releaseThreshold.value);
+            if (!releaseThreshold.value.trim() || !Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+                releaseThreshold.value = String(doc.keyframe_release?.threshold ?? 0.9);
+                return;
+            }
+            doc.keyframe_release = { enabled: releaseEnabled.checked, threshold };
+            releaseThreshold.disabled = !releaseEnabled.checked;
+            writeDoc();
+        };
+        releaseEnabled.addEventListener("change", saveRelease, { signal });
+        releaseThreshold.addEventListener("change", saveRelease, { signal });
+        releaseLabel.addEventListener("pointerdown", event => event.stopPropagation(), { signal });
+        releaseThreshold.addEventListener("keydown", event => event.stopPropagation(), { signal });
+
         const ruler = make("div", "h3guide-ruler");
         const trackImage = make("div", "h3guide-track");
         const trackAudio = make("div", "h3guide-track h3guide-track-audio");
@@ -661,6 +692,7 @@ function installGuideNode(node) {
         const foot = make("div", "h3guide-foot");
 
         els = {
+            releaseEnabled, releaseThreshold,
             head, headSub, ruler, trackImage, trackAudio, panBar, panThumb, pool, deck, poolKind, poolCounts,
             detail, foot, tabImage, tabAudio, countImage: imageLane.count, countAudio: audioLane.count,
             pxImage: imageLane.px, pxAudio: audioLane.px, imageInput, audioInput,
@@ -3153,6 +3185,10 @@ function installGuideNode(node) {
     function renderAll() {
         renderSummary();
         if (!root) return;
+        const release = doc.keyframe_release || { enabled: false, threshold: 0.9 };
+        els.releaseEnabled.checked = release.enabled;
+        els.releaseThreshold.disabled = !release.enabled;
+        if (document.activeElement !== els.releaseThreshold) els.releaseThreshold.value = String(release.threshold);
         renderTimeline();
         renderPool();
         renderDetail();
