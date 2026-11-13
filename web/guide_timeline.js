@@ -1141,8 +1141,7 @@ function installGuideNode(node) {
         grip.addEventListener("pointerdown", (event) => {
             if (event.button) return;
             event.preventDefault();
-            const track = kind === AUDIO_KIND ? els.trackAudio : els.trackImage;
-            const startHeight = track.clientHeight;
+            const startHeight = laneHeights(doc.view_state)[kind];
             const startY = event.clientY;
             const pointerId = event.pointerId;
             grip.classList.add("dragging");
@@ -1153,7 +1152,7 @@ function installGuideNode(node) {
                 grip.classList.remove("dragging");
                 writeDoc({ dirty: false });
                 renderTimeline();
-            });
+            }, event, grip);
         }, { signal });
     }
 
@@ -1496,15 +1495,32 @@ function installGuideNode(node) {
     // mouse" looked like.
     const dragSessions = new Set();
 
-    function beginDragSession(onMove, onEnd) {
-        const session = {};
-        session.move = (event) => onMove(event);
-        session.up = (event) => { endDragSession(session); onEnd?.(event, false); };
-        session.cancel = () => { endDragSession(session); onEnd?.(null, true); };
+    function beginDragSession(onMove, onEnd, startEvent = null, captureTarget = null) {
+        const session = { pointerId: startEvent?.pointerId, captureTarget };
+        const matches = event => session.pointerId == null || event.pointerId === session.pointerId;
+        const finish = (event, cancelled) => {
+            if (!dragSessions.has(session)) return;
+            endDragSession(session);
+            onEnd?.(event, cancelled);
+        };
+        session.move = event => {
+            if (!matches(event)) return;
+            // A release outside the browser may not deliver pointerup. Do not resume
+            // the stale gesture when the pointer returns with no button pressed.
+            if (event.buttons === 0) { finish(event, true); return; }
+            onMove(event);
+        };
+        session.up = event => { if (matches(event)) finish(event, false); };
+        session.cancel = () => finish(null, true);
         window.addEventListener("pointermove", session.move);
         window.addEventListener("pointerup", session.up);
         window.addEventListener("pointercancel", session.cancel);
+        window.addEventListener("blur", session.cancel);
         dragSessions.add(session);
+        if (captureTarget && session.pointerId != null) {
+            captureTarget.addEventListener("lostpointercapture", session.cancel);
+            try { captureTarget.setPointerCapture(session.pointerId); } catch { /* detached host */ }
+        }
         return session;
     }
 
@@ -1514,10 +1530,15 @@ function installGuideNode(node) {
         window.removeEventListener("pointermove", session.move);
         window.removeEventListener("pointerup", session.up);
         window.removeEventListener("pointercancel", session.cancel);
+        window.removeEventListener("blur", session.cancel);
+        if (session.captureTarget) {
+            session.captureTarget.removeEventListener("lostpointercapture", session.cancel);
+            try { session.captureTarget.releasePointerCapture(session.pointerId); } catch { /* already released */ }
+        }
     }
 
     function endAllDragSessions() {
-        for (const session of Array.from(dragSessions)) endDragSession(session);
+        for (const session of Array.from(dragSessions)) session.cancel();
     }
 
     // Dragging a marker or a clip moves that element, its card's two time fields and the

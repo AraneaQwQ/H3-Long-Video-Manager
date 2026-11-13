@@ -38,7 +38,7 @@
 .h3guide-library-empty{grid-column:1/-1;color:var(--h3g-muted);padding:28px 8px;text-align:center;font-size:12px}
 .h3guide-center{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:auto;background:#12141a}
 .h3guide-preview-head{display:flex;gap:10px;align-items:center;padding:14px 18px;font-size:12px;flex-shrink:0}
-.h3guide-reference-preview{display:flex;align-items:center;justify-content:center;flex:1 1 180px;min-height:120px;margin:0 18px;overflow:hidden;background:radial-gradient(ellipse at bottom,#24243560,transparent 70%);border-radius:8px}
+.h3guide-reference-preview{display:flex;align-items:center;justify-content:center;flex:0 0 clamp(120px,30vh,320px);min-height:120px;margin:0 18px;overflow:hidden;background:radial-gradient(ellipse at bottom,#24243560,transparent 70%);border-radius:8px}
 .h3guide-preview-image{display:block;width:100%;height:100%;max-height:100%;object-fit:contain}
 .h3guide-preview-empty{text-align:center;padding:18px;color:var(--h3g-muted);font-size:12px;overflow-wrap:anywhere}
 .h3guide-preview-empty p{margin:12px 0}
