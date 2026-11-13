@@ -236,3 +236,11 @@ Guide 时间轴和 v2 编辑器顶栏新增「图片仅前期」开关与「释�
 ```
 
 此机制只保证后期停止直接提供这些图片条件；前期已形成的信息仍在当前 latent 中，不能承诺关键帧影响被完全消除或画质必然改善。已完成原生 AddGuide、实际 ModelPatcher / WrapperExecutor、原生分窗及强度共存的自动测试；真实预训练 H3 小样和编辑器视觉验收仍待部署后完成。
+
+## 2026-11-13：正式三栏编辑器
+
+工作台使用 web/guide_workbench.css，保留基础样式和同一个 guide_state 业务层。新 guide_editor_state.js 仅负责显示刻度映射和执行内容历史；不更改后端规则。全部图片的释放时机与当前图片的 strength 在 UI 中明确区分。历史只包含 guides 和可选 keyframe_release，既不记录选中/缩放，也不回滚最近执行得到的时间轴范围。宿主重新配置文档时清空编辑历史。
+
+素材池保持原有卡片身份，搜索通过 CSS 隐藏过滤，不改变 JSON 顺序；搜索后的排序只使用可见卡片的几何信息。右侧复用已有音频 trim、替换、复制和删除处理器。预览读取原素材 view 地址，竖屏图片完整显示，媒体缺失有中文提示。
+
+本次部署清单为 web/guide_timeline.js、web/guide_editor_state.js（新增）、web/guide_workbench.css（新增）；不得遗漏基础样式 guide_timeline.css 和共享依赖。正式宿主最终验收仍需在用户工作流中执行，自动浏览器检查不等同于一次真实 H3 生成。

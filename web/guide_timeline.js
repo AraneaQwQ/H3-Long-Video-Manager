@@ -23,6 +23,7 @@
 // frame_index stays the authority and seconds are only an input and a label; audio
 // trim stays in sample points. Nothing here re-derives those rules.
 
+import { createGuideHistory, referencePosition, releaseFromPosition, referenceDescription } from "./guide_editor_state.js";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { addPanel } from "./dom_panel.js";
@@ -51,6 +52,7 @@ try {
     const sheets = [
         ["h3lvm-styles", "./h3lvm_picker.css"],
         ["h3guide-styles", "./guide_timeline.css"],
+        ["h3guide-workbench-styles", "./guide_workbench.css"],
     ];
     for (const [styleId, path] of sheets) {
         if (document.getElementById(styleId)) continue;
@@ -187,6 +189,9 @@ function installGuideNode(node) {
     let parseError = null;
 
     let doc = readDoc();
+    const editHistory = createGuideHistory(doc);
+    let restoringHistory = false;
+    let strengthExpanded = false;
     // mediaKey -> {duration, sampleRate, sampleCount, peaks} | {error}. Waveforms are
     // CPU work; one decode per file, not per render.
     const audioCache = new Map();
@@ -326,6 +331,8 @@ function installGuideNode(node) {
         widget.callback?.(widget.value);
         afterWidgetWrite(true);
         doc = readDoc();
+        editHistory.reset(doc);
+        syncHistoryButtons();
         renderSummary();
         if (root) renderAll();
     }
@@ -346,6 +353,8 @@ function installGuideNode(node) {
             console.warn("[H3 Guide Timeline] could not serialize the guide list:", error);
             return;
         }
+        if (dirty && !restoringHistory) editHistory.record(doc);
+        syncHistoryButtons();
         widget.callback?.(widget.value);
         afterWidgetWrite(dirty);
     }
@@ -550,12 +559,120 @@ function installGuideNode(node) {
         openBtn.textContent = "🎬 打开 Guide 编辑器";
     }
 
-    // Sections A-G of the plan, in that order: bar, ruler, image lane, audio lane,
-    // card pool, selected detail, validation footer.
+    // Workbench controls reuse the original document and media pipeline.
+    function syncHistoryButtons() {
+        if (!els) return;
+        els.undoBtn.disabled = !editHistory.canUndo || Boolean(parseError);
+        els.redoBtn.disabled = !editHistory.canRedo || Boolean(parseError);
+    }
+    function restoreHistory(direction) {
+        if (parseError) return;
+        endAllDragSessions();
+        const value = editHistory[direction]();
+        if (!value) return;
+        const existingIds = new Set(doc.guides.map(guide => guide.id));
+        doc.guides = value.guides;
+        if (value.keyframe_release) doc.keyframe_release = value.keyframe_release;
+        else delete doc.keyframe_release;
+        if (!guideById(doc.view_state.selected_id)) {
+            const restored = doc.guides.find(guide => !existingIds.has(guide.id));
+            doc.view_state.selected_id = restored?.id || doc.guides[0]?.id || null;
+            if (restored) doc.view_state.active_tab = restored.kind;
+        }
+        restoringHistory = true;
+        try { writeDoc(); } finally { restoringHistory = false; }
+        renderAll();
+    }
+    function filterCards() {
+        if (!els) return;
+        const query = els.search.value.trim().toLocaleLowerCase();
+        let found = 0;
+        for (const [id, card] of cardEls) {
+            const guide = guideById(id);
+            const text = ((guide?.label || "") + " " + (guide?.asset?.filename || "")).toLocaleLowerCase();
+            const hidden = !text.includes(query);
+            card.classList.toggle("h3guide-filtered", hidden);
+            if (!hidden) found++;
+        }
+        els.deck.querySelector(".h3guide-library-empty")?.remove();
+        if (!found) els.deck.append(make("div", "h3guide-library-empty", query ? "没有匹配素材" : "还没有素材，点击上方按钮导入"));
+        // A canvas measured while filtered has zero width; repaint after revealing it.
+        for (const [id, card] of cardEls) {
+            const guide = guideById(id);
+            if (guide?.kind === AUDIO_KIND && !card.classList.contains("h3guide-filtered")) paintCardAudio(card, guide);
+        }
+    }
+    function renderReferencePreview() {
+        if (!els?.preview) return;
+        const guide = selectedGuide();
+        const key = guide ? guide.id + ":" + mediaKeyOf(guide) : "";
+        els.previewName.textContent = guide?.label || "未选择素材";
+        if (els.preview.dataset.key === key && els.preview.childNodes.length) return;
+        els.preview.dataset.key = key;
+        els.preview.replaceChildren();
+        if (!guide) {
+            els.preview.append(make("div", "h3guide-preview-empty", "从左侧素材库或下方轨道选择一条素材"));
+        } else if (guide.kind === IMAGE_KIND) {
+            const image = make("img", "h3guide-preview-image");
+            image.alt = guide.label || guide.asset.filename;
+            image.draggable = false;
+            image.src = viewUrl(guide.asset);
+            image.onerror = () => {
+                if (image.isConnected) els.preview.replaceChildren(make("div", "h3guide-preview-empty", "参考图片暂时无法预览，请检查素材文件或使用替换素材。"));
+            };
+            els.preview.appendChild(image);
+        } else {
+            const name = make("div", "h3guide-preview-empty");
+            name.append(make("strong", null, "♫ 音频参考"), make("p", null, guide.asset.filename),
+                make("p", "h3guide-note", "在右侧试听与裁切音频；下方轨道显示实际占用范围。"));
+            els.preview.appendChild(name);
+        }
+    }
+    function syncReleaseControls() {
+        if (!els) return;
+        const config = doc.keyframe_release || { enabled: false, threshold: 0.9 };
+        els.releaseEnabled.checked = config.enabled;
+        els.releaseThreshold.disabled = !config.enabled;
+        if (document.activeElement !== els.releaseThreshold) els.releaseThreshold.value = String(config.threshold);
+        const slider = els.detail.querySelector(".h3guide-reference-range");
+        if (slider && document.activeElement !== slider) slider.value = String(referencePosition(config));
+        const label = els.detail.querySelector(".h3guide-reference-value");
+        if (label) label.textContent = referenceDescription(config);
+        if (slider) slider.setAttribute("aria-valuetext", referenceDescription(config));
+    }
+    function buildReferenceControl() {
+        const panel = make("section", "h3guide-reference-control");
+        const title = make("div", "h3guide-reference-heading");
+        title.append(make("strong", null, "图片参考约束"), make("span", "h3guide-scope", "全部时间轴图片"));
+        const config = doc.keyframe_release || { enabled: false, threshold: 0.9 };
+        const value = make("div", "h3guide-reference-value", referenceDescription(config));
+        const slider = make("input", "h3guide-reference-range");
+        Object.assign(slider, { type: "range", min: "0", max: "100", step: "0.1", value: String(referencePosition(config)) });
+        slider.setAttribute("aria-label", "图片参考约束持续程度，影响全部时间轴图片");
+        slider.setAttribute("aria-valuetext", value.textContent);
+        slider.addEventListener("input", () => {
+            const next = releaseFromPosition(slider.value, config);
+            value.textContent = referenceDescription(next);
+            slider.setAttribute("aria-valuetext", value.textContent);
+        });
+        slider.addEventListener("change", () => {
+            doc.keyframe_release = releaseFromPosition(slider.value, doc.keyframe_release || config);
+            writeDoc();
+            syncReleaseControls();
+        });
+        const ends = make("div", "h3guide-reference-ends");
+        ends.append(make("span", null, "更早释放"), make("span", null, "全程保留"));
+        panel.append(title, value, slider, ends,
+            make("p", "h3guide-note", "调节图片条件保留多久。越早释放，通常给模型的变化空间越大；不是采样步数百分比。"),
+            make("p", "h3guide-model-note", "提前释放需连接「H3 Guide 关键帧阶段控制」MODEL 节点。"));
+        return panel;
+    }
     function buildEditor() {
         scope = new AbortController();
         const signal = scope.signal;
-        root = make("div", "h3guide-root");
+        root = make("div", "h3guide-root h3guide-workbench");
+        root.setAttribute("role", "dialog");
+        root.setAttribute("aria-label", "Guide 时间轴编辑器");
 
         const head = make("div", "h3guide-bar");
         const headSub = make("span", "h3guide-sub");
@@ -567,19 +684,27 @@ function installGuideNode(node) {
         fitBtn.title = "让整段视频刚好占满时间轴";
         const closeBtn = make("button", "h3guide-primary", "✕ 关闭");
         closeBtn.title = "关闭编辑器不会清空数据，也不会影响执行";
-        head.append(
-            make("strong", null, "🎬 Guide 编排"),
-            headSub,
-            make("span", "h3guide-spacer"),
-            make("span", "h3guide-sub", "时间轴缩放"),
-            zoomOut,
-            zoomIn,
-            fitBtn,
-            closeBtn,
-        );
+        const undoBtn = make("button", "h3guide-secondary", "↶ 撤销");
+        const redoBtn = make("button", "h3guide-secondary", "↷ 重做");
+        undoBtn.setAttribute("aria-label", "撤销编辑");
+        redoBtn.setAttribute("aria-label", "重做编辑");
+        undoBtn.onclick = () => restoreHistory("undo");
+        redoBtn.onclick = () => restoreHistory("redo");
+        const focusBtn = make("button", "h3guide-secondary", "专注时间轴");
+        focusBtn.onclick = () => {
+            const focus = root.classList.toggle("h3guide-focus");
+            focusBtn.textContent = focus ? "显示素材库" : "专注时间轴";
+            scheduleMeasure();
+        };
+        head.append(make("strong", "h3guide-editor-title", "H3 · Guide 时间轴"),
+            headSub, make("span", "h3guide-spacer"), undoBtn, redoBtn, focusBtn, closeBtn);
+        const settings = make("section", "h3guide-settings");
+        settings.append(make("h3", null, "图片如何参与生成"),
+            make("p", "h3guide-note", "时间轴决定图片位于哪一帧；参考约束控制图片条件在采样中保留多久。"));
+
 
         const releaseConfig = doc.keyframe_release || { enabled: false, threshold: 0.9 };
-        const releaseLabel = make("label", "h3guide-sub");
+        const releaseLabel = make("label", "h3guide-setting-row");
         const releaseEnabled = make("input");
         releaseEnabled.type = "checkbox";
         releaseEnabled.checked = releaseConfig.enabled;
@@ -592,17 +717,24 @@ function installGuideNode(node) {
         releaseThreshold.disabled = !releaseConfig.enabled;
         releaseThreshold.style.width = "64px";
         releaseLabel.title = "需要连接「H3 Guide 关键帧阶段控制」MODEL 节点。只释放本时间轴图片，音频及其他参考保留。阈值是噪声值，不是采样步数百分比；越高通常越早释放，0 表示常规采样不释放。";
-        releaseLabel.append(releaseEnabled, make("span", null, " 图片仅前期 · 释放阈值 "), releaseThreshold);
-        head.insertBefore(releaseLabel, closeBtn);
+        releaseLabel.append(releaseEnabled, make("span", null, "图片仅前期生效"));
+        const thresholdLabel = make("label", "h3guide-setting-threshold", "精确释放阈值 · Sigma");
+        thresholdLabel.append(releaseThreshold);
+        settings.append(releaseLabel, thresholdLabel,
+            make("p", "h3guide-note", "噪声值低于阈值时释放图片条件。默认 0.9；它不是采样步数百分比。"),
+            make("p", "h3guide-model-note", "需将「H3 Guide 关键帧阶段控制」接入采样器 MODEL 链路。开关本身不会接线；音频与其他参考继续生效。"));
         const saveRelease = () => {
             const threshold = Number(releaseThreshold.value);
             if (!releaseThreshold.value.trim() || !Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
                 releaseThreshold.value = String(doc.keyframe_release?.threshold ?? 0.9);
+                syncReleaseControls();
+                showLiveNote("释放阈值必须在 0 到 1 之间");
                 return;
             }
             doc.keyframe_release = { enabled: releaseEnabled.checked, threshold };
             releaseThreshold.disabled = !releaseEnabled.checked;
             writeDoc();
+            syncReleaseControls();
         };
         releaseEnabled.addEventListener("change", saveRelease, { signal });
         releaseThreshold.addEventListener("change", saveRelease, { signal });
@@ -670,13 +802,13 @@ function installGuideNode(node) {
 
 
         const pool = make("div", "h3guide-pool");
-        const poolBar = make("div", "h3guide-bar");
+        const poolBar = make("div", "h3guide-bar h3guide-pool-bar");
         const poolKind = make("span", "h3guide-sub");
         const poolCounts = make("span", "h3guide-sub");
         poolBar.append(make("strong", null, "卡片池"), poolKind, make("span", "h3guide-spacer"), poolCounts);
-        // The plan asks for ~220-260px cards here: a guide card carries two number
-        // fields and a row of buttons, so the picker's 130px base is too small to stay usable.
-        createCardZoom({ container: pool, node, baseCardMin: 240, baseThumbH: 150 }).mount(poolBar);
+        // Compact library cards keep the original controls for event reuse; visible editing
+        // is centralized in the inspector. Card zoom never changes node dimensions.
+        createCardZoom({ container: pool, node, baseCardMin: 108, baseThumbH: 86 }).mount(poolBar);
         const deck = make("div", "h3lvm-deck");
         const imageInput = make("input", "h3guide-file-input");
         imageInput.type = "file";
@@ -686,13 +818,29 @@ function installGuideNode(node) {
         audioInput.type = "file";
         audioInput.accept = "audio/*";
         audioInput.multiple = true;
-        pool.append(poolBar, deck, imageInput, audioInput);
+        const search = make("input", "h3guide-search");
+        search.type = "search";
+        search.placeholder = "搜索素材名称…";
+        search.setAttribute("aria-label", "搜索素材");
+        search.addEventListener("input", filterCards, { signal });
+        const libraryTabs = make("div", "h3guide-library-tabs");
+        const imageTab = make("div", "h3guide-library-tab");
+        const audioTab = make("div", "h3guide-library-tab");
+        imageTab.append(tabImage, imageLane.count);
+        audioTab.append(tabAudio, audioLane.count);
+        libraryTabs.append(imageTab, audioTab);
+        const imports = make("div", "h3guide-imports");
+        imports.append(addImage, addAudio);
+        imageLane.head.prepend(make("strong", null, "图片关键帧"));
+        audioLane.head.prepend(make("strong", null, "音频片段"));
+        const libraryHelp = make("div", "h3guide-library-help", "拖到对应轨道以放置素材；选中后在右侧修改属性。");
+        pool.append(search, libraryTabs, imports, poolBar, deck, poolCounts, libraryHelp, imageInput, audioInput);
 
         const detail = make("div", "h3guide-detail");
         const foot = make("div", "h3guide-foot");
 
         els = {
-            releaseEnabled, releaseThreshold,
+            releaseEnabled, releaseThreshold, undoBtn, redoBtn, search, settings,
             head, headSub, ruler, trackImage, trackAudio, panBar, panThumb, pool, deck, poolKind, poolCounts,
             detail, foot, tabImage, tabAudio, countImage: imageLane.count, countAudio: audioLane.count,
             pxImage: imageLane.px, pxAudio: audioLane.px, imageInput, audioInput,
@@ -702,10 +850,39 @@ function installGuideNode(node) {
             rowImage: laneRows.image, rowAudio: laneRows.audio,
         };
         editorSurface = createSurface({ ruler, trackImage, trackAudio });
-        // The detail area sits between the tracks and the card pool: selecting a card on a lane
-        // puts its fields right under the lane it came from, and the pool stays the section that
-        // grows with the panel.
-        root.append(head, timeline, detail, pool, foot);
+        // The library, timeline and inspector share selection without changing node size.
+        const body = make("div", "h3guide-workspace");
+        const center = make("section", "h3guide-center");
+        const previewHead = make("div", "h3guide-preview-head");
+        const previewName = make("span", "h3guide-sub");
+        previewHead.append(make("strong", null, "参考预览"), make("span", "h3guide-spacer"), previewName);
+        const preview = make("div", "h3guide-reference-preview");
+        const previewHint = make("div", "h3guide-preview-hint", "这里预览参考素材，不是生成成片。");
+        const timelineBar = make("div", "h3guide-timeline-tools");
+        timelineBar.append(make("strong", null, "时间轴编排"), make("span", "h3guide-spacer"),
+            make("span", "h3guide-sub", "时间轴缩放"), zoomOut, zoomIn, fitBtn);
+        center.append(previewHead, preview, previewHint, timelineBar, timeline);
+        const inspector = make("aside", "h3guide-inspector");
+        const inspectorTabs = make("div", "h3guide-inspector-tabs");
+        const propertiesTab = make("button", "active", "选中素材");
+        const settingsTab = make("button", "", "生成设置");
+        inspectorTabs.append(propertiesTab, settingsTab);
+        const setInspector = (showSettings) => {
+            detail.classList.toggle("h3guide-hidden", showSettings);
+            settings.classList.toggle("h3guide-hidden", !showSettings);
+            propertiesTab.classList.toggle("active", !showSettings);
+            settingsTab.classList.toggle("active", showSettings);
+            propertiesTab.setAttribute("aria-pressed", String(!showSettings));
+            settingsTab.setAttribute("aria-pressed", String(showSettings));
+        };
+        propertiesTab.onclick = () => setInspector(false);
+        settingsTab.onclick = () => setInspector(true);
+        settings.classList.add("h3guide-hidden");
+        inspector.append(inspectorTabs, detail, settings);
+        body.append(pool, center, inspector);
+        Object.assign(els, { preview, previewName, propertiesTab, settingsTab, setInspector });
+        root.append(head, body, foot);
+        syncHistoryButtons();
         document.body.appendChild(root);
 
         closeBtn.onclick = (event) => {
@@ -774,6 +951,13 @@ function installGuideNode(node) {
             }, { signal });
         }
 
+        root.addEventListener("pointermove", event => {
+            const card = event.target.closest?.(".h3guide-card");
+            if (!card) return;
+            const rect = card.getBoundingClientRect();
+            card.style.setProperty("--h3guide-pointer-x", (event.clientX - rect.left) + "px");
+            card.style.setProperty("--h3guide-pointer-y", (event.clientY - rect.top) + "px");
+        }, { signal });
         dragTitleBar(signal);
         timelinePanning(signal);
         laneKeyboard(signal);
@@ -814,8 +998,8 @@ function installGuideNode(node) {
             const onMove = (moveEvent) => {
                 const left = startLeft + (moveEvent.clientX - startX);
                 const top = startTop + (moveEvent.clientY - startY);
-                root.style.left = `${Math.max(4, Math.min(window.innerWidth - 60, left))}px`;
-                root.style.top = `${Math.max(4, Math.min(window.innerHeight - 40, top))}px`;
+                root.style.left = `${Math.max(4, Math.min(window.innerWidth - rect.width - 4, left))}px`;
+                root.style.top = `${Math.max(4, Math.min(window.innerHeight - rect.height - 4, top))}px`;
             };
             const onUp = (endEvent) => {
                 try {
@@ -1499,6 +1683,10 @@ function installGuideNode(node) {
         card.classList.toggle("h3guide-muted", perImageStrength && isMutedImage(guide));
         card.classList.toggle("h3guide-unplaced", !placed);
         card.classList.toggle("active", guide.id === doc.view_state.selected_id);
+        card.setAttribute("aria-pressed", String(guide.id === doc.view_state.selected_id));
+        let position = card.querySelector(".h3guide-card-position");
+        if (!position) { position = make("div", "h3guide-card-position"); card.appendChild(position); }
+        position.textContent = guide.enabled === false ? "已停用" : placed ? formatSeconds(frameToSeconds(guide.frame_index, doc.fps), 2) + " 秒 · 已放置" : "待放置";
         // 放置 only makes sense for material that is not on the timeline yet. Leaving it on
         // every placed card pushed the buttons that are always needed onto a second row.
         const place = card.querySelector(".h3guide-place");
@@ -1554,6 +1742,12 @@ function installGuideNode(node) {
     function buildCard(guide) {
         const card = make("div", "h3lvm-card h3guide-card");
         card.dataset.id = guide.id;
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", guide.label || guide.asset.filename);
+        card.addEventListener("keydown", event => {
+            if (event.target === card && ["Enter", " "].includes(event.key)) { event.preventDefault(); select(guide.id); }
+        });
 
         // Only the picture/waveform is a drag handle. The card also holds two number fields
         // and five buttons, and a card that can be dragged from any of them turns "I am typing
@@ -1728,6 +1922,7 @@ function installGuideNode(node) {
     }
 
     function select(id) {
+        els?.setInspector(false);
         if (doc.view_state.selected_id === id) return;
         doc.view_state.selected_id = id;
         writeDoc({ dirty: false });
@@ -1785,6 +1980,7 @@ function installGuideNode(node) {
         players.clear();
         els.deck.replaceChildren();
         for (const guide of visibleGuides()) els.deck.appendChild(buildCard(guide));
+        filterCards();
         void fillCards();
     }
     // ---------- media: uploaded, measured, drawn ----------
@@ -2516,7 +2712,7 @@ function installGuideNode(node) {
             } else if (target.type === "pool") {
                 gesture.pointerY = event.clientY;
                 hideLaneHint();
-                const visible = visibleGuides();
+                const visible = visibleGuides().filter(guide => !cardEls.get(guide.id)?.classList.contains("h3guide-filtered"));
                 const from = visible.findIndex((item) => item.id === gesture.guideId);
                 const at = insertPosition(cardRects(visible), event.clientX, event.clientY, from);
                 showCardHint(at === from || at === from + 1 ? -1 : at, visible);
@@ -2589,7 +2785,7 @@ function installGuideNode(node) {
             }
             // A cross-kind lane and "nowhere" leave the data exactly as it was.
             if (target.type !== "pool") return;
-            const visible = visibleGuides();
+            const visible = visibleGuides().filter(guide => !cardEls.get(guide.id)?.classList.contains("h3guide-filtered"));
             const from = visible.findIndex((guide) => guide.id === guideId);
             if (from < 0) return;
             const at = insertPosition(cardRects(visible), event.clientX, event.clientY, from);
@@ -2803,6 +2999,7 @@ function installGuideNode(node) {
     function renderDetail() {
         if (!root) return;
         releaseDetailPlayer();
+        renderReferencePreview();
         els.detail.replaceChildren();
         const guide = selectedGuide();
         if (!guide) {
@@ -2849,7 +3046,14 @@ function installGuideNode(node) {
             event.stopPropagation();
             mutate(removeGuide(doc.guides, guide.id));
         };
-        actions.appendChild(drop);
+        const replace = make("button", "h3guide-act", "替换素材");
+        replace.onclick = () => {
+            pendingReplaceId = guide.id;
+            (guide.kind === AUDIO_KIND ? els.audioInput : els.imageInput).click();
+        };
+        const copy = make("button", "h3guide-act", "复制素材");
+        copy.onclick = () => mutate(duplicateGuide(doc.guides, guide.id));
+        actions.append(replace, copy, drop);
         if (guide.kind === AUDIO_KIND) {
             // Previewing is the card's job when the card is on screen; the detail area only
             // owns its own player when the selection came from the other lane.
@@ -2864,6 +3068,10 @@ function installGuideNode(node) {
         els.detail.appendChild(head);
 
         const fields = make("div", "h3guide-fields");
+        const advanced = make("details", "h3guide-advanced-strength");
+        advanced.open = strengthExpanded;
+        advanced.append(make("summary", null, "高级：条件强度 · 当前图片"));
+        advanced.addEventListener("toggle", () => { strengthExpanded = advanced.open; });
         for (const row of detailSpec(guide)) {
             const box = make("div", "h3guide-field");
             box.append(make("span", "h3guide-flabel", row.label));
@@ -2929,9 +3137,17 @@ function installGuideNode(node) {
                 value.dataset.key = row.key;
                 box.appendChild(value);
             }
-            fields.appendChild(box);
+            if (row.key === "strength") {
+                box.querySelector(".h3guide-flabel").textContent = "条件强度 · 当前图片";
+                advanced.appendChild(box);
+            } else fields.appendChild(box);
         }
         els.detail.appendChild(fields);
+        if (guide.kind === IMAGE_KIND) {
+            els.detail.appendChild(buildReferenceControl());
+            if (perImageStrength) els.detail.appendChild(advanced);
+        }
+        els.detail.appendChild(actions);
     }
 
     function onDetailInput(guide, key, value) {
@@ -3193,6 +3409,7 @@ function installGuideNode(node) {
         renderPool();
         renderDetail();
         renderFooter();
+        syncReleaseControls();
     }
 
     // ---------- wiring ----------
@@ -3278,6 +3495,8 @@ function installGuideNode(node) {
     // run, and a removed node.
     node._h3guideReload = () => {
         doc = readDoc();
+        editHistory.reset(doc);
+        syncHistoryButtons();
         renderSummary();
         if (root) renderAll();
     };
