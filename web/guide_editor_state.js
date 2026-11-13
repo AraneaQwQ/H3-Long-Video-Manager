@@ -40,3 +40,23 @@ export function createGuideHistory(doc, limit = 60) {
         reset(doc) { current = content(doc); past.length = 0; future.length = 0; },
     };
 }
+
+// Viewport-only space: never writes responsive sizes into the saved document.
+export function laneSpaceBonus(spare) {
+    const total = Math.max(0, Math.floor(Number(spare) || 0));
+    const image = Math.round(total * 0.7);
+    return { image, audio: total - image };
+}
+
+export function sidebarWidthsFor(width, desired = {}) {
+    const left = Math.max(200, Math.min(420, Number(desired.left) || 280));
+    const right = Math.max(250, Math.min(440, Number(desired.right) || 320));
+    const spare = Math.max(0, Number(width) - 300 - 450);
+    const wanted = left + right - 450;
+    const scale = wanted > spare ? spare / wanted : 1;
+    return { left: Math.floor(200 + (left - 200) * scale), right: Math.floor(250 + (right - 250) * scale) };
+}
+
+export function localPointerX(clientX, rect, cssWidth, borderLeft = 0) {
+    return (clientX - rect.left) * cssWidth / Math.max(0.001, rect.width) - borderLeft;
+}

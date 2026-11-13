@@ -336,12 +336,18 @@ class H3GuideTimeline(io.ComfyNode):
                         "frame_index 为 null 是待放置：两者都保留在列表里，但不编码、不占配额。"
                         "文档里的 resolved_frame_count 与 view_state 只是面板状态，不参与执行。"),
                 ),
+                io.Boolean.Input(
+                    "enable_guide", display_name="启用时间轴", optional=True, default=True,
+                    label_on="启用", label_off="忽略",
+                    tooltip="关闭后忽略本节点全部图片和音频时间轴信息，positive 原样透传；卡片与编排保留。v2 共享文档仍传递，二采由自己的开关控制。"),
             ],
             outputs=[io.Conditioning.Output(display_name="positive")],
         )
 
     @classmethod
-    def validate_inputs(cls, guides, length_seconds=0.0, **_):
+    def validate_inputs(cls, guides, length_seconds=0.0, enable_guide=True, **_):
+        if not enable_guide:
+            return True
         try:
             cls._parse(guides)
             parse_release(guides)
@@ -350,13 +356,16 @@ class H3GuideTimeline(io.ComfyNode):
         return True
 
     @classmethod
-    def fingerprint_inputs(cls, guides, **_):
+    def fingerprint_inputs(cls, guides, enable_guide=True, **_):
         """Execution identity: the guide list plus the real bytes behind each file.
 
         Deliberately not the widget string - the panel also stores the selected card
         and the timeline zoom in that JSON, and moving a slider must not re-encode
         thirty guides.
         """
+        if not enable_guide:
+            # v2 still outputs its document, so edits must invalidate that output.
+            return "timeline_disabled|" + (repr(guides) if cls.DOCUMENT_OUTPUT else "")
         try:
             digest = guide_fingerprint_v2 if cls.STRENGTH_ENABLED else guide_fingerprint
             return digest(cls._parse(guides), _media_roots()) + release_fingerprint(guides)
@@ -366,7 +375,9 @@ class H3GuideTimeline(io.ComfyNode):
     @classmethod
     def execute(cls, positive=None, latent=None, guides=DEFAULT_GUIDES, length_seconds=0.0,
                 vae=None, audio_vae=None, positive_b=None, enable_a=True,
-                enable_b=False, latent_b=None, shared_guides=None) -> io.NodeOutput:
+                enable_b=False, latent_b=None, shared_guides=None, enable_guide=True) -> io.NodeOutput:
+        if not enable_guide:
+            return cls._node_output(positive, positive_b, [], 0, guides)
         return cls._run(positive, latent, guides, length_seconds=length_seconds,
                         vae=vae, audio_vae=audio_vae, positive_b=positive_b,
                         enable_a=enable_a, enable_b=enable_b, latent_b=latent_b,

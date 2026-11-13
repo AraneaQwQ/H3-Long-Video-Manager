@@ -23,7 +23,7 @@
 // frame_index stays the authority and seconds are only an input and a label; audio
 // trim stays in sample points. Nothing here re-derives those rules.
 
-import { createGuideHistory, referencePosition, releaseFromPosition, referenceDescription } from "./guide_editor_state.js";
+import { localPointerX, sidebarWidthsFor, laneSpaceBonus, createGuideHistory, referencePosition, releaseFromPosition, referenceDescription } from "./guide_editor_state.js";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { addPanel } from "./dom_panel.js";
@@ -282,6 +282,24 @@ function installGuideNode(node) {
         stripAudioSize.shrink, stripAudioSize.px, stripAudioSize.grow,
         stripHint,
     );
+    const stripRelease = make("label", "h3guide-strip-release");
+    const stripReleaseRange = make("input", "h3guide-strip-release-range");
+    Object.assign(stripReleaseRange, { type: "range", min: "0", max: "100", step: "0.1", value: "100" });
+    stripReleaseRange.setAttribute("aria-label", "节点图片参考约束，影响全部时间轴图片");
+    stripReleaseRange.title = "向右保留更久，最右全程保留；提前释放需连接 H3 Guide 关键帧阶段控制 MODEL 节点";
+    const stripReleaseText = make("span", "h3guide-strip-release-value");
+    stripRelease.append(make("strong", null, "图片参考约束"), make("span", null, "更早释放"), stripReleaseRange, make("span", null, "全程保留"), stripReleaseText);
+    stripHead.appendChild(stripRelease);
+    stripReleaseRange.addEventListener("input", () => {
+        const next = releaseFromPosition(stripReleaseRange.value, doc.keyframe_release);
+        stripReleaseText.textContent = referenceDescription(next);
+        stripReleaseRange.setAttribute("aria-valuetext", stripReleaseText.textContent);
+    }, { signal });
+    stripReleaseRange.addEventListener("change", () => {
+        if (parseError) { syncReleaseControls(); return; }
+        doc.keyframe_release = releaseFromPosition(stripReleaseRange.value, doc.keyframe_release);
+        writeDoc({ dirty: true }); syncReleaseControls();
+    }, { signal });
     const stripBody = make("div", "h3guide-strip-body h3guide-strip-body-off");
     const stripRuler = make("div", "h3guide-ruler");
     const stripRulerRow = make("div", "h3guide-row h3guide-strip-row");
@@ -355,6 +373,7 @@ function installGuideNode(node) {
         }
         if (dirty && !restoringHistory) editHistory.record(doc);
         syncHistoryButtons();
+        syncReleaseControls();
         widget.callback?.(widget.value);
         afterWidgetWrite(dirty);
     }
@@ -629,8 +648,12 @@ function installGuideNode(node) {
         }
     }
     function syncReleaseControls() {
-        if (!els) return;
         const config = doc.keyframe_release || { enabled: false, threshold: 0.9 };
+        stripReleaseRange.disabled = Boolean(parseError);
+        if (document.activeElement !== stripReleaseRange) stripReleaseRange.value = String(referencePosition(config));
+        stripReleaseText.textContent = referenceDescription(config);
+        stripReleaseRange.setAttribute("aria-valuetext", stripReleaseText.textContent);
+        if (!els) return;
         els.releaseEnabled.checked = config.enabled;
         els.releaseThreshold.disabled = !config.enabled;
         if (document.activeElement !== els.releaseThreshold) els.releaseThreshold.value = String(config.threshold);
@@ -841,7 +864,7 @@ function installGuideNode(node) {
 
         els = {
             releaseEnabled, releaseThreshold, undoBtn, redoBtn, search, settings,
-            head, headSub, ruler, trackImage, trackAudio, panBar, panThumb, pool, deck, poolKind, poolCounts,
+            head, headSub, timeline, ruler, trackImage, trackAudio, panBar, panThumb, pool, deck, poolKind, poolCounts,
             detail, foot, tabImage, tabAudio, countImage: imageLane.count, countAudio: audioLane.count,
             pxImage: imageLane.px, pxAudio: audioLane.px, imageInput, audioInput,
             // The row is the drop target for a card coming from the pool: the lane plus its
@@ -879,11 +902,59 @@ function installGuideNode(node) {
         settingsTab.onclick = () => setInspector(true);
         settings.classList.add("h3guide-hidden");
         inspector.append(inspectorTabs, detail, settings);
+        const sidePreferences = node._h3guideSidebarWidths ||= { left: 280, right: 320 };
+        const syncSidebarWidths = () => {
+            const widths = sidebarWidthsFor(body.clientWidth, sidePreferences);
+            body.style.setProperty("--h3guide-library-width", `${widths.left}px`);
+            body.style.setProperty("--h3guide-inspector-width", `${widths.right}px`);
+            for (const [side, grip] of sidebarGrips) grip.setAttribute("aria-valuenow", String(widths[side]));
+        };
+        const sidebarGrips = [];
+        for (const [side, panel, title, direction] of [["left", pool, "素材库宽度", 1], ["right", inspector, "属性栏宽度", -1]]) {
+            const grip = make("div", `h3guide-sidebar-resize h3guide-sidebar-${side}`);
+            grip.tabIndex = 0;
+            grip.setAttribute("role", "separator");
+            grip.setAttribute("aria-orientation", "vertical");
+            grip.setAttribute("aria-label", title);
+            grip.setAttribute("aria-valuemin", side === "left" ? "200" : "250");
+            grip.setAttribute("aria-valuemax", side === "left" ? "420" : "440");
+            grip.title = `左右拖动调整${title}，双击恢复默认；也可用方向键调整`;
+            grip.addEventListener("pointerdown", event => {
+                if (event.button !== 0 || body.clientWidth <= 810) return;
+                event.preventDefault();
+                event.stopPropagation();
+                const startX = event.clientX;
+                const startWidth = panel.getBoundingClientRect().width;
+                const other = side === "left" ? "right" : "left";
+                const otherPanel = side === "left" ? inspector : pool;
+                sidePreferences[other] = otherPanel.getBoundingClientRect().width;
+                const max = Math.min(side === "left" ? 420 : 440, body.clientWidth - 300 - sidePreferences[other]);
+                grip.classList.add("dragging");
+                beginDragSession(move => {
+                    sidePreferences[side] = Math.max(side === "left" ? 200 : 250, Math.min(max, startWidth + direction * (move.clientX - startX)));
+                    syncSidebarWidths();
+                    scheduleMeasure();
+                }, () => { grip.classList.remove("dragging"); scheduleMeasure(); }, event, grip);
+            }, { signal });
+            grip.addEventListener("keydown", event => {
+                if (!["ArrowLeft", "ArrowRight", "Home"].includes(event.key)) return;
+                event.preventDefault();
+                const actual = panel.getBoundingClientRect().width;
+                sidePreferences[side] = event.key === "Home" ? (side === "left" ? 280 : 320) : actual + direction * (event.key === "ArrowRight" ? 16 : -16);
+                sidePreferences[side] = Math.max(side === "left" ? 200 : 250, Math.min(side === "left" ? 420 : 440, sidePreferences[side]));
+                syncSidebarWidths(); scheduleMeasure();
+            }, { signal });
+            grip.addEventListener("dblclick", () => { sidePreferences[side] = side === "left" ? 280 : 320; syncSidebarWidths(); scheduleMeasure(); }, { signal });
+            panel.appendChild(grip);
+            sidebarGrips.push([side, grip]);
+        }
+        els.syncSidebarWidths = syncSidebarWidths;
         body.append(pool, center, inspector);
-        Object.assign(els, { preview, previewName, propertiesTab, settingsTab, setInspector });
+        Object.assign(els, { center, preview, previewName, propertiesTab, settingsTab, setInspector });
         root.append(head, body, foot);
         syncHistoryButtons();
         document.body.appendChild(root);
+        syncSidebarWidths();
 
         closeBtn.onclick = (event) => {
             event.stopPropagation();
@@ -967,7 +1038,7 @@ function installGuideNode(node) {
         if (typeof ResizeObserver !== "undefined") {
             // The user resizes the editor with the CSS corner; the lanes follow the new
             // width instead of keeping the transform they were built with.
-            observer = new ResizeObserver(() => scheduleMeasure());
+            observer = new ResizeObserver(() => { els?.syncSidebarWidths?.(); scheduleMeasure(); });
             observer.observe(root);
         }
     }
@@ -1045,10 +1116,34 @@ function installGuideNode(node) {
         if (!els) return;
         const heights = laneHeights(doc.view_state);
         doc.view_state.lane_heights = heights;
-        els.trackImage.style.height = `${heights[IMAGE_KIND]}px`;
-        els.trackAudio.style.height = `${heights[AUDIO_KIND]}px`;
-        els.pxImage.textContent = `图片轨 ${heights[IMAGE_KIND]}px`;
-        els.pxAudio.textContent = `音频轨 ${heights[AUDIO_KIND]}px`;
+        const bonus = els.laneBonus || { image: 0, audio: 0 };
+        const image = heights[IMAGE_KIND] + bonus.image;
+        const audio = heights[AUDIO_KIND] + bonus.audio;
+        els.trackImage.style.height = `${image}px`;
+        els.trackAudio.style.height = `${audio}px`;
+        els.pxImage.textContent = `图片轨 ${image}px`;
+        els.pxAudio.textContent = `音频轨 ${audio}px`;
+    }
+
+    function fitEditorLaneSpace() {
+        if (!els?.center || !root) return;
+        const key = `${els.center.clientWidth}:${els.center.clientHeight}`;
+        if (els.laneSpaceKey === key) return;
+        els.laneSpaceKey = key;
+        // Refit only when the viewport changes. A grip keeps its measured bonus
+        // during a gesture, so moving down by N pixels still moves its edge by N.
+        els.laneBonus = { image: 0, audio: 0 };
+        applyLaneHeights();
+        const box = els.timeline;
+        const style = getComputedStyle(box);
+        let used = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+        for (const child of box.children) {
+            if (!child.getClientRects().length) continue;
+            const css = getComputedStyle(child);
+            used += child.getBoundingClientRect().height + parseFloat(css.marginTop) + parseFloat(css.marginBottom);
+        }
+        els.laneBonus = laneSpaceBonus(box.clientHeight - used);
+        applyLaneHeights();
     }
 
     // The node strip draws the same lanes with the same numbers, clamped to the height the
@@ -1363,6 +1458,7 @@ function installGuideNode(node) {
 
     function renderTimeline() {
         if (!root) return;
+        fitEditorLaneSpace();
         renderSurface(editorSurface);
         renderPanBar();
     }
@@ -1557,32 +1653,27 @@ function installGuideNode(node) {
             if (!range.frames) return;
             const guideId = guide.id;
             const track = guide.kind === AUDIO_KIND ? surface.trackAudio : surface.trackImage;
-            const rect = track.getBoundingClientRect();
-            const grabbed = surface.scale.pxToFrame(event.clientX - rect.left + surface.scroll, { clamp: false });
+            const pointerX = clientX => localPointerX(clientX, track.getBoundingClientRect(), track.offsetWidth, track.clientLeft);
+            const grabbed = surface.scale.pxToFrame(pointerX(event.clientX) + surface.scroll, { clamp: false });
             const offset = grabbed - Math.trunc(Number(guide.frame_index) || 0);
-            const laneFrame = (clientX) => frameFromLanePointer({
-                scale: surface.scale, scroll: surface.scroll, clientX, trackLeft: rect.left,
+            const laneFrame = clientX => frameFromLanePointer({
+                scale: surface.scale, scroll: surface.scroll, clientX: pointerX(clientX), trackLeft: 0,
                 offset, widthFrames, frameCount: range.frames,
             });
             const pointerId = event.pointerId;
             let moved = false;
             let panned = false;
             el.classList.add("dragging");
-            // While a card is held it follows the pointer exactly: the declutter offset is a
-            // resting-state rule, not a rule for the card under the cursor.
-            for (const item of surface.laneItems) {
-                if (item.guide.id === guideId) item.offsetPx = 0;
-            }
-
+            // Preserve its resting declutter offset so the grabbed point does not jump.
             beginDragSession((moveEvent) => {
                 if (pointerId !== undefined && moveEvent.pointerId !== pointerId) return;
                 const live = guideById(guideId);
                 if (!live) return;
                 // Only the zoomed surface runs out of room: the node surface shows the whole
                 // video, so there is nothing there to pan.
-                const pointerX = moveEvent.clientX - rect.left;
+                const localX = pointerX(moveEvent.clientX);
                 if (!surface.fitWidth) {
-                    const wanted = scrollForPointerPan(surface.scale, surface.scroll, pointerX, rect.width, SCROLL_EDGE);
+                    const wanted = scrollForPointerPan(surface.scale, surface.scroll, localX, track.clientWidth, SCROLL_EDGE);
                     if (wanted !== null && wanted !== surface.scroll) {
                         surface.scroll = wanted;
                         doc.view_state.scroll = surface.scroll;
@@ -1602,6 +1693,9 @@ function installGuideNode(node) {
                     syncDetail(live);
                     showLiveNote(`${live.label} -> 第 ${frame} 帧（${formatSeconds(frameToSeconds(frame, doc.fps))} 秒）`);
                 }
+                const visualFrame = Math.max(0, Math.min(range.frames - Math.max(1, widthFrames),
+                    surface.scale.pxToFrame(localX + surface.scroll, { clamp: false }) - offset));
+                for (const item of surface.laneItems) if (item.guide.id === guideId) item.frame = visualFrame;
                 applyAllScrolls();
             }, () => {
                 el.classList.remove("dragging");
@@ -3403,6 +3497,7 @@ function installGuideNode(node) {
     // too short simply hides the helper view. Applying the heights is part of the same call:
     // the panel size is the only reason the requested lane heights would ever change.
     function fitStrip() {
+        syncReleaseControls();
         const wanted = doc.view_state.strip_open === true;
         const fits = applyStripHeights();
         stripBtn.classList.toggle("on", wanted);

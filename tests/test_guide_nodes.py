@@ -195,9 +195,9 @@ class SchemaTests(unittest.TestCase):
         # and check placements before anything has been run. It is in seconds, like the workflow
         # nodes a user already knows (segment_duration), not in frames.
         names = [item.id for item in self.schema.inputs]
-        self.assertEqual(names, ["positive", "latent", "length_seconds", "vae", "audio_vae", "guides"])
+        self.assertEqual(names, ["positive", "latent", "length_seconds", "vae", "audio_vae", "guides", "enable_guide"])
         self.assertEqual([item.optional for item in self.schema.inputs],
-                         [False, False, True, True, True, False])
+                         [False, False, True, True, True, False, True])
         self.assertEqual(len(self.schema.outputs), 1)
         # Same convention as the loader nodes: the slot label is display_name.
         self.assertEqual(self.schema.outputs[0].display_name, "positive")
@@ -564,9 +564,9 @@ class StrengthSchemaTests(unittest.TestCase):
         self.assertEqual(self.v2.display_name, "H3 Guide 时间轴 v2")
         self.assertEqual(self.v2.category, self.v1.category)
         self.assertEqual([item.id for item in self.v2.inputs],
-                         ["positive", "latent", "length_seconds", "vae", "audio_vae", "guides"])
+                         ["positive", "latent", "length_seconds", "vae", "audio_vae", "guides", "enable_guide"])
         self.assertEqual([item.optional for item in self.v2.inputs],
-                         [False, False, True, True, True, False])
+                         [False, False, True, True, True, False, True])
         self.assertEqual(len(self.v2.outputs), 2)
         self.assertEqual(self.v2.outputs[0].display_name, "positive")
         self.assertEqual(self.v2.outputs[1].display_name, "共享 Guide 文档")
@@ -976,3 +976,28 @@ class OldDocumentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(LOAD_ERROR is not None, "comfy_api unavailable")
+class TimelineEnableTests(unittest.TestCase):
+    def test_disabled_skips_invalid_document_and_media(self):
+        from unittest.mock import patch
+        positive = [[object(), {"existing": True}]]
+        for node in (GUIDE.H3GuideTimeline, GUIDE.H3GuideTimelineV2):
+            with self.subTest(node=node.__name__), patch.object(node, "_parse", side_effect=AssertionError("must not parse")):
+                self.assertIs(node.validate_inputs("invalid", enable_guide=False), True)
+                out = node.execute(positive=positive, guides="invalid", enable_guide=False)
+                self.assertIs(out.result[0], positive)
+                node.fingerprint_inputs("invalid", enable_guide=False)
+                if node.DOCUMENT_OUTPUT:
+                    self.assertEqual(out.result[-1], "invalid")
+
+    def test_disabled_shared_document_cache_stays_current(self):
+        node = GUIDE.H3GuideTimelineV2
+        self.assertNotEqual(node.fingerprint_inputs("one", enable_guide=False), node.fingerprint_inputs("two", enable_guide=False))
+
+    def test_enable_switch_appended_and_defaults_on(self):
+        for node in (GUIDE.H3GuideTimeline, GUIDE.H3GuideTimelineV2):
+            switch = node.define_schema().inputs[-1]
+            self.assertEqual(switch.id, "enable_guide")
+            self.assertTrue(switch.default)

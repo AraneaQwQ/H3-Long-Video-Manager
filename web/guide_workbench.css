@@ -12,7 +12,7 @@
 .h3guide-workbench>.h3guide-bar{padding:14px 18px;gap:8px;background:linear-gradient(110deg,#2a23344d,transparent 65%),#16181e}
 .h3guide-workbench .h3guide-editor-title{font-size:15px;color:#f0e6d5;margin-right:8px}
 .h3guide-workbench>.h3guide-bar>.h3guide-sub{max-width:320px}
-.h3guide-workspace{display:grid;grid-template-columns:258px minmax(280px,1fr) 300px;flex:1 1 0;min-height:0;min-width:0;overflow:hidden}
+.h3guide-workspace{display:grid;grid-template-columns:var(--h3guide-library-width,280px) minmax(280px,1fr) var(--h3guide-inspector-width,320px);flex:1 1 0;min-height:0;min-width:0;overflow:hidden}
 .h3guide-workbench .h3guide-pool{display:flex;flex-direction:column;min-height:0;min-width:0;padding:14px 12px 0;margin:0;background:#1a1c22;border:0;border-right:1px solid var(--h3g-line);overflow:hidden}
 .h3guide-workbench .h3guide-search{width:100%;padding:9px 11px;border:1px solid #3c3f4b;border-radius:8px;background:#22252d;color:var(--h3g-text);font-size:12px}
 .h3guide-library-tabs{display:flex;gap:3px;padding:4px;margin:12px 0 10px;border:1px solid #353744;border-radius:24px;background:#111318}
@@ -38,7 +38,7 @@
 .h3guide-library-empty{grid-column:1/-1;color:var(--h3g-muted);padding:28px 8px;text-align:center;font-size:12px}
 .h3guide-center{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:auto;background:#12141a}
 .h3guide-preview-head{display:flex;gap:10px;align-items:center;padding:14px 18px;font-size:12px;flex-shrink:0}
-.h3guide-reference-preview{display:flex;align-items:center;justify-content:center;flex:1 0 clamp(120px,24vh,280px);min-height:120px;margin:0 18px;overflow:hidden;background:radial-gradient(ellipse at bottom,#24243560,transparent 70%);border-radius:8px}
+.h3guide-reference-preview{display:flex;align-items:center;justify-content:center;flex:0 0 clamp(120px,24vh,280px);min-height:120px;margin:0 18px;overflow:hidden;background:radial-gradient(ellipse at bottom,#24243560,transparent 70%);border-radius:8px}
 .h3guide-preview-image{display:block;width:100%;height:100%;max-height:100%;object-fit:contain}
 .h3guide-preview-empty{text-align:center;padding:18px;color:var(--h3g-muted);font-size:12px;overflow-wrap:anywhere}
 .h3guide-preview-empty p{margin:12px 0}
@@ -82,8 +82,8 @@
 .h3guide-workbench>.h3guide-foot{max-height:100px;overflow:auto;padding:8px 14px;font-size:11px;flex-shrink:0;background:#1a1c22;border-top:1px solid var(--h3g-line)}
 .h3guide-workbench button:focus-visible,.h3guide-workbench input:focus-visible,.h3guide-workbench [tabindex]:focus-visible,.h3guide-workbench summary:focus-visible{outline:2px solid #e9bd75;outline-offset:2px}
 .h3guide-workbench .h3guide-hidden,.h3guide-workbench .h3guide-filtered{display:none!important}
-.h3guide-focus .h3guide-pool{display:none}.h3guide-focus .h3guide-workspace{grid-template-columns:minmax(280px,1fr) 300px}
-@container(max-width:1050px){.h3guide-workspace{grid-template-columns:210px minmax(240px,1fr) 260px}.h3guide-workbench .h3guide-pool{padding:10px 8px 0}.h3guide-workbench .h3guide-pool .h3lvm-deck{gap:8px}.h3guide-workbench>.h3guide-bar>.h3guide-sub{display:none}}
+.h3guide-focus .h3guide-pool{display:none}.h3guide-focus .h3guide-workspace{grid-template-columns:minmax(280px,1fr) var(--h3guide-inspector-width,320px)}
+@container(max-width:1050px){.h3guide-workspace{grid-template-columns:var(--h3guide-library-width,210px) minmax(240px,1fr) var(--h3guide-inspector-width,260px)}.h3guide-workbench .h3guide-pool{padding:10px 8px 0}.h3guide-workbench .h3guide-pool .h3lvm-deck{gap:8px}.h3guide-workbench>.h3guide-bar>.h3guide-sub{display:none}}
 @container(max-width:810px){.h3guide-workspace{grid-template-columns:190px minmax(240px,1fr);overflow:auto;display:grid}.h3guide-inspector{grid-column:1/-1;min-height:300px;border-left:0;border-top:1px solid var(--h3g-line);overflow:visible}.h3guide-center{min-height:430px;overflow:visible}.h3guide-inspector .h3guide-detail,.h3guide-settings{overflow:visible;flex-basis:auto}.h3guide-focus .h3guide-workspace{grid-template-columns:1fr}.h3guide-workbench .h3guide-preview-image{height:160px}}
 @container(max-width:480px){.h3guide-workspace{grid-template-columns:1fr}.h3guide-workbench .h3guide-pool{max-height:320px;min-height:220px;border-right:0}.h3guide-center{min-height:440px}.h3guide-inspector{grid-column:auto}.h3guide-workbench>.h3guide-bar{padding:10px;gap:5px}.h3guide-workbench>.h3guide-bar button{font-size:10px;padding:5px}.h3guide-editor-title{width:100%}.h3guide-library-help{display:none}.h3guide-imports{margin-bottom:0}}
 @media(prefers-reduced-motion:reduce){.h3guide-workbench *{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
@@ -119,3 +119,22 @@
 .h3guide-workbench .h3guide-detail-actions button:hover{filter:brightness(1.2);outline:1px solid #d9e1ff66;outline-offset:1px}
 .h3guide-workbench .h3guide-detail-actions button:focus-visible{outline:2px solid #f1ddaa;outline-offset:3px}
 .h3guide-workbench .h3guide-foot{border-top:2px solid #555b70;background:#20232c}
+
+/* The legacy action grid has flex-basis:480px for a horizontal header. In
+   this vertical inspector that basis would become height and stretch every row. */
+.h3guide-workbench .h3guide-detail-head{flex-wrap:nowrap;flex:0 0 auto}
+.h3guide-workbench .h3guide-detail-actions{flex:0 0 auto;min-width:0;align-content:start;align-items:start;grid-auto-rows:max-content;height:auto}
+.h3guide-workbench .h3guide-detail-actions button{box-sizing:border-box;height:36px;min-height:36px;max-height:36px;align-self:start;line-height:18px;white-space:nowrap}
+
+.h3guide-workbench .h3guide-pool,.h3guide-workbench .h3guide-inspector{position:relative}
+.h3guide-sidebar-resize{position:absolute;top:0;bottom:0;width:9px;z-index:20;cursor:col-resize;touch-action:none;background:#7d739015}
+.h3guide-sidebar-left{right:0;border-left:1px solid #8791ab55}
+.h3guide-sidebar-right{left:0;border-right:1px solid #8791ab55}
+.h3guide-sidebar-resize:after{content:'';position:absolute;top:46%;left:3px;width:3px;height:38px;border-radius:3px;background:#8993ac}
+.h3guide-sidebar-resize:hover,.h3guide-sidebar-resize.dragging{background:#d6b77c50}
+.h3guide-sidebar-resize:focus-visible{outline:2px solid #e9bd75;outline-offset:-2px}
+@container(max-width:810px){.h3guide-sidebar-resize{display:none}}
+
+.h3guide-strip-release{display:flex;align-items:center;gap:7px;flex:1 0 100%;flex-wrap:wrap;padding:6px 8px;border:1px solid #75603d;border-radius:6px;background:#30281d;color:#efd19b;font-size:11px;box-sizing:border-box}
+.h3guide-strip-release-range{flex:1 1 110px;min-width:70px;accent-color:#e7bd7d;cursor:pointer}
+.h3guide-strip-release-value{font-size:10px;color:#c9b996}
