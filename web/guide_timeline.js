@@ -1141,6 +1141,9 @@ function installGuideNode(node) {
         grip.addEventListener("pointerdown", (event) => {
             if (event.button) return;
             event.preventDefault();
+            // Lock the preview only during explicit lane sizing, so its flexible
+            // initial layout fills the workspace without pushing the ruler backwards.
+            if (els.preview) els.preview.style.flex = `0 0 ${els.preview.getBoundingClientRect().height}px`;
             const startHeight = laneHeights(doc.view_state)[kind];
             const startY = event.clientY;
             const pointerId = event.pointerId;
@@ -3034,7 +3037,7 @@ function installGuideNode(node) {
             make("span", "h3guide-note", `${guide.kind === AUDIO_KIND ? "音频" : "图片"} · ${String(guide.asset.filename).split("/").pop()}`),
         );
         const actions = make("div", "h3guide-detail-actions");
-        const toggle = make("button", "h3guide-act", guide.enabled === false ? "启用" : "停用");
+        const toggle = make("button", "h3guide-act h3guide-action-toggle", guide.enabled === false ? "启用" : "停用");
         toggle.title = "停用会保留这条记录、裁切和时间，但不会执行";
         toggle.onclick = (event) => {
             event.stopPropagation();
@@ -3048,7 +3051,7 @@ function installGuideNode(node) {
         // pool. The same slot becomes 放置 while the card is in the pool, so the action row
         // never gains or loses a button and the neighbouring buttons do not change width.
         const placed = guide.frame_index !== null && guide.frame_index !== undefined;
-        const place = make("button", "h3guide-act", placed ? "移出时间轴" : "放置");
+        const place = make("button", "h3guide-act h3guide-action-place", placed ? "移出时间轴" : "放置");
         place.title = placed
             ? "从时间轴上取下，回到卡片池待放置；这条记录、裁切和启用状态都保留"
             : "放到下一个空位（也可以直接把卡片或轨道上的标记拖到时间轴）";
@@ -3061,24 +3064,24 @@ function installGuideNode(node) {
             mutate(patchGuide(doc.guides, guide.id, { frame_index: null }));
         };
         actions.appendChild(place);
-        const drop = make("button", "h3guide-act warn", "删除");
+        const drop = make("button", "h3guide-act warn h3guide-action-delete", "删除");
         drop.title = "删除这条 Guide（与卡片池里的删除相同）";
         drop.onclick = (event) => {
             event.stopPropagation();
             mutate(removeGuide(doc.guides, guide.id));
         };
-        const replace = make("button", "h3guide-act", "替换素材");
+        const replace = make("button", "h3guide-act h3guide-action-replace", "替换素材");
         replace.onclick = () => {
             pendingReplaceId = guide.id;
             (guide.kind === AUDIO_KIND ? els.audioInput : els.imageInput).click();
         };
-        const copy = make("button", "h3guide-act", "复制素材");
+        const copy = make("button", "h3guide-act h3guide-action-copy", "复制素材");
         copy.onclick = () => mutate(duplicateGuide(doc.guides, guide.id));
         actions.append(replace, copy, drop);
         if (guide.kind === AUDIO_KIND) {
             // Previewing is the card's job when the card is on screen; the detail area only
             // owns its own player when the selection came from the other lane.
-            const play = make("button", "h3guide-act", "▶ 试听当前裁切");
+            const play = make("button", "h3guide-act h3guide-action-play", "▶ 试听当前裁切");
             play.title = "只播放会被输出的那一段：源裁切决定用录音的哪一段，插入时间决定放在视频哪里";
             const onCard = cardEls.get(guide.id)?.querySelector(".h3guide-play");
             if (onCard) play.onclick = (event) => { event.stopPropagation(); onCard.click(); };
